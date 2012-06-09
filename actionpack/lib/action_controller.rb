@@ -49,6 +49,14 @@ end
 require 'action_view'
 require 'action_view/vendor/html-scanner'
 
+# ActionView::TestCase is located in actionpack gem,
+# so we can't load it in action_view.rb
+module ActionView
+  eager_autoload do
+    autoload :TestCase
+  end
+end
+
 # Common Active Support usage in Action Controller
 require 'active_support/concern'
 require 'active_support/core_ext/class/attribute_accessors'
