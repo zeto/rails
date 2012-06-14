@@ -240,7 +240,7 @@ class RespondToControllerTest < ActionController::TestCase
     assert_equal 'HTML', @response.body
 
     @request.accept = "text/javascript, text/html"
-    
+
     assert_raises(ActionController::UnknownFormat) do
       xhr :get, :just_xml
     end
@@ -1186,11 +1186,6 @@ class MimeControllerLayoutsTest < ActionController::TestCase
     @request.accept = "text/iphone"
     get :index
     assert_equal '<html><div id="super_iphone">Super iPhone</div></html>', @response.body
-  end
-
-  def test_non_navigational_format_with_no_template_fallbacks_to_html_template_with_no_layout
-    get :index, :format => :js
-    assert_equal "Hello Firefox", @response.body
   end
 end
 

@@ -184,7 +184,6 @@ module ActionView
     def formats=(values)
       if values
         values.concat(default_formats) if values.delete "*/*"
-        values << :html if values == [:js]
       end
       super(values)
     end
