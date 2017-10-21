@@ -1,130 +1,89 @@
+# frozen_string_literal: true
+
 module ActiveRecord
   module AttributeMethods
     module Serialization
       extend ActiveSupport::Concern
 
-      included do
-        # Returns a hash of all the attributes that have been specified for serialization as
-        # keys and their class restriction as values.
-        class_attribute :serialized_attributes, instance_accessor: false
-        self.serialized_attributes = {}
+      class ColumnNotSerializableError < StandardError
+        def initialize(name, type)
+          super <<-EOS.strip_heredoc
+            Column `#{name}` of type #{type.class} does not support `serialize` feature.
+            Usually it means that you are trying to use `serialize`
+            on a column that already implements serialization natively.
+          EOS
+        end
       end
 
       module ClassMethods
-        # If you have an attribute that needs to be saved to the database as an object, and retrieved as the same object,
-        # then specify the name of that attribute using this method and it will be handled automatically.
-        # The serialization is done through YAML. If +class_name+ is specified, the serialized object must be of that
-        # class on retrieval or SerializationTypeMismatch will be raised.
+        # If you have an attribute that needs to be saved to the database as an
+        # object, and retrieved as the same object, then specify the name of that
+        # attribute using this method and it will be handled automatically. The
+        # serialization is done through YAML. If +class_name+ is specified, the
+        # serialized object must be of that class on assignment and retrieval.
+        # Otherwise SerializationTypeMismatch will be raised.
+        #
+        # Empty objects as <tt>{}</tt>, in the case of +Hash+, or <tt>[]</tt>, in the case of
+        # +Array+, will always be persisted as null.
+        #
+        # Keep in mind that database adapters handle certain serialization tasks
+        # for you. For instance: +json+ and +jsonb+ types in PostgreSQL will be
+        # converted between JSON object/array syntax and Ruby +Hash+ or +Array+
+        # objects transparently. There is no need to use #serialize in this
+        # case.
+        #
+        # For more complex cases, such as conversion to or from your application
+        # domain objects, consider using the ActiveRecord::Attributes API.
         #
         # ==== Parameters
         #
         # * +attr_name+ - The field name that should be serialized.
-        # * +class_name+ - Optional, class name that the object type should be equal to.
+        # * +class_name_or_coder+ - Optional, a coder object, which responds to +.load+ and +.dump+
+        #   or a class name that the object type should be equal to.
         #
         # ==== Example
-        #   # Serialize a preferences attribute
+        #
+        #   # Serialize a preferences attribute.
         #   class User < ActiveRecord::Base
         #     serialize :preferences
         #   end
-        def serialize(attr_name, class_name = Object)
-          include Behavior
+        #
+        #   # Serialize preferences using JSON as coder.
+        #   class User < ActiveRecord::Base
+        #     serialize :preferences, JSON
+        #   end
+        #
+        #   # Serialize preferences as Hash using YAML coder.
+        #   class User < ActiveRecord::Base
+        #     serialize :preferences, Hash
+        #   end
+        def serialize(attr_name, class_name_or_coder = Object)
+          # When ::JSON is used, force it to go through the Active Support JSON encoder
+          # to ensure special objects (e.g. Active Record models) are dumped correctly
+          # using the #as_json hook.
+          coder = if class_name_or_coder == ::JSON
+            Coders::JSON
+          elsif [:load, :dump].all? { |x| class_name_or_coder.respond_to?(x) }
+            class_name_or_coder
+          else
+            Coders::YAMLColumn.new(attr_name, class_name_or_coder)
+          end
 
-          coder = if [:load, :dump].all? { |x| class_name.respond_to?(x) }
-                    class_name
-                  else
-                    Coders::YAMLColumn.new(class_name)
-                  end
-
-          # merge new serialized attribute and create new hash to ensure that each class in inheritance hierarchy
-          # has its own hash of own serialized attributes
-          self.serialized_attributes = serialized_attributes.merge(attr_name.to_s => coder)
-        end
-      end
-
-      def serialized_attributes
-        ActiveSupport::Deprecation.warn("Instance level serialized_attributes method is deprecated, please use class level method.")
-        defined?(@serialized_attributes) ? @serialized_attributes : self.class.serialized_attributes
-      end
-
-      class Type # :nodoc:
-        def initialize(column)
-          @column = column
-        end
-
-        def type_cast(value)
-          value.unserialized_value
-        end
-
-        def type
-          @column.type
-        end
-      end
-
-      class Attribute < Struct.new(:coder, :value, :state)
-        def unserialized_value
-          state == :serialized ? unserialize : value
-        end
-
-        def serialized_value
-          state == :unserialized ? serialize : value
-        end
-
-        def unserialize
-          self.state = :unserialized
-          self.value = coder.load(value)
-        end
-
-        def serialize
-          self.state = :serialized
-          self.value = coder.dump(value)
-        end
-      end
-
-      # This is only added to the model when serialize is called, which
-      # ensures we do not make things slower when serialization is not used.
-      module Behavior #:nodoc:
-        extend ActiveSupport::Concern
-
-        module ClassMethods
-          def initialize_attributes(attributes, options = {})
-            serialized = (options.delete(:serialized) { true }) ? :serialized : :unserialized
-            super(attributes, options)
-
-            serialized_attributes.each do |key, coder|
-              if attributes.key?(key)
-                attributes[key] = Attribute.new(coder, attributes[key], serialized)
-              end
+          decorate_attribute_type(attr_name, :serialize) do |type|
+            if type_incompatible_with_serialize?(type, class_name_or_coder)
+              raise ColumnNotSerializableError.new(attr_name, type)
             end
 
-            attributes
-          end
-
-          private
-
-          def attribute_cast_code(attr_name)
-            if serialized_attributes.include?(attr_name)
-              "v.unserialized_value"
-            else
-              super
-            end
+            Type::Serialized.new(type, coder)
           end
         end
 
-        def type_cast_attribute_for_write(column, value)
-          if column && coder = self.class.serialized_attributes[column.name]
-            Attribute.new(coder, value, :unserialized)
-          else
-            super
-          end
-        end
+        private
 
-        def read_attribute_before_type_cast(attr_name)
-          if self.class.serialized_attributes.include?(attr_name)
-            super.unserialized_value
-          else
-            super
+          def type_incompatible_with_serialize?(type, class_name)
+            type.is_a?(ActiveRecord::Type::Json) && class_name == ::JSON ||
+              type.respond_to?(:type_cast_array, true) && class_name == ::Array
           end
-        end
       end
     end
   end

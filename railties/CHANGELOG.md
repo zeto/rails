@@ -1,71 +1,147 @@
-## Rails 4.0.0 (unreleased) ##
+*   Gemfile for new apps: upgrade redis-rb from ~> 3.0 to 4.0.
 
-*   Correctly handle SCRIPT_NAME when generating routes to engine in application
-    that's mounted at a sub-uri. With this behavior, you *should not* use
-    default_url_options[:script_name] to set proper application's mount point by
-    yourself. *Piotr Sarnacki*
+    *Jeremy Daer*
 
-*   `config.threadsafe!` is deprecated in favor of `config.eager_load` which provides a more fine grained control on what is eager loaded *José Valim*
+*   Add `mini_magick` to default `Gemfile` as comment.
 
-*   The migration generator will now produce AddXXXToYYY/RemoveXXXFromYYY migrations with references statements, for instance
+    *Yoshiyuki Hirano*
 
-        rails g migration AddReferencesToProducts user:references supplier:references{polymorphic}
+*   Derive `secret_key_base` from the app name in development and test environments.
 
-    will generate the migration with:
+    Spares away needless secret configs.
 
-        add_reference :products, :user, index: true
-        add_reference :products, :supplier, polymorphic: true, index: true
+    *DHH*, *Kasper Timm Hansen*
 
-    *Aleksey Magusev*
+*   Support multiple versions arguments for `gem` method of Generators.
 
-*   Allow scaffold/model/migration generators to accept a `polymorphic` modifier
-    for `references`/`belongs_to`, for instance
+    *Yoshiyuki Hirano*
 
-        rails g model Product supplier:references{polymorphic}
+*   Add `--skip-yarn` option to the plugin generator.
 
-    will generate the model with `belongs_to :supplier, polymorphic: true`
-    association and appropriate migration.
+    *bogdanvlviv*
 
-    *Aleksey Magusev*
+*   Optimize routes indentation.
 
-*   Set `config.active_record.migration_error` to `:page_load` for development *Richard Schneeman*
+    *Yoshiyuki Hirano*
 
-*   Add runner to Rails::Railtie as a hook called just after runner starts. *José Valim & kennyj*
+*   Optimize indentation for generator actions.
 
-*   Add `/rails/info/routes` path, displays same information as `rake routes` *Richard Schneeman & Andrew White*
+    *Yoshiyuki Hirano*
 
-*   Improved `rake routes` output for redirects *Łukasz Strzałkowski & Andrew White*
+*   Skip unused components when running `bin/rails` in Rails plugin.
 
-*   Load all environments available in `config.paths["config/environments"]`. *Piotr Sarnacki*
+    *Yoshiyuki Hirano*
 
-*   Add `config.queue_consumer` to allow the default consumer to be configurable. *Carlos Antonio da Silva*
+*   Add `git_source` to `Gemfile` for plugin generator.
 
-*   Add Rails.queue as an interface with a default implementation that consumes jobs in a separate thread. *Yehuda Katz*
+    *Yoshiyuki Hirano*
 
-*   Remove Rack::SSL in favour of ActionDispatch::SSL. *Rafael Mendonça França*
+*   Add `--skip-action-cable` option to the plugin generator.
 
-*   Remove Active Resource from Rails framework. *Prem Sichangrist*
+    *bogdanvlviv*
 
-*   Allow to set class that will be used to run as a console, other than IRB, with `Rails.application.config.console=`. It's best to add it to `console` block. *Piotr Sarnacki*
+*   Deprecate support of use `Rails::Application` subclass to start Rails server.
 
-    Example:
+    *Yuji Yaginuma*
 
-        # it can be added to config/application.rb
-        console do
-          # this block is called only when running console,
-          # so we can safely require pry here
-          require "pry"
-          config.console = Pry
-        end
+*   Add `ruby x.x.x` version to `Gemfile` and create `.ruby-version`
+    root file containing the current Ruby version when new Rails applications are
+    created.
 
-*   Add convenience `hide!` method to Rails generators to hide current generator
-    namespace from showing when running `rails generate`. *Carlos Antonio da Silva*
+    *Alberto Almagro*
 
-*   Scaffold now uses `content_tag_for` in index.html.erb *José Valim*
+*   Support `-` as a platform-agnostic way to run a script from stdin with
+    `rails runner`
 
-*   Rails::Plugin has gone. Instead of adding plugins to vendor/plugins use gems or bundler with path or git dependencies. *Santiago Pastorino*
+    *Cody Cutrer*
 
-*   Set config.action_mailer.async = true to turn on asynchronous
-    message delivery *Brian Cardarella*
+*   Add `bootsnap` to default `Gemfile`.
 
-Please check [3-2-stable](https://github.com/rails/rails/blob/3-2-stable/railties/CHANGELOG.md) for previous changes.
+    *Burke Libbey*
+
+*   Properly expand shortcuts for environment's name running the `console`
+    and `dbconsole` commands.
+
+    *Robin Dupret*
+
+*   Passing the environment's name as a regular argument to the
+    `rails dbconsole` and `rails console` commands is deprecated.
+    The `-e` option should be used instead.
+
+    Previously:
+
+        $ bin/rails dbconsole production
+
+    Now:
+
+        $ bin/rails dbconsole -e production
+
+    *Robin Dupret*, *Kasper Timm Hansen*
+
+*   Allow passing a custom connection name to the `rails dbconsole`
+    command when using a 3-level database configuration.
+
+        $ bin/rails dbconsole -c replica
+
+    *Robin Dupret*, *Jeremy Daer*
+
+*   Skip unused components when running `bin/rails app:update`.
+
+    If the initial app generation skipped Action Cable, Active Record etc.,
+    the update task honors those skips too.
+
+    *Yuji Yaginuma*
+
+*   Make Rails' test runner work better with minitest plugins.
+
+    By demoting the Rails test runner to just another minitest plugin —
+    and thereby not eager loading it — we can co-exist much better with
+    other minitest plugins such as pride and minitest-focus.
+
+    *Kasper Timm Hansen*
+
+*   Load environment file in `dbconsole` command.
+
+    Fixes #29717.
+
+    *Yuji Yaginuma*
+
+*   Add `rails secrets:show` command.
+
+    *Yuji Yaginuma*
+
+*   Allow mounting the same engine several times in different locations.
+
+    Fixes #20204.
+
+    *David Rodríguez*
+
+*   Clear screenshot files in `tmp:clear` task.
+
+    *Yuji Yaginuma*
+
+*   Add `railtie.rb` to the plugin generator
+
+    *Tsukuru Tanimichi*
+
+*   Deprecate `capify!` method in generators and templates.
+
+    *Yuji Yaginuma*
+
+*   Allow irb options to be passed from `rails console` command.
+
+    Fixes #28988.
+
+    *Yuji Yaginuma*
+
+*   Added a shared section to `config/database.yml` that will be loaded for all environments.
+
+    *Pierre Schambacher*
+
+*   Namespace error pages' CSS selectors to stop the styles from bleeding into other pages
+    when using Turbolinks.
+
+    *Jan Krutisch*
+
+
+Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/railties/CHANGELOG.md) for previous changes.

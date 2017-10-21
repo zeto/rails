@@ -1,47 +1,71 @@
-require 'active_support/core_ext/module/aliasing'
-require 'active_support/core_ext/array/extract_options'
+# frozen_string_literal: true
+
+require_relative "../core_ext/module/aliasing"
+require_relative "../core_ext/array/extract_options"
 
 module ActiveSupport
-  module Deprecation
-    # Declare that a method has been deprecated.
-    #
-    #   module Fred
-    #     extend self
-    #
-    #     def foo; end
-    #     def bar; end
-    #     def baz; end
-    #   end
-    #
-    #   ActiveSupport::Deprecation.deprecate_methods(Fred, :foo, bar: :qux, baz: 'use Bar#baz instead')
-    #   # => [:foo, :bar, :baz]
-    #
-    #   Fred.foo
-    #   # => "DEPRECATION WARNING: foo is deprecated and will be removed from Rails 4.1."
-    #
-    #   Fred.bar
-    #   # => "DEPRECATION WARNING: bar is deprecated and will be removed from Rails 4.1 (use qux instead)."
-    #
-    #   Fred.baz
-    #   # => "DEPRECATION WARNING: baz is deprecated and will be removed from Rails 4.1 (use Bar#baz instead)."
-    def self.deprecate_methods(target_module, *method_names)
-      options = method_names.extract_options!
-      method_names += options.keys
+  class Deprecation
+    module MethodWrapper
+      # Declare that a method has been deprecated.
+      #
+      #   module Fred
+      #     extend self
+      #
+      #     def aaa; end
+      #     def bbb; end
+      #     def ccc; end
+      #     def ddd; end
+      #     def eee; end
+      #   end
+      #
+      # Using the default deprecator:
+      #   ActiveSupport::Deprecation.deprecate_methods(Fred, :aaa, bbb: :zzz, ccc: 'use Bar#ccc instead')
+      #   # => Fred
+      #
+      #   Fred.aaa
+      #   # DEPRECATION WARNING: aaa is deprecated and will be removed from Rails 5.1. (called from irb_binding at (irb):10)
+      #   # => nil
+      #
+      #   Fred.bbb
+      #   # DEPRECATION WARNING: bbb is deprecated and will be removed from Rails 5.1 (use zzz instead). (called from irb_binding at (irb):11)
+      #   # => nil
+      #
+      #   Fred.ccc
+      #   # DEPRECATION WARNING: ccc is deprecated and will be removed from Rails 5.1 (use Bar#ccc instead). (called from irb_binding at (irb):12)
+      #   # => nil
+      #
+      # Passing in a custom deprecator:
+      #   custom_deprecator = ActiveSupport::Deprecation.new('next-release', 'MyGem')
+      #   ActiveSupport::Deprecation.deprecate_methods(Fred, ddd: :zzz, deprecator: custom_deprecator)
+      #   # => [:ddd]
+      #
+      #   Fred.ddd
+      #   DEPRECATION WARNING: ddd is deprecated and will be removed from MyGem next-release (use zzz instead). (called from irb_binding at (irb):15)
+      #   # => nil
+      #
+      # Using a custom deprecator directly:
+      #   custom_deprecator = ActiveSupport::Deprecation.new('next-release', 'MyGem')
+      #   custom_deprecator.deprecate_methods(Fred, eee: :zzz)
+      #   # => [:eee]
+      #
+      #   Fred.eee
+      #   DEPRECATION WARNING: eee is deprecated and will be removed from MyGem next-release (use zzz instead). (called from irb_binding at (irb):18)
+      #   # => nil
+      def deprecate_methods(target_module, *method_names)
+        options = method_names.extract_options!
+        deprecator = options.delete(:deprecator) || self
+        method_names += options.keys
 
-      method_names.each do |method_name|
-        target_module.alias_method_chain(method_name, :deprecation) do |target, punctuation|
-          target_module.module_eval(<<-end_eval, __FILE__, __LINE__ + 1)
-            def #{target}_with_deprecation#{punctuation}(*args, &block)
-              ::ActiveSupport::Deprecation.warn(
-                ::ActiveSupport::Deprecation.deprecated_method_warning(
-                  :#{method_name},
-                  #{options[method_name].inspect}),
-                caller
-              )
-              send(:#{target}_without_deprecation#{punctuation}, *args, &block)
+        mod = Module.new do
+          method_names.each do |method_name|
+            define_method(method_name) do |*args, &block|
+              deprecator.deprecation_warning(method_name, options[method_name])
+              super(*args, &block)
             end
-          end_eval
+          end
         end
+
+        target_module.prepend(mod)
       end
     end
   end

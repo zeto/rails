@@ -1,41 +1,51 @@
+# frozen_string_literal: true
+
 require "active_record"
 require "rails"
 require "active_model/railtie"
 
 # For now, action_controller must always be present with
-# rails, so let's make sure that it gets required before
+# Rails, so let's make sure that it gets required before
 # here. This is needed for correctly setting up the middleware.
 # In the future, this might become an optional require.
 require "action_controller/railtie"
 
 module ActiveRecord
   # = Active Record Railtie
-  class Railtie < Rails::Railtie
+  class Railtie < Rails::Railtie # :nodoc:
     config.active_record = ActiveSupport::OrderedOptions.new
 
-    config.app_generators.orm :active_record, :migration => true,
-                                              :timestamps => true
-
-    config.app_middleware.insert_after "::ActionDispatch::Callbacks",
-      "ActiveRecord::QueryCache"
-
-    config.app_middleware.insert_after "::ActionDispatch::Callbacks",
-      "ActiveRecord::ConnectionAdapters::ConnectionManagement"
+    config.app_generators.orm :active_record, migration: true,
+                                              timestamps: true
 
     config.action_dispatch.rescue_responses.merge!(
-      'ActiveRecord::RecordNotFound'   => :not_found,
-      'ActiveRecord::StaleObjectError' => :conflict,
-      'ActiveRecord::RecordInvalid'    => :unprocessable_entity,
-      'ActiveRecord::RecordNotSaved'   => :unprocessable_entity
+      "ActiveRecord::RecordNotFound"   => :not_found,
+      "ActiveRecord::StaleObjectError" => :conflict,
+      "ActiveRecord::RecordInvalid"    => :unprocessable_entity,
+      "ActiveRecord::RecordNotSaved"   => :unprocessable_entity
     )
 
-
     config.active_record.use_schema_cache_dump = true
+    config.active_record.maintain_test_schema = true
+
+    config.active_record.sqlite3 = ActiveSupport::OrderedOptions.new
+    config.active_record.sqlite3.represent_boolean_as_integer = nil
 
     config.eager_load_namespaces << ActiveRecord
 
     rake_tasks do
-      require "active_record/base"
+      namespace :db do
+        task :load_config do
+          ActiveRecord::Tasks::DatabaseTasks.database_configuration = Rails.application.config.database_configuration
+
+          if defined?(ENGINE_ROOT) && engine = Rails::Engine.find(ENGINE_ROOT)
+            if engine.paths["db/migrate"].existent
+              ActiveRecord::Tasks::DatabaseTasks.migrations_paths += engine.paths["db/migrate"].to_a
+            end
+          end
+        end
+      end
+
       load "active_record/railties/databases.rake"
     end
 
@@ -43,14 +53,16 @@ module ActiveRecord
     # to avoid cross references when loading a constant for the
     # first time. Also, make it output to STDERR.
     console do |app|
-      require "active_record/railties/console_sandbox" if app.sandbox?
-      require "active_record/base"
-      console = ActiveSupport::Logger.new(STDERR)
-      Rails.logger.extend ActiveSupport::Logger.broadcast console
+      require_relative "railties/console_sandbox" if app.sandbox?
+      require_relative "base"
+      unless ActiveSupport::Logger.logger_outputs_to?(Rails.logger, STDERR, STDOUT)
+        console = ActiveSupport::Logger.new(STDERR)
+        Rails.logger.extend ActiveSupport::Logger.broadcast console
+      end
     end
 
-    runner do |app|
-      require "active_record/base"
+    runner do
+      require_relative "base"
     end
 
     initializer "active_record.initialize_timezone" do
@@ -64,25 +76,26 @@ module ActiveRecord
       ActiveSupport.on_load(:active_record) { self.logger ||= ::Rails.logger }
     end
 
-    initializer "active_record.migration_error" do |app|
+    initializer "active_record.migration_error" do
       if config.active_record.delete(:migration_error) == :page_load
-        config.app_middleware.insert_after "::ActionDispatch::Callbacks",
-          "ActiveRecord::Migration::CheckPending"
+        config.app_middleware.insert_after ::ActionDispatch::Callbacks,
+          ActiveRecord::Migration::CheckPending
       end
     end
 
-    initializer "active_record.check_schema_cache_dump" do |app|
+    initializer "active_record.check_schema_cache_dump" do
       if config.active_record.delete(:use_schema_cache_dump)
         config.after_initialize do |app|
           ActiveSupport.on_load(:active_record) do
-            filename = File.join(app.config.paths["db"].first, "schema_cache.dump")
-    
+            filename = File.join(app.config.paths["db"].first, "schema_cache.yml")
+
             if File.file?(filename)
-              cache = Marshal.load File.binread filename
+              cache = YAML.load(File.read(filename))
               if cache.version == ActiveRecord::Migrator.current_version
-                ActiveRecord::Model.connection.schema_cache = cache
+                connection.schema_cache = cache
+                connection_pool.schema_cache = cache.dup
               else
-                warn "schema_cache.dump is expired. Current version is #{ActiveRecord::Migrator.current_version}, but cache version is #{cache.version}."
+                warn "Ignoring db/schema_cache.yml because it has expired. The current schema version is #{ActiveRecord::Migrator.current_version}, but the one in the cache is #{cache.version}."
               end
             end
           end
@@ -90,9 +103,19 @@ module ActiveRecord
       end
     end
 
+    initializer "active_record.warn_on_records_fetched_greater_than" do
+      if config.active_record.warn_on_records_fetched_greater_than
+        ActiveSupport.on_load(:active_record) do
+          require_relative "relation/record_fetch_warning"
+        end
+      end
+    end
+
     initializer "active_record.set_configs" do |app|
       ActiveSupport.on_load(:active_record) do
-        app.config.active_record.each do |k,v|
+        configs = app.config.active_record.dup
+        configs.delete(:sqlite3)
+        configs.each do |k, v|
           send "#{k}=", v
         end
       end
@@ -100,47 +123,92 @@ module ActiveRecord
 
     # This sets the database configuration from Configuration#database_configuration
     # and then establishes the connection.
-    initializer "active_record.initialize_database" do |app|
+    initializer "active_record.initialize_database" do
       ActiveSupport.on_load(:active_record) do
-        unless ENV['DATABASE_URL']
-          self.configurations = app.config.database_configuration
+        self.configurations = Rails.application.config.database_configuration
+
+        begin
+          establish_connection
+        rescue ActiveRecord::NoDatabaseError
+          warn <<-end_warning
+Oops - You have a database configured, but it doesn't exist yet!
+
+Here's how to get started:
+
+  1. Configure your database in config/database.yml.
+  2. Run `bin/rails db:create` to create the database.
+  3. Run `bin/rails db:setup` to load your database schema.
+end_warning
+          raise
         end
-        establish_connection
       end
     end
 
     # Expose database runtime to controller for logging.
-    initializer "active_record.log_runtime" do |app|
-      require "active_record/railties/controller_runtime"
+    initializer "active_record.log_runtime" do
+      require_relative "railties/controller_runtime"
       ActiveSupport.on_load(:action_controller) do
         include ActiveRecord::Railties::ControllerRuntime
       end
     end
 
-    initializer "active_record.set_reloader_hooks" do |app|
-      hook = app.config.reload_classes_only_on_change ? :to_prepare : :to_cleanup
-
+    initializer "active_record.set_reloader_hooks" do
       ActiveSupport.on_load(:active_record) do
-        ActionDispatch::Reloader.send(hook) do
-          ActiveRecord::Model.clear_reloadable_connections!
-          ActiveRecord::Model.clear_cache!
+        ActiveSupport::Reloader.before_class_unload do
+          if ActiveRecord::Base.connected?
+            ActiveRecord::Base.clear_cache!
+            ActiveRecord::Base.clear_reloadable_connections!
+          end
         end
+      end
+    end
+
+    initializer "active_record.set_executor_hooks" do
+      ActiveSupport.on_load(:active_record) do
+        ActiveRecord::QueryCache.install_executor_hooks
       end
     end
 
     initializer "active_record.add_watchable_files" do |app|
-      config.watchable_files.concat ["#{app.root}/db/schema.rb", "#{app.root}/db/structure.sql"]
+      path = app.paths["db"].first
+      config.watchable_files.concat ["#{path}/schema.rb", "#{path}/structure.sql"]
     end
 
-    config.after_initialize do |app|
-      ActiveSupport.on_load(:active_record) do
-        ActiveRecord::Model.instantiate_observers
-
-        ActionDispatch::Reloader.to_prepare do
-          ActiveRecord::Model.instantiate_observers
+    initializer "active_record.clear_active_connections" do
+      config.after_initialize do
+        ActiveSupport.on_load(:active_record) do
+          clear_active_connections!
         end
       end
+    end
 
+    initializer "active_record.check_represent_sqlite3_boolean_as_integer" do
+      config.after_initialize do
+        ActiveSupport.on_load(:active_record_sqlite3adapter) do
+          represent_boolean_as_integer = Rails.application.config.active_record.sqlite3.delete(:represent_boolean_as_integer)
+          unless represent_boolean_as_integer.nil?
+            ActiveRecord::ConnectionAdapters::SQLite3Adapter.represent_boolean_as_integer = represent_boolean_as_integer
+          end
+
+          unless ActiveRecord::ConnectionAdapters::SQLite3Adapter.represent_boolean_as_integer
+            ActiveSupport::Deprecation.warn <<-MSG
+Leaving `ActiveRecord::ConnectionAdapters::SQLite3Adapter.represent_boolean_as_integer`
+set to false is deprecated. SQLite databases have used 't' and 'f' to serialize
+boolean values and must have old data converted to 1 and 0 (its native boolean
+serialization) before setting this flag to true. Conversion can be accomplished
+by setting up a rake task which runs
+
+  ExampleModel.where("boolean_column = 't'").update_all(boolean_column: 1)
+  ExampleModel.where("boolean_column = 'f'").update_all(boolean_column: 0)
+
+for all models and all boolean columns, after which the flag must be set to
+true by adding the following to your application.rb file:
+
+  Rails.application.config.active_record.sqlite3.represent_boolean_as_integer = true
+MSG
+          end
+        end
+      end
     end
   end
 end

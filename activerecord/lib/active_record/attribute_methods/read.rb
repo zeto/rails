@@ -1,106 +1,85 @@
-module ActiveRecord
-  ActiveSupport.on_load(:active_record_config) do
-    mattr_accessor :attribute_types_cached_by_default, instance_accessor: false
-  end
+# frozen_string_literal: true
 
+module ActiveRecord
   module AttributeMethods
     module Read
       extend ActiveSupport::Concern
 
-      ATTRIBUTE_TYPES_CACHED_BY_DEFAULT = [:datetime, :timestamp, :time, :date]
-
-      included do
-        config_attribute :attribute_types_cached_by_default
-      end
-
-      module ClassMethods
-        # +cache_attributes+ allows you to declare which converted attribute values should
-        # be cached. Usually caching only pays off for attributes with expensive conversion
-        # methods, like time related columns (e.g. +created_at+, +updated_at+).
-        def cache_attributes(*attribute_names)
-          cached_attributes.merge attribute_names.map { |attr| attr.to_s }
-        end
-
-        # Returns the attributes which are cached. By default time related columns
-        # with datatype <tt>:datetime, :timestamp, :time, :date</tt> are cached.
-        def cached_attributes
-          @cached_attributes ||= columns.select { |c| cacheable_column?(c) }.map { |col| col.name }.to_set
-        end
-
-        # Returns +true+ if the provided attribute is being cached.
-        def cache_attribute?(attr_name)
-          cached_attributes.include?(attr_name)
-        end
-
-        protected
-
-        # We want to generate the methods via module_eval rather than define_method,
-        # because define_method is slower on dispatch and uses more memory (because it
-        # creates a closure).
-        #
-        # But sometimes the database might return columns with characters that are not
-        # allowed in normal method names (like 'my_column(omg)'. So to work around this
-        # we first define with the __temp__ identifier, and then use alias method to
-        # rename it to what we want.
-        def define_method_attribute(attr_name)
-          generated_attribute_methods.module_eval <<-STR, __FILE__, __LINE__ + 1
-            def __temp__
-              read_attribute(:'#{attr_name}') { |n| missing_attribute(n, caller) }
-            end
-            alias_method '#{attr_name}', :__temp__
-            undef_method :__temp__
-          STR
-        end
-
+      module ClassMethods # :nodoc:
         private
 
-        def cacheable_column?(column)
-          if attribute_types_cached_by_default == ATTRIBUTE_TYPES_CACHED_BY_DEFAULT
-            ! serialized_attributes.include? column.name
-          else
-            attribute_types_cached_by_default.include?(column.type)
+          # We want to generate the methods via module_eval rather than
+          # define_method, because define_method is slower on dispatch.
+          # Evaluating many similar methods may use more memory as the instruction
+          # sequences are duplicated and cached (in MRI).  define_method may
+          # be slower on dispatch, but if you're careful about the closure
+          # created, then define_method will consume much less memory.
+          #
+          # But sometimes the database might return columns with
+          # characters that are not allowed in normal method names (like
+          # 'my_column(omg)'. So to work around this we first define with
+          # the __temp__ identifier, and then use alias method to rename
+          # it to what we want.
+          #
+          # We are also defining a constant to hold the frozen string of
+          # the attribute name. Using a constant means that we do not have
+          # to allocate an object on each call to the attribute method.
+          # Making it frozen means that it doesn't get duped when used to
+          # key the @attributes in read_attribute.
+          def define_method_attribute(name)
+            safe_name = name.unpack("h*".freeze).first
+            temp_method = "__temp__#{safe_name}"
+
+            ActiveRecord::AttributeMethods::AttrNames.set_name_cache safe_name, name
+            sync_with_transaction_state = "sync_with_transaction_state" if name == primary_key
+
+            generated_attribute_methods.module_eval <<-STR, __FILE__, __LINE__ + 1
+              def #{temp_method}
+                #{sync_with_transaction_state}
+                name = ::ActiveRecord::AttributeMethods::AttrNames::ATTR_#{safe_name}
+                _read_attribute(name) { |n| missing_attribute(n, caller) }
+              end
+            STR
+
+            generated_attribute_methods.module_eval do
+              alias_method name, temp_method
+              undef_method temp_method
+            end
           end
+      end
+
+      # Returns the value of the attribute identified by <tt>attr_name</tt> after
+      # it has been typecast (for example, "2004-12-12" in a date column is cast
+      # to a date object, like Date.new(2004, 12, 12)).
+      def read_attribute(attr_name, &block)
+        name = if self.class.attribute_alias?(attr_name)
+          self.class.attribute_alias(attr_name).to_s
+        else
+          attr_name.to_s
+        end
+
+        primary_key = self.class.primary_key
+        name = primary_key if name == "id".freeze && primary_key
+        sync_with_transaction_state if name == primary_key
+        _read_attribute(name, &block)
+      end
+
+      # This method exists to avoid the expensive primary_key check internally, without
+      # breaking compatibility with the read_attribute API
+      if defined?(JRUBY_VERSION)
+        # This form is significantly faster on JRuby, and this is one of our biggest hotspots.
+        # https://github.com/jruby/jruby/pull/2562
+        def _read_attribute(attr_name, &block) # :nodoc
+          @attributes.fetch_value(attr_name.to_s, &block)
+        end
+      else
+        def _read_attribute(attr_name) # :nodoc:
+          @attributes.fetch_value(attr_name.to_s) { |n| yield n if block_given? }
         end
       end
 
-      ActiveRecord::Model.attribute_types_cached_by_default = ATTRIBUTE_TYPES_CACHED_BY_DEFAULT
-
-      # Returns the value of the attribute identified by <tt>attr_name</tt> after it has been typecast (for example,
-      # "2004-12-12" in a data column is cast to a date object, like Date.new(2004, 12, 12)).
-      def read_attribute(attr_name)
-        return unless attr_name
-        name_sym = attr_name.to_sym
-
-        # If it's cached, just return it
-        # We use #[] first as a perf optimization for non-nil values. See https://gist.github.com/3552829.
-        @attributes_cache[name_sym] || @attributes_cache.fetch(name_sym) {
-          name = attr_name.to_s
-
-          column = @columns_hash.fetch(name) {
-            return @attributes.fetch(name) {
-              if name_sym == :id && self.class.primary_key != name
-                read_attribute(self.class.primary_key)
-              end
-            }
-          }
-
-          value = @attributes.fetch(name) {
-            return block_given? ? yield(name) : nil
-          }
-
-          if self.class.cache_attribute?(name)
-            @attributes_cache[name_sym] = column.type_cast(value)
-          else
-            column.type_cast value
-          end
-        }
-      end
-
-      private
-
-      def attribute(attribute_name)
-        read_attribute(attribute_name)
-      end
+      alias :attribute :_read_attribute
+      private :attribute
     end
   end
 end

@@ -1,15 +1,11 @@
+# frozen_string_literal: true
+
 require "cases/helper"
 
 module ActiveRecord
   class Migration
-    class << self
-      attr_accessor :message_count
-    end
-
-    def puts(text="")
-      ActiveRecord::Migration.message_count ||= 0
-      ActiveRecord::Migration.message_count += 1
-    end
+    class << self; attr_accessor :message_count; end
+    self.message_count = 0
 
     module TestHelper
       attr_reader :connection, :table_name
@@ -24,7 +20,7 @@ module ActiveRecord
         super
         @connection = ActiveRecord::Base.connection
         connection.create_table :test_models do |t|
-          t.timestamps
+          t.timestamps null: true
         end
 
         TestModel.reset_column_information
@@ -34,12 +30,12 @@ module ActiveRecord
         super
         TestModel.reset_table_name
         TestModel.reset_sequence_name
-        connection.drop_table :test_models rescue nil
+        connection.drop_table :test_models, if_exists: true
       end
 
       private
 
-      delegate(*CONNECTION_METHODS, to: :connection)
+        delegate(*CONNECTION_METHODS, to: :connection)
     end
   end
 end

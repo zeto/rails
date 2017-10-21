@@ -1,4 +1,7 @@
-require 'mutex_m'
+# frozen_string_literal: true
+
+require "mutex_m"
+require "concurrent/map"
 
 module ActiveSupport
   module Notifications
@@ -11,7 +14,7 @@ module ActiveSupport
 
       def initialize
         @subscribers = []
-        @listeners_for = {}
+        @listeners_for = Concurrent::Map.new
         super
       end
 
@@ -24,9 +27,15 @@ module ActiveSupport
         subscriber
       end
 
-      def unsubscribe(subscriber)
+      def unsubscribe(subscriber_or_name)
         synchronize do
-          @subscribers.reject! { |s| s.matches?(subscriber) }
+          case subscriber_or_name
+          when String
+            @subscribers.reject! { |s| s.matches?(subscriber_or_name) }
+          else
+            @subscribers.delete(subscriber_or_name)
+          end
+
           @listeners_for.clear
         end
       end
@@ -35,8 +44,8 @@ module ActiveSupport
         listeners_for(name).each { |s| s.start(name, id, payload) }
       end
 
-      def finish(name, id, payload)
-        listeners_for(name).each { |s| s.finish(name, id, payload) }
+      def finish(name, id, payload, listeners = listeners_for(name))
+        listeners.each { |s| s.finish(name, id, payload) }
       end
 
       def publish(name, *args)
@@ -44,7 +53,9 @@ module ActiveSupport
       end
 
       def listeners_for(name)
-        synchronize do
+        # this is correctly done double-checked locking (Concurrent::Map's lookups have volatile semantics)
+        @listeners_for[name] || synchronize do
+          # use synchronisation when accessing @subscribers
           @listeners_for[name] ||= @subscribers.select { |s| s.subscribed_to?(name) }
         end
       end
@@ -59,7 +70,7 @@ module ActiveSupport
 
       module Subscribers # :nodoc:
         def self.new(pattern, listener)
-          if listener.respond_to?(:start) and listener.respond_to?(:finish)
+          if listener.respond_to?(:start) && listener.respond_to?(:finish)
             subscriber = Evented.new pattern, listener
           else
             subscriber = Timed.new pattern, listener
@@ -76,6 +87,13 @@ module ActiveSupport
           def initialize(pattern, delegate)
             @pattern = pattern
             @delegate = delegate
+            @can_publish = delegate.respond_to?(:publish)
+          end
+
+          def publish(name, *args)
+            if @can_publish
+              @delegate.publish name, *args
+            end
           end
 
           def start(name, id, payload)
@@ -87,31 +105,27 @@ module ActiveSupport
           end
 
           def subscribed_to?(name)
-            @pattern === name.to_s
+            @pattern === name
           end
 
-          def matches?(subscriber_or_name)
-            self === subscriber_or_name ||
-              @pattern && @pattern === subscriber_or_name
+          def matches?(name)
+            @pattern && @pattern === name
           end
         end
 
-        class Timed < Evented
-          def initialize(pattern, delegate)
-            @timestack = []
-            super
-          end
-
+        class Timed < Evented # :nodoc:
           def publish(name, *args)
             @delegate.call name, *args
           end
 
           def start(name, id, payload)
-            @timestack.push Time.now
+            timestack = Thread.current[:_timestack] ||= []
+            timestack.push Time.now
           end
 
           def finish(name, id, payload)
-            started = @timestack.pop
+            timestack = Thread.current[:_timestack]
+            started = timestack.pop
             @delegate.call(name, started, Time.now, id, payload)
           end
         end

@@ -1,8 +1,10 @@
-require 'rails/source_annotation_extractor'
+# frozen_string_literal: true
+
+require_relative "../source_annotation_extractor"
 
 desc "Enumerate all annotations (use notes:optimize, :fixme, :todo for focus)"
 task :notes do
-  SourceAnnotationExtractor.enumerate "OPTIMIZE|FIXME|TODO", :tag => true
+  SourceAnnotationExtractor.enumerate "OPTIMIZE|FIXME|TODO", tag: true
 end
 
 namespace :notes do
@@ -15,6 +17,6 @@ namespace :notes do
 
   desc "Enumerate a custom annotation, specify with ANNOTATION=CUSTOM"
   task :custom do
-    SourceAnnotationExtractor.enumerate ENV['ANNOTATION']
+    SourceAnnotationExtractor.enumerate ENV["ANNOTATION"]
   end
 end

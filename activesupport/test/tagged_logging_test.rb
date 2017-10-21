@@ -1,6 +1,8 @@
-require 'abstract_unit'
-require 'active_support/logger'
-require 'active_support/tagged_logging'
+# frozen_string_literal: true
+
+require "abstract_unit"
+require "active_support/logger"
+require "active_support/tagged_logging"
 
 class TaggedLoggingTest < ActiveSupport::TestCase
   class MyLogger < ::ActiveSupport::Logger
@@ -12,6 +14,14 @@ class TaggedLoggingTest < ActiveSupport::TestCase
   setup do
     @output = StringIO.new
     @logger = ActiveSupport::TaggedLogging.new(MyLogger.new(@output))
+  end
+
+  test "sets logger.formatter if missing and extends it with a tagging API" do
+    logger = Logger.new(StringIO.new)
+    assert_nil logger.formatter
+    ActiveSupport::TaggedLogging.new(logger)
+    assert_not_nil logger.formatter
+    assert logger.formatter.respond_to?(:tagged)
   end
 
   test "tagged once" do
@@ -27,6 +37,23 @@ class TaggedLoggingTest < ActiveSupport::TestCase
   test "tagged thrice at once" do
     @logger.tagged("BCX", "Jason", "New") { @logger.info "Funky time" }
     assert_equal "[BCX] [Jason] [New] Funky time\n", @output.string
+  end
+
+  test "tagged are flattened" do
+    @logger.tagged("BCX", %w(Jason New)) { @logger.info "Funky time" }
+    assert_equal "[BCX] [Jason] [New] Funky time\n", @output.string
+  end
+
+  test "push and pop tags directly" do
+    assert_equal %w(A B C), @logger.push_tags("A", ["B", "  ", ["C"]])
+    @logger.info "a"
+    assert_equal %w(C), @logger.pop_tags
+    @logger.info "b"
+    assert_equal %w(B), @logger.pop_tags(1)
+    @logger.info "c"
+    assert_equal [], @logger.clear_tags!
+    @logger.info "d"
+    assert_equal "[A] [B] [C] a\n[A] [B] b\n[A] c\nd\n", @output.string
   end
 
   test "does not strip message content" do
@@ -47,11 +74,24 @@ class TaggedLoggingTest < ActiveSupport::TestCase
   test "keeps each tag in their own thread" do
     @logger.tagged("BCX") do
       Thread.new do
-        @logger.tagged("OMG") { @logger.info "Cool story bro" }
+        @logger.tagged("OMG") { @logger.info "Cool story" }
       end.join
       @logger.info "Funky time"
     end
-    assert_equal "[OMG] Cool story bro\n[BCX] Funky time\n", @output.string
+    assert_equal "[OMG] Cool story\n[BCX] Funky time\n", @output.string
+  end
+
+  test "keeps each tag in their own instance" do
+    @other_output = StringIO.new
+    @other_logger = ActiveSupport::TaggedLogging.new(MyLogger.new(@other_output))
+    @logger.tagged("OMG") do
+      @other_logger.tagged("BCX") do
+        @logger.info "Cool story"
+        @other_logger.info "Funky time"
+      end
+    end
+    assert_equal "[OMG] Cool story\n", @output.string
+    assert_equal "[BCX] Funky time\n", @other_output.string
   end
 
   test "cleans up the taggings on flush" do
@@ -59,11 +99,11 @@ class TaggedLoggingTest < ActiveSupport::TestCase
       Thread.new do
         @logger.tagged("OMG") do
           @logger.flush
-          @logger.info "Cool story bro"
+          @logger.info "Cool story"
         end
       end.join
     end
-    assert_equal "[FLUSHED]\nCool story bro\n", @output.string
+    assert_equal "[FLUSHED]\nCool story\n", @output.string
   end
 
   test "mixed levels of tagging" do

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Routes</title>
+  <title><%= @page_title %></title>
   <style>
     body { background-color: #fff; color: #333; }
 
@@ -22,10 +22,14 @@
     a { color: #000; }
     a:visited { color: #666; }
     a:hover { color: #fff; background-color:#000; }
+
+    h2 { padding-left: 10px; }
+
+    <%= yield :style %>
   </style>
 </head>
 <body>
-<h2>Your App: <%= link_to 'properties', '/rails/info/properties' %> | <%= link_to 'routes', '/rails/info/routes' %></h2>
+
 <%= yield %>
 
 </body>

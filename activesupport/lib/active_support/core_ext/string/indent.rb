@@ -1,9 +1,11 @@
+# frozen_string_literal: true
+
 class String
   # Same as +indent+, except it indents the receiver in-place.
   #
   # Returns the indented string, or +nil+ if there was nothing to indent.
-  def indent!(amount, indent_string=nil, indent_empty_lines=false)
-    indent_string = indent_string || self[/^[ \t]/] || ' '
+  def indent!(amount, indent_string = nil, indent_empty_lines = false)
+    indent_string = indent_string || self[/^[ \t]/] || " "
     re = indent_empty_lines ? /^/ : /^(?!$)/
     gsub!(re, indent_string * amount)
   end
@@ -29,7 +31,7 @@ class String
   #   "foo\n\t\tbar".indent(2) # => "\t\tfoo\n\t\t\t\tbar"
   #   "foo".indent(2, "\t")    # => "\t\tfoo"
   #
-  # While +indent_string+ is tipically one space or tab, it may be any string.
+  # While +indent_string+ is typically one space or tab, it may be any string.
   #
   # The third argument, +indent_empty_lines+, is a flag that says whether
   # empty lines should be indented. Default is false.
@@ -37,7 +39,7 @@ class String
   #   "foo\n\nbar".indent(2)            # => "  foo\n\n  bar"
   #   "foo\n\nbar".indent(2, nil, true) # => "  foo\n  \n  bar"
   #
-  def indent(amount, indent_string=nil, indent_empty_lines=false)
-    dup.tap {|_| _.indent!(amount, indent_string, indent_empty_lines)}
+  def indent(amount, indent_string = nil, indent_empty_lines = false)
+    dup.tap { |_| _.indent!(amount, indent_string, indent_empty_lines) }
   end
 end

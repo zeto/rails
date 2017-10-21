@@ -1,4 +1,6 @@
-require "active_support/inflector/methods"
+# frozen_string_literal: true
+
+require_relative "../inflector/methods"
 
 module ActiveSupport
   # Autoload and eager load conveniences for your library.
@@ -22,9 +24,8 @@ module ActiveSupport
   # Then your library can be eager loaded by simply calling:
   #
   #   MyLib.eager_load!
-  #
   module Autoload
-    def self.extended(base)
+    def self.extended(base) # :nodoc:
       base.class_eval do
         @_autoloads = {}
         @_under_path = nil
@@ -35,7 +36,7 @@ module ActiveSupport
 
     def autoload(const_name, path = @_at_path)
       unless path
-        full = [name, @_under_path, const_name.to_s, path].compact.join("::")
+        full = [name, @_under_path, const_name.to_s].compact.join("::")
         path = Inflector.underscore(full)
       end
 
@@ -68,7 +69,7 @@ module ActiveSupport
     end
 
     def eager_load!
-      @_autoloads.values.each { |file| require file }
+      @_autoloads.each_value { |file| require file }
     end
 
     def autoloads

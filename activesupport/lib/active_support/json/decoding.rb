@@ -1,20 +1,27 @@
-require 'active_support/core_ext/module/attribute_accessors'
-require 'active_support/core_ext/module/delegation'
-require 'multi_json'
+# frozen_string_literal: true
+
+require_relative "../core_ext/module/attribute_accessors"
+require_relative "../core_ext/module/delegation"
+require "json"
 
 module ActiveSupport
   # Look for and parse json strings that look like ISO 8601 times.
   mattr_accessor :parse_json_times
 
   module JSON
+    # matches YAML-formatted dates
+    DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/
+    DATETIME_REGEX = /^(?:\d{4}-\d{2}-\d{2}|\d{4}-\d{1,2}-\d{1,2}[T \t]+\d{1,2}:\d{2}:\d{2}(\.[0-9]*)?(([ \t]*)Z|[-+]\d{2}?(:\d{2})?)?)$/
+
     class << self
       # Parses a JSON string (JavaScript Object Notation) into a hash.
-      # See www.json.org for more info.
+      # See http://www.json.org for more info.
       #
       #   ActiveSupport::JSON.decode("{\"team\":\"rails\",\"players\":\"36\"}")
       #   => {"team" => "rails", "players" => "36"}
-      def decode(json, options ={})
-        data = MultiJson.load(json, options)
+      def decode(json)
+        data = ::JSON.parse(json, quirks_mode: true)
+
         if ActiveSupport.parse_json_times
           convert_dates_from(data)
         else
@@ -22,25 +29,10 @@ module ActiveSupport
         end
       end
 
-      def engine
-        MultiJson.adapter
-      end
-      alias :backend :engine
-
-      def engine=(name)
-        MultiJson.use(name)
-      end
-      alias :backend= :engine=
-
-      def with_backend(name)
-        old_backend, self.backend = backend, name
-        yield
-      ensure
-        self.backend = old_backend
-      end
-
-      # Returns the class of the error that will be raised when there is an error in decoding JSON.
-      # Using this method means you won't directly depend on the ActiveSupport's JSON implementation, in case it changes in the future.
+      # Returns the class of the error that will be raised when there is an
+      # error in decoding JSON. Using this method means you won't directly
+      # depend on the ActiveSupport's JSON implementation, in case it changes
+      # in the future.
       #
       #   begin
       #     obj = ActiveSupport::JSON.decode(some_string)
@@ -48,7 +40,7 @@ module ActiveSupport
       #     Rails.logger.warn("Attempted to decode invalid JSON: #{some_string}")
       #   end
       def parse_error
-        MultiJson::DecodeError
+        ::JSON::ParserError
       end
 
       private
@@ -59,7 +51,13 @@ module ActiveSupport
           nil
         when DATE_REGEX
           begin
-            DateTime.parse(data)
+            Date.parse(data)
+          rescue ArgumentError
+            data
+          end
+        when DATETIME_REGEX
+          begin
+            Time.zone.parse(data)
           rescue ArgumentError
             data
           end

@@ -1,32 +1,51 @@
-require 'securerandom'
+# frozen_string_literal: true
+
+require "securerandom"
 
 module ActiveSupport
   module Notifications
-    # Instrumentors are stored in a thread local.
+    # Instrumenters are stored in a thread local.
     class Instrumenter
       attr_reader :id
 
       def initialize(notifier)
-        @id = unique_id
+        @id       = unique_id
         @notifier = notifier
       end
 
       # Instrument the given block by measuring the time taken to execute it
       # and publish it. Notice that events get sent even if an error occurs
-      # in the passed-in block
-      def instrument(name, payload={})
-        @notifier.start(name, @id, payload)
+      # in the passed-in block.
+      def instrument(name, payload = {})
+        # some of the listeners might have state
+        listeners_state = start name, payload
         begin
-          yield
+          yield payload
         rescue Exception => e
           payload[:exception] = [e.class.name, e.message]
+          payload[:exception_object] = e
           raise e
         ensure
-          @notifier.finish(name, @id, payload)
+          finish_with_state listeners_state, name, payload
         end
       end
 
+      # Send a start notification with +name+ and +payload+.
+      def start(name, payload)
+        @notifier.start name, @id, payload
+      end
+
+      # Send a finish notification with +name+ and +payload+.
+      def finish(name, payload)
+        @notifier.finish name, @id, payload
+      end
+
+      def finish_with_state(listeners_state, name, payload)
+        @notifier.finish name, @id, payload, listeners_state
+      end
+
       private
+
         def unique_id
           SecureRandom.hex(10)
         end
@@ -43,10 +62,23 @@ module ActiveSupport
         @transaction_id = transaction_id
         @end            = ending
         @children       = []
+        @duration       = nil
       end
 
+      # Returns the difference in milliseconds between when the execution of the
+      # event started and when it ended.
+      #
+      #   ActiveSupport::Notifications.subscribe('wait') do |*args|
+      #     @event = ActiveSupport::Notifications::Event.new(*args)
+      #   end
+      #
+      #   ActiveSupport::Notifications.instrument('wait') do
+      #     sleep 1
+      #   end
+      #
+      #   @event.duration # => 1000.138
       def duration
-        1000.0 * (self.end - time)
+        @duration ||= 1000.0 * (self.end - time)
       end
 
       def <<(event)

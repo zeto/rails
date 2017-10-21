@@ -1,59 +1,41 @@
-## Rails 4.0.0 (unreleased) ##
+*   Add method `#merge!` for `ActiveModel::Errors`.
 
-*   Changed inclusion and exclusion validators to accept a symbol for `:in` option.
+    *Jahfer Husain*
 
-    This allows to use dynamic inclusion/exclusion values using methods, besides the current lambda/proc support.
+*   Fix regression in numericality validator when comparing Decimal and Float input
+    values with more scale than the schema.
 
-    *Gabriel Sobrinho*
+    *Bradley Priest*
 
-*   `AM::Validation#validates` ability to pass custom exception to `:strict` option.
+*   Fix methods `#keys`, `#values` in `ActiveModel::Errors`.
 
-    *Bogdan Gusiev*
+    Change `#keys` to only return the keys that don't have empty messages.
 
-*   Changed `ActiveModel::Serializers::Xml::Serializer#add_associations` to by default
-    propagate `:skip_types, :dasherize, :camelize` keys to included associations.
-    It can be overriden on each association by explicitly specifying the option on one
-    or more associations
+    Change `#values` to only return the not empty values.
 
-    *Anthony Alberto*
+    Example:
 
-*   Changed `AM::Serializers::JSON.include_root_in_json' default value to false.
-    Now, AM Serializers and AR objects have the same default behaviour. Fixes #6578.
+        # Before
+        person = Person.new
+        person.errors.keys     # => []
+        person.errors.values   # => []
+        person.errors.messages # => {}
+        person.errors[:name]   # => []
+        person.errors.messages # => {:name => []}
+        person.errors.keys     # => [:name]
+        person.errors.values   # => [[]]
 
-        class User < ActiveRecord::Base; end
+        # After
+        person = Person.new
+        person.errors.keys     # => []
+        person.errors.values   # => []
+        person.errors.messages # => {}
+        person.errors[:name]   # => []
+        person.errors.messages # => {:name => []}
+        person.errors.keys     # => []
+        person.errors.values   # => []
 
-        class Person
-          include ActiveModel::Model
-          include ActiveModel::AttributeMethods
-          include ActiveModel::Serializers::JSON
+    *bogdanvlviv*
 
-          attr_accessor :name, :age
 
-          def attributes
-            instance_values
-          end
-        end
-
-        user.as_json
-        => {"id"=>1, "name"=>"Konata Izumi", "age"=>16, "awesome"=>true}
-        # root is not included
-
-        person.as_json
-        => {"name"=>"Francesco", "age"=>22}
-        # root is not included
-
-    *Francesco Rodriguez*
-
-*   Passing false hash values to `validates` will no longer enable the corresponding validators *Steve Purcell*
-
-*   `ConfirmationValidator` error messages will attach to `:#{attribute}_confirmation` instead of `attribute` *Brian Cardarella*
-
-*   Added ActiveModel::Model, a mixin to make Ruby objects work with AP out of box *Guillermo Iguaran*
-
-*   `AM::Errors#to_json`: support `:full_messages` parameter *Bogdan Gusiev*
-
-*   Trim down Active Model API by removing `valid?` and `errors.full_messages` *José Valim*
-
-*   When `^` or `$` are used in the regular expression provided to `validates_format_of` and the :multiline option is not set to true, an exception will be raised. This is to prevent security vulnerabilities when using `validates_format_of`. The problem is described in detail in the Rails security guide.
-
-Please check [3-2-stable](https://github.com/rails/rails/blob/3-2-stable/activemodel/CHANGELOG.md) for previous changes.
+Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/activemodel/CHANGELOG.md) for previous changes.

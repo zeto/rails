@@ -1,71 +1,52 @@
-# encoding: utf-8
+# frozen_string_literal: true
 
 require "cases/helper"
-require 'active_record/base'
-require 'active_record/connection_adapters/postgresql_adapter'
+require "cases/json_shared_test_cases"
 
-class PostgresqlJSONTest < ActiveRecord::TestCase
-  class JsonDataType < ActiveRecord::Base
-    self.table_name = 'json_data_type'
-  end
+module PostgresqlJSONSharedTestCases
+  include JSONSharedTestCases
 
   def setup
-    @connection = ActiveRecord::Base.connection
-    begin
-      @connection.transaction do
-        @connection.create_table('json_data_type') do |t|
-          t.json 'payload', :default => {}
-        end
-      end
-    rescue ActiveRecord::StatementInvalid
-      return skip "do not test on PG without json"
+    super
+    @connection.create_table("json_data_type") do |t|
+      t.public_send column_type, "payload", default: {} # t.json 'payload', default: {}
+      t.public_send column_type, "settings"             # t.json 'settings'
+      t.public_send column_type, "objects", array: true # t.json 'objects', array: true
     end
-    @column = JsonDataType.columns.find { |c| c.name == 'payload' }
+  rescue ActiveRecord::StatementInvalid
+    skip "do not test on PostgreSQL without #{column_type} type."
   end
 
-  def teardown
-    @connection.execute 'drop table if exists json_data_type'
+  def test_default
+    @connection.add_column "json_data_type", "permissions", column_type, default: { "users": "read", "posts": ["read", "write"] }
+    klass.reset_column_information
+
+    assert_equal({ "users" => "read", "posts" => ["read", "write"] }, klass.column_defaults["permissions"])
+    assert_equal({ "users" => "read", "posts" => ["read", "write"] }, klass.new.permissions)
   end
 
-  def test_column
-    assert_equal :json, @column.type
+  def test_deserialize_with_array
+    x = klass.new(objects: ["foo" => "bar"])
+    assert_equal ["foo" => "bar"], x.objects
+    x.save!
+    assert_equal ["foo" => "bar"], x.objects
+    x.reload
+    assert_equal ["foo" => "bar"], x.objects
   end
+end
 
-  def test_type_cast_json
-    assert @column
+class PostgresqlJSONTest < ActiveRecord::PostgreSQLTestCase
+  include PostgresqlJSONSharedTestCases
 
-    data = "{\"a_key\":\"a_value\"}"
-    hash = @column.class.string_to_json data
-    assert_equal({'a_key' => 'a_value'}, hash)
-    assert_equal({'a_key' => 'a_value'}, @column.type_cast(data))
-
-    assert_equal({}, @column.type_cast("{}"))
-    assert_equal({'key'=>nil}, @column.type_cast('{"key": null}'))
-    assert_equal({'c'=>'}','"a"'=>'b "a b'}, @column.type_cast(%q({"c":"}", "\"a\"":"b \"a b"})))
+  def column_type
+    :json
   end
+end
 
-  def test_rewrite
-    @connection.execute "insert into json_data_type (payload) VALUES ('{\"k\":\"v\"}')"
-    x = JsonDataType.first
-    x.payload = { '"a\'' => 'b' }
-    assert x.save!
-  end
+class PostgresqlJSONBTest < ActiveRecord::PostgreSQLTestCase
+  include PostgresqlJSONSharedTestCases
 
-  def test_select
-    @connection.execute "insert into json_data_type (payload) VALUES ('{\"k\":\"v\"}')"
-    x = JsonDataType.first
-    assert_equal({'k' => 'v'}, x.payload)
-  end
-
-  def test_select_multikey
-    @connection.execute %q|insert into json_data_type (payload) VALUES ('{"k1":"v1", "k2":"v2", "k3":[1,2,3]}')|
-    x = JsonDataType.first
-    assert_equal({'k1' => 'v1', 'k2' => 'v2', 'k3' => [1,2,3]}, x.payload)
-  end
-
-  def test_null_json
-    @connection.execute %q|insert into json_data_type (payload) VALUES(null)|
-    x = JsonDataType.first
-    assert_equal(nil, x.payload)
+  def column_type
+    :jsonb
   end
 end

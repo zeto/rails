@@ -1,15 +1,15 @@
-require "active_model/validations/clusivity"
+# frozen_string_literal: true
+
+require_relative "clusivity"
 
 module ActiveModel
-
-  # == Active Model Inclusion Validator
   module Validations
-    class InclusionValidator < EachValidator #:nodoc:
+    class InclusionValidator < EachValidator # :nodoc:
       include Clusivity
 
       def validate_each(record, attribute, value)
         unless include?(record, value)
-          record.errors.add(attribute, :inclusion, options.except(:in, :within).merge!(:value => value))
+          record.errors.add(attribute, :inclusion, options.except(:in, :within).merge!(value: value))
         end
       end
     end
@@ -29,19 +29,16 @@ module ActiveModel
       # Configuration options:
       # * <tt>:in</tt> - An enumerable object of available items. This can be
       #   supplied as a proc, lambda or symbol which returns an enumerable. If the
-      #   enumerable is a range the test is performed with <tt>Range#cover?</tt>,
-      #   otherwise with <tt>include?</tt>.
+      #   enumerable is a numerical, time or datetime range the test is performed
+      #   with <tt>Range#cover?</tt>, otherwise with <tt>include?</tt>. When using
+      #   a proc or lambda the instance under validation is passed as an argument.
       # * <tt>:within</tt> - A synonym(or alias) for <tt>:in</tt>
       # * <tt>:message</tt> - Specifies a custom error message (default is: "is
       #   not included in the list").
-      # * <tt>:allow_nil</tt> - If set to +true+, skips this validation if the
-      #   attribute is +nil+ (default is +false+).
-      # * <tt>:allow_blank</tt> - If set to +true+, skips this validation if the
-      #   attribute is blank (default is +false+).
       #
       # There is also a list of default options supported by every validator:
-      # +:if+, +:unless+, +:on+ and +:strict+.
-      # See <tt>ActiveModel::Validation#validates</tt> for more information
+      # +:if+, +:unless+, +:on+, +:allow_nil+, +:allow_blank+, and +:strict+.
+      # See <tt>ActiveModel::Validations#validates</tt> for more information
       def validates_inclusion_of(*attr_names)
         validates_with InclusionValidator, _merge_attributes(attr_names)
       end

@@ -1,13 +1,15 @@
+# frozen_string_literal: true
+
 module Rails
   module Paths
     # This object is an extended hash that behaves as root of the <tt>Rails::Paths</tt> system.
     # It allows you to collect information about how you want to structure your application
-    # paths by a Hash like API. It requires you to give a physical path on initialization.
+    # paths through a Hash-like API. It requires you to give a physical path on initialization.
     #
     #   root = Root.new "/rails"
-    #   root.add "app/controllers", :eager_load => true
+    #   root.add "app/controllers", eager_load: true
     #
-    # The command above creates a new root object and add "app/controllers" as a path.
+    # The above command creates a new root object and adds "app/controllers" as a path.
     # This means we can get a <tt>Rails::Paths::Path</tt> object back like below:
     #
     #   path = root["app/controllers"]
@@ -24,13 +26,13 @@ module Rails
     #
     # Notice that when you add a path using +add+, the path object created already
     # contains the path with the same path value given to +add+. In some situations,
-    # you may not want this behavior, so you can give :with as option.
+    # you may not want this behavior, so you can give <tt>:with</tt> as option.
     #
-    #   root.add "config/routes", :with => "config/routes.rb"
+    #   root.add "config/routes", with: "config/routes.rb"
     #   root["config/routes"].inspect # => ["config/routes.rb"]
     #
     # The +add+ method accepts the following options as arguments:
-    # eager_load, autoload, autoload_once and glob.
+    # eager_load, autoload, autoload_once, and glob.
     #
     # Finally, the +Path+ object also provides a few helpers:
     #
@@ -45,19 +47,18 @@ module Rails
       attr_accessor :path
 
       def initialize(path)
-        @current = nil
         @path = path
         @root = {}
       end
 
       def []=(path, value)
         glob = self[path] ? self[path].glob : nil
-        add(path, :with => value, :glob => glob)
+        add(path, with: value, glob: glob)
       end
 
-      def add(path, options={})
-        with = options[:with] || path
-        @root[path] = Path.new(self, path, [with].flatten, options)
+      def add(path, options = {})
+        with = Array(options.fetch(:with, path))
+        @root[path] = Path.new(self, path, with, options)
       end
 
       def [](path)
@@ -77,45 +78,38 @@ module Rails
       end
 
       def all_paths
-        values.tap { |v| v.uniq! }
+        values.tap(&:uniq!)
       end
 
       def autoload_once
-        filter_by(:autoload_once?)
+        filter_by(&:autoload_once?)
       end
 
       def eager_load
-        filter_by(:eager_load?)
+        filter_by(&:eager_load?)
       end
 
       def autoload_paths
-        filter_by(:autoload?)
+        filter_by(&:autoload?)
       end
 
       def load_paths
-        filter_by(:load_path?)
+        filter_by(&:load_path?)
       end
 
-    protected
+    private
 
-      def filter_by(constraint)
-        all = []
-        all_paths.each do |path|
-          if path.send(constraint)
-            paths  = path.existent
-            paths -= path.children.map { |p| p.send(constraint) ? [] : p.existent }.flatten
-            all.concat(paths)
-          end
-        end
-        all.uniq!
-        all
+      def filter_by(&block)
+        all_paths.find_all(&block).flat_map { |path|
+          paths = path.existent
+          paths - path.children.flat_map { |p| yield(p) ? [] : p.existent }
+        }.uniq
       end
     end
 
     class Path
       include Enumerable
 
-      attr_reader :path
       attr_accessor :glob
 
       def initialize(root, current, paths, options = {})
@@ -130,9 +124,14 @@ module Rails
         options[:load_path]     ? load_path!     : skip_load_path!
       end
 
+      def absolute_current # :nodoc:
+        File.expand_path(@current, @root.path)
+      end
+
       def children
-        keys = @root.keys.select { |k| k.include?(@current) }
-        keys.delete(@current)
+        keys = @root.keys.find_all { |k|
+          k.start_with?(@current) && k != @current
+        }
         @root.values_at(*keys.sort)
       end
 
@@ -173,12 +172,16 @@ module Rails
         @paths.concat paths
       end
 
-      def unshift(path)
-        @paths.unshift path
+      def unshift(*paths)
+        @paths.unshift(*paths)
       end
 
       def to_ary
         @paths
+      end
+
+      def extensions # :nodoc:
+        $1.split(",") if @glob =~ /\{([\S]+)\}/
       end
 
       # Expands all paths against the root and return all unique values.
@@ -190,9 +193,9 @@ module Rails
           path = File.expand_path(p, @root.path)
 
           if @glob && File.directory?(path)
-            result.concat Dir.chdir(path) {
-              Dir.glob(@glob).map { |file| File.join path, file }.sort
-            }
+            Dir.chdir(path) do
+              result.concat(Dir.glob(@glob).map { |file| File.join path, file }.sort)
+            end
           else
             result << path
           end
@@ -204,7 +207,14 @@ module Rails
 
       # Returns all expanded paths but only if they exist in the filesystem.
       def existent
-        expanded.select { |f| File.exists?(f) }
+        expanded.select do |f|
+          does_exist = File.exist?(f)
+
+          if !does_exist && File.symlink?(f)
+            raise "File #{f.inspect} is a symlink that does not point to a valid file"
+          end
+          does_exist
+        end
       end
 
       def existent_directories

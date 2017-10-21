@@ -1,25 +1,20 @@
-## Rails 4.0.0 (unreleased) ##
+*   Add `assert_enqueued_email_with` test helper.
 
-* Allow delivery method options to be set per mail instance *Aditya Sanghi*
+        assert_enqueued_email_with ContactMailer, :welcome do
+          ContactMailer.welcome.deliver_later
+        end
 
-  If your smtp delivery settings are dynamic,
-  you can now override settings per mail instance for e.g.
+    *Mikkel Malmberg*
 
-      def my_mailer(user,company)
-        mail to: user.email, subject: "Welcome!",
-             delivery_method_options: {user_name: company.smtp_user,
-                                       password: company.smtp_password}
-      end
+*   Allow Action Mailer classes to configure their delivery job.
 
-  This will ensure that your default SMTP settings will be overridden
-  by the company specific ones. You only have to override the settings
-  that are dynamic and leave the static setting in your environment
-  configuration file (e.g. config/environments/production.rb)
+        class MyMailer < ApplicationMailer
+          self.delivery_job = MyCustomDeliveryJob
 
-* Allow to set default Action Mailer options via `config.action_mailer.default_options=` *Robert Pankowecki*
+          ...
+        end
 
-* Raise an `ActionView::MissingTemplate` exception when no implicit template could be found. *Damien Mathieu*
+    *Matthew Mongeau*
 
-* Asynchronously send messages via the Rails Queue *Brian Cardarella*
 
-Please check [3-2-stable](https://github.com/rails/rails/blob/3-2-stable/actionmailer/CHANGELOG.md) for previous changes.
+Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/actionmailer/CHANGELOG.md) for previous changes.

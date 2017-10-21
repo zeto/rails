@@ -10,17 +10,12 @@ It consists of several modules:
 
 * Action Dispatch, which parses information about the web request, handles
   routing as defined by the user, and does advanced processing related to HTTP
-  such as MIME-type negotiation, decoding parameters in POST/PUT bodies,
+  such as MIME-type negotiation, decoding parameters in POST, PATCH, or PUT bodies,
   handling HTTP caching logic, cookies and sessions.
 
 * Action Controller, which provides a base controller class that can be
   subclassed to implement filters and actions to handle requests. The result
   of an action is typically content generated from views.
-
-* Action View, which handles view template lookup and rendering, and provides
-  view helpers that assist when building HTML forms, Atom feeds and more.
-  Template formats that Action View handles are ERB (embedded Ruby, typically
-  used to inline short Ruby snippets inside HTML), and XML Builder.
 
 With the Ruby on Rails framework, users only directly interface with the
 Action Controller module. Necessary Action Dispatch functionality is activated
@@ -33,7 +28,7 @@ can be used outside of Rails.
 
 The latest version of Action Pack can be installed with RubyGems:
 
-  % [sudo] gem install actionpack
+  $ gem install actionpack
 
 Source code can be downloaded as part of the Rails project on GitHub
 
@@ -44,7 +39,7 @@ Source code can be downloaded as part of the Rails project on GitHub
 
 Action Pack is released under the MIT license:
 
-* http://www.opensource.org/licenses/MIT
+* https://opensource.org/licenses/MIT
 
 
 == Support
@@ -53,6 +48,10 @@ API documentation is at
 
 * http://api.rubyonrails.org
 
-Bug reports and feature requests can be filed with the rest for the Ruby on Rails project here:
+Bug reports can be filed for the Ruby on Rails project here:
 
 * https://github.com/rails/rails/issues
+
+Feature requests should be discussed on the rails-core mailing list here:
+
+* https://groups.google.com/forum/?fromgroups#!forum/rubyonrails-core

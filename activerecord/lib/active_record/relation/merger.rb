@@ -1,4 +1,6 @@
-require 'active_support/core_ext/hash/keys'
+# frozen_string_literal: true
+
+require "active_support/core_ext/hash/keys"
 
 module ActiveRecord
   class Relation
@@ -12,7 +14,7 @@ module ActiveRecord
         @hash     = hash
       end
 
-      def merge
+      def merge #:nodoc:
         Merger.new(relation, other).merge
       end
 
@@ -21,99 +23,146 @@ module ActiveRecord
       # build a relation to merge in rather than directly merging
       # the values.
       def other
-        other = Relation.new(relation.klass, relation.table)
-        hash.each { |k, v| other.send("#{k}!", v) }
+        other = Relation.create(relation.klass, relation.table, relation.predicate_builder)
+        hash.each { |k, v|
+          if k == :joins
+            if Hash === v
+              other.joins!(v)
+            else
+              other.joins!(*v)
+            end
+          elsif k == :select
+            other._select!(v)
+          else
+            other.send("#{k}!", v)
+          end
+        }
         other
       end
     end
 
     class Merger # :nodoc:
-      attr_reader :relation, :values
+      attr_reader :relation, :values, :other
 
       def initialize(relation, other)
-        if other.default_scoped? && other.klass != relation.klass
-          other = other.with_default_scope
-        end
-
         @relation = relation
         @values   = other.values
+        @other    = other
       end
 
+      NORMAL_VALUES = Relation::VALUE_METHODS -
+                      Relation::CLAUSE_METHODS -
+                      [:includes, :preload, :joins, :order, :reverse_order, :lock, :create_with, :reordering] # :nodoc:
+
       def normal_values
-        Relation::SINGLE_VALUE_METHODS +
-          Relation::MULTI_VALUE_METHODS -
-          [:where, :order, :bind, :reverse_order, :lock, :create_with, :reordering, :from]
+        NORMAL_VALUES
       end
 
       def merge
         normal_values.each do |name|
           value = values[name]
-          relation.send("#{name}!", value) unless value.blank?
+          # The unless clause is here mostly for performance reasons (since the `send` call might be moderately
+          # expensive), most of the time the value is going to be `nil` or `.blank?`, the only catch is that
+          # `false.blank?` returns `true`, so there needs to be an extra check so that explicit `false` values
+          # don't fall through the cracks.
+          unless value.nil? || (value.blank? && false != value)
+            if name == :select
+              relation._select!(*value)
+            else
+              relation.send("#{name}!", *value)
+            end
+          end
         end
 
         merge_multi_values
         merge_single_values
+        merge_clauses
+        merge_preloads
+        merge_joins
 
         relation
       end
 
       private
 
-      def merge_multi_values
-        relation.where_values = merged_wheres
-        relation.bind_values  = merged_binds
+        def merge_preloads
+          return if other.preload_values.empty? && other.includes_values.empty?
 
-        if values[:reordering]
-          # override any order specified in the original relation
-          relation.reorder! values[:order]
-        elsif values[:order]
-          # merge in order_values from r
-          relation.order! values[:order]
+          if other.klass == relation.klass
+            relation.preload!(*other.preload_values) unless other.preload_values.empty?
+            relation.includes!(other.includes_values) unless other.includes_values.empty?
+          else
+            reflection = relation.klass.reflect_on_all_associations.find do |r|
+              r.class_name == other.klass.name
+            end || return
+
+            unless other.preload_values.empty?
+              relation.preload! reflection.name => other.preload_values
+            end
+
+            unless other.includes_values.empty?
+              relation.includes! reflection.name => other.includes_values
+            end
+          end
         end
 
-        relation.extend(*values[:extending]) unless values[:extending].blank?
-      end
+        def merge_joins
+          return if other.joins_values.blank?
 
-      def merge_single_values
-        relation.from_value          = values[:from] unless relation.from_value
-        relation.lock_value          = values[:lock] unless relation.lock_value
-        relation.reverse_order_value = values[:reverse_order]
-
-        unless values[:create_with].blank?
-          relation.create_with_value = (relation.create_with_value || {}).merge(values[:create_with])
-        end
-      end
-
-      def merged_binds
-        if values[:bind]
-          (relation.bind_values + values[:bind]).uniq(&:first)
-        else
-          relation.bind_values
-        end
-      end
-
-      def merged_wheres
-        if values[:where]
-          merged_wheres = relation.where_values + values[:where]
-
-          unless relation.where_values.empty?
-            # Remove equalities with duplicated left-hand. Last one wins.
-            seen = {}
-            merged_wheres = merged_wheres.reverse.reject { |w|
-              nuke = false
-              if w.respond_to?(:operator) && w.operator == :==
-                nuke         = seen[w.left]
-                seen[w.left] = true
+          if other.klass == relation.klass
+            relation.joins!(*other.joins_values)
+          else
+            joins_dependency, rest = other.joins_values.partition do |join|
+              case join
+              when Hash, Symbol, Array
+                true
+              else
+                false
               end
-              nuke
-            }.reverse
+            end
+
+            join_dependency = ActiveRecord::Associations::JoinDependency.new(
+              other.klass, other.table, joins_dependency, other.alias_tracker
+            )
+
+            relation.joins! rest
+
+            @relation = relation.joins join_dependency
+          end
+        end
+
+        def merge_multi_values
+          if other.reordering_value
+            # override any order specified in the original relation
+            relation.reorder! other.order_values
+          elsif other.order_values.any?
+            # merge in order_values from relation
+            relation.order! other.order_values
           end
 
-          merged_wheres
-        else
-          relation.where_values
+          extensions = other.extensions - relation.extensions
+          relation.extending!(*extensions) if extensions.any?
         end
-      end
+
+        def merge_single_values
+          relation.lock_value ||= other.lock_value if other.lock_value
+
+          unless other.create_with_value.blank?
+            relation.create_with_value = (relation.create_with_value || {}).merge(other.create_with_value)
+          end
+        end
+
+        def merge_clauses
+          if relation.from_clause.empty? && !other.from_clause.empty?
+            relation.from_clause = other.from_clause
+          end
+
+          where_clause = relation.where_clause.merge(other.where_clause)
+          relation.where_clause = where_clause unless where_clause.empty?
+
+          having_clause = relation.having_clause.merge(other.having_clause)
+          relation.having_clause = having_clause unless having_clause.empty?
+        end
     end
   end
 end

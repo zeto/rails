@@ -1,12 +1,14 @@
-require 'active_support/callbacks'
+# frozen_string_literal: true
+
+require "active_support/core_ext/array/extract_options"
 
 module ActiveModel
-  # == Active Model Callbacks
+  # == Active \Model \Callbacks
   #
   # Provides an interface for any class to have Active Record like callbacks.
   #
   # Like the Active Record methods, the callback chain is aborted as soon as
-  # one of the methods in the chain returns +false+.
+  # one of the methods throws +:abort+.
   #
   # First, extend ActiveModel::Callbacks from the class you are creating:
   #
@@ -30,7 +32,7 @@ module ActiveModel
   #   end
   #
   # Then in your class, you can use the +before_create+, +after_create+ and
-  # +around_create+ methods, just as you would in an Active Record module.
+  # +around_create+ methods, just as you would in an Active Record model.
   #
   #   before_create :action_before_create
   #
@@ -49,13 +51,16 @@ module ActiveModel
   #    puts 'block successfully called.'
   #  end
   #
-  # You can choose not to have all three callbacks by passing a hash to the
+  # You can choose to have only specific callbacks by passing a hash to the
   # +define_model_callbacks+ method.
   #
   #   define_model_callbacks :create, only: [:after, :before]
   #
   # Would only create the +after_create+ and +before_create+ callback methods in
   # your class.
+  #
+  # NOTE: Calling the same callback multiple times will overwrite previous callback definitions.
+  #
   module Callbacks
     def self.extended(base) #:nodoc:
       base.class_eval do
@@ -97,13 +102,15 @@ module ActiveModel
     #       # obj is the MyModel instance that the callback is being called on
     #     end
     #   end
+    #
+    # NOTE: +method_name+ passed to define_model_callbacks must not end with
+    # <tt>!</tt>, <tt>?</tt> or <tt>=</tt>.
     def define_model_callbacks(*callbacks)
       options = callbacks.extract_options!
       options = {
-        :terminator => "result == false",
-        :skip_after_callbacks_if_terminated => true,
-        :scope => [:kind, :name],
-        :only => [:before, :around, :after]
+        skip_after_callbacks_if_terminated: true,
+        scope: [:kind, :name],
+        only: [:before, :around, :after]
       }.merge!(options)
 
       types = Array(options.delete(:only))
@@ -119,31 +126,28 @@ module ActiveModel
 
     private
 
-    def _define_before_model_callback(klass, callback) #:nodoc:
-      klass.class_eval <<-CALLBACK, __FILE__, __LINE__ + 1
-        def self.before_#{callback}(*args, &block)
-          set_callback(:#{callback}, :before, *args, &block)
+      def _define_before_model_callback(klass, callback)
+        klass.define_singleton_method("before_#{callback}") do |*args, &block|
+          set_callback(:"#{callback}", :before, *args, &block)
         end
-      CALLBACK
-    end
+      end
 
-    def _define_around_model_callback(klass, callback) #:nodoc:
-      klass.class_eval <<-CALLBACK, __FILE__, __LINE__ + 1
-        def self.around_#{callback}(*args, &block)
-          set_callback(:#{callback}, :around, *args, &block)
+      def _define_around_model_callback(klass, callback)
+        klass.define_singleton_method("around_#{callback}") do |*args, &block|
+          set_callback(:"#{callback}", :around, *args, &block)
         end
-      CALLBACK
-    end
+      end
 
-    def _define_after_model_callback(klass, callback) #:nodoc:
-      klass.class_eval <<-CALLBACK, __FILE__, __LINE__ + 1
-        def self.after_#{callback}(*args, &block)
+      def _define_after_model_callback(klass, callback)
+        klass.define_singleton_method("after_#{callback}") do |*args, &block|
           options = args.extract_options!
           options[:prepend] = true
-          options[:if] = Array(options[:if]) << "value != false"
-          set_callback(:#{callback}, :after, *(args << options), &block)
+          conditional = ActiveSupport::Callbacks::Conditionals::Value.new { |v|
+            v != false
+          }
+          options[:if] = Array(options[:if]) << conditional
+          set_callback(:"#{callback}", :after, *(args << options), &block)
         end
-      CALLBACK
-    end
+      end
   end
 end
