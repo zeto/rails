@@ -1,13 +1,12 @@
 # frozen_string_literal: true
 
-require_relative "../../xml_mini"
-require_relative "../../time"
-require_relative "../object/blank"
-require_relative "../object/to_param"
-require_relative "../object/to_query"
-require_relative "../array/wrap"
-require_relative "reverse_merge"
-require_relative "../string/inflections"
+require "active_support/core_ext/object/blank"
+require "active_support/core_ext/object/to_param"
+require "active_support/core_ext/object/to_query"
+require "active_support/core_ext/object/try"
+require "active_support/core_ext/array/wrap"
+require "active_support/core_ext/hash/reverse_merge"
+require "active_support/core_ext/string/inflections"
 
 class Hash
   # Returns a string containing an XML representation of its receiver:
@@ -69,11 +68,11 @@ class Hash
   #
   # By default the root node is "hash", but that's configurable via the <tt>:root</tt> option.
   #
-  # The default XML builder is a fresh instance of <tt>Builder::XmlMarkup</tt>. You can
-  # configure your own builder with the <tt>:builder</tt> option. The method also accepts
+  # The default XML builder is a fresh instance of +Builder::XmlMarkup+. You can
+  # configure your own builder with the +:builder+ option. The method also accepts
   # options like <tt>:dasherize</tt> and friends, they are forwarded to the builder.
   def to_xml(options = {})
-    require_relative "../../builder" unless defined?(Builder)
+    require "active_support/builder" unless defined?(Builder::XmlMarkup)
 
     options = options.dup
     options[:indent]  ||= 2
@@ -95,7 +94,7 @@ class Hash
     # Returns a Hash containing a collection of pairs when the key is the node name and the value is
     # its content
     #
-    #   xml = <<-XML
+    #   xml = <<~XML
     #     <?xml version="1.0" encoding="UTF-8"?>
     #       <hash>
     #         <foo type="integer">1</foo>
@@ -113,7 +112,7 @@ class Hash
     # Custom +disallowed_types+ can also be passed in the form of an
     # array.
     #
-    #   xml = <<-XML
+    #   xml = <<~XML
     #     <?xml version="1.0" encoding="UTF-8"?>
     #       <hash>
     #         <foo type="integer">1</foo>
@@ -165,7 +164,7 @@ module ActiveSupport
           Hash[params.map { |k, v| [k.to_s.tr("-", "_"), normalize_keys(v)] } ]
         when Array
           params.map { |v| normalize_keys(v) }
-          else
+        else
           params
         end
       end
@@ -178,7 +177,7 @@ module ActiveSupport
           process_array(value)
         when String
           value
-          else
+        else
           raise "can't typecast #{value.class.name} - #{value.inspect}"
         end
       end
@@ -208,7 +207,7 @@ module ActiveSupport
         elsif become_empty_string?(value)
           ""
         elsif become_hash?(value)
-          xml_value = Hash[value.map { |k, v| [k, deep_to_h(v)] }]
+          xml_value = value.transform_values { |v| deep_to_h(v) }
 
           # Turn { files: { file: #<StringIO> } } into { files: #<StringIO> } so it is compatible with
           # how multipart uploaded files from HTML appear

@@ -6,27 +6,26 @@ class TestRecord < ActiveRecord::Base
 end
 
 class TestDisconnectedAdapter < ActiveRecord::TestCase
-  self.use_transactional_tests = false
-
   def setup
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
   end
 
   teardown do
     return if in_memory_db?
-    spec = ActiveRecord::Base.connection_config
-    ActiveRecord::Base.establish_connection(spec)
   end
 
   unless in_memory_db?
-    test "can't execute statements while disconnected" do
+    test "reconnects to execute statements when disconnected" do
       @connection.execute "SELECT count(*) from products"
+      first_connection = @connection.instance_variable_get(:@raw_connection).__id__
+
       @connection.disconnect!
-      assert_raises(ActiveRecord::StatementInvalid) do
-        silence_warnings do
-          @connection.execute "SELECT count(*) from products"
-        end
-      end
+      assert_nil @connection.instance_variable_get(:@raw_connection)
+
+      @connection.execute "SELECT count(*) from products"
+      second_connection = @connection.instance_variable_get(:@raw_connection).__id__
+
+      assert_not_equal second_connection, first_connection
     end
   end
 end

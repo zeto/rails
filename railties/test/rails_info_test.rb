@@ -9,7 +9,7 @@ class InfoTest < ActiveSupport::TestCase
         property("Bogus") { raise }
       end
     end
-    assert !property_defined?("Bogus")
+    assert_not property_defined?("Bogus")
   end
 
   def test_property_with_string
@@ -39,7 +39,7 @@ class InfoTest < ActiveSupport::TestCase
     html = Rails::Info.to_html
     assert_includes html, '<tr><td class="name">Middleware</td>'
     properties.value_for("Middleware").each do |value|
-      assert_includes html, "<li>#{CGI.escapeHTML(value)}</li>"
+      assert_includes html, "<li>#{ERB::Util.html_escape(value)}</li>"
     end
   end
 

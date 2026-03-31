@@ -11,16 +11,20 @@ ActionController::Base.view_paths = [ File.expand_path("../../fixtures/actionpac
 
 class LayoutTest < ActionController::Base
   def self.controller_path; "views" end
-  def self._implied_layout_name; to_s.underscore.gsub(/_controller$/, "") ; end
+  def self._implied_layout_name; to_s.underscore.delete_suffix("_controller") ; end
   self.view_paths = ActionController::Base.view_paths.dup
 end
 
 module TemplateHandlerHelper
   def with_template_handler(*extensions, handler)
     ActionView::Template.register_template_handler(*extensions, handler)
+    ActionController::Base.view_paths.paths.each(&:clear_cache)
+    ActionView::LookupContext::DetailsKey.clear
     yield
   ensure
     ActionView::Template.unregister_template_handler(*extensions)
+    ActionController::Base.view_paths.paths.each(&:clear_cache)
+    ActionView::LookupContext::DetailsKey.clear
   end
 end
 
@@ -48,6 +52,10 @@ end
 class LayoutAutoDiscoveryTest < ActionController::TestCase
   include TemplateHandlerHelper
 
+  with_routes do
+    get :hello, to: "views#hello"
+  end
+
   def setup
     super
     @request.host = "www.nextangle.com"
@@ -66,7 +74,7 @@ class LayoutAutoDiscoveryTest < ActionController::TestCase
   end
 
   def test_third_party_template_library_auto_discovers_layout
-    with_template_handler :mab, lambda { |template| template.source.inspect } do
+    with_template_handler :mab, lambda { |template, source| source.inspect } do
       @controller = ThirdPartyTemplateLibraryController.new
       get :hello
       assert_response :success
@@ -148,6 +156,11 @@ class LayoutSetInResponseTest < ActionController::TestCase
   include ActionView::Template::Handlers
   include TemplateHandlerHelper
 
+  with_routes do
+    get :hello, to: "views#hello"
+    get :hello, to: "views#goodbye"
+  end
+
   def test_layout_set_when_using_default_layout
     @controller = DefaultLayoutController.new
     get :hello
@@ -203,7 +216,7 @@ class LayoutSetInResponseTest < ActionController::TestCase
   end
 
   def test_layout_set_when_using_render
-    with_template_handler :mab, lambda { |template| template.source.inspect } do
+    with_template_handler :mab, lambda { |template, source| source.inspect } do
       @controller = SetsLayoutInRenderController.new
       get :hello
       assert_includes @response.body, "layouts/third_party_template_library.mab"
@@ -224,8 +237,9 @@ class LayoutSetInResponseTest < ActionController::TestCase
 
   def test_absolute_pathed_layout
     @controller = AbsolutePathLayoutController.new
-    get :hello
-    assert_equal "layout_test.erb hello.erb", @response.body.strip
+    assert_raises(ArgumentError) do
+      get :hello
+    end
   end
 end
 
@@ -234,6 +248,10 @@ class SetsNonExistentLayoutFile < LayoutTest
 end
 
 class LayoutExceptionRaisedTest < ActionController::TestCase
+  with_routes do
+    get :hello, to: "views#hello"
+  end
+
   def test_exception_raised_when_layout_file_not_found
     @controller = SetsNonExistentLayoutFile.new
     assert_raise(ActionView::MissingTemplate) { get :hello }
@@ -247,6 +265,10 @@ class LayoutStatusIsRendered < LayoutTest
 end
 
 class LayoutStatusIsRenderedTest < ActionController::TestCase
+  with_routes do
+    get :hello, to: "views#hello"
+  end
+
   def test_layout_status_is_rendered
     @controller = LayoutStatusIsRendered.new
     get :hello
@@ -260,6 +282,10 @@ unless Gem.win_platform?
   end
 
   class LayoutSymlinkedIsRenderedTest < ActionController::TestCase
+    with_routes do
+      get :hello, to: "views#hello"
+    end
+
     def test_symlinked_layout_is_rendered
       @controller = LayoutSymlinkedTest.new
       get :hello

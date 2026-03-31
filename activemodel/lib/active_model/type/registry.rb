@@ -1,70 +1,37 @@
 # frozen_string_literal: true
 
 module ActiveModel
-  # :stopdoc:
   module Type
-    class Registry
+    class Registry # :nodoc:
       def initialize
-        @registrations = []
+        @registrations = {}
       end
 
-      def register(type_name, klass = nil, **options, &block)
-        block ||= proc { |_, *args| klass.new(*args) }
-        registrations << registration_klass.new(type_name, block, **options)
+      def initialize_copy(other)
+        @registrations = @registrations.dup
+        super
       end
 
-      def lookup(symbol, *args)
-        registration = find_registration(symbol, *args)
+      def register(type_name, klass = nil, &block)
+        unless block_given?
+          block = proc { |_, *args| klass.new(*args) }
+          block.ruby2_keywords if block.respond_to?(:ruby2_keywords)
+        end
+        registrations[type_name] = block
+      end
+
+      def lookup(symbol, ...)
+        registration = registrations[symbol]
 
         if registration
-          registration.call(self, symbol, *args)
+          registration.call(symbol, ...)
         else
           raise ArgumentError, "Unknown type #{symbol.inspect}"
         end
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
-
-        attr_reader :registrations
-
       private
-
-        def registration_klass
-          Registration
-        end
-
-        def find_registration(symbol, *args)
-          registrations.find { |r| r.matches?(symbol, *args) }
-        end
-    end
-
-    class Registration
-      # Options must be taken because of https://bugs.ruby-lang.org/issues/10856
-      def initialize(name, block, **)
-        @name = name
-        @block = block
-      end
-
-      def call(_registry, *args, **kwargs)
-        if kwargs.any? # https://bugs.ruby-lang.org/issues/10856
-          block.call(*args, **kwargs)
-        else
-          block.call(*args)
-        end
-      end
-
-      def matches?(type_name, *args, **kwargs)
-        type_name == name
-      end
-
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
-
-        attr_reader :name, :block
+        attr_reader :registrations
     end
   end
-  # :startdoc:
 end

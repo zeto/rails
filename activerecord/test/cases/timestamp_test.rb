@@ -40,17 +40,25 @@ class TimestampTest < ActiveRecord::TestCase
 
     assert_not_equal @previously_updated_at, @developer.updated_at
     assert_equal previous_salary + 10000, @developer.salary
-    assert @developer.salary_changed?, "developer salary should have changed"
-    assert @developer.changed?, "developer should be marked as changed"
+    assert_predicate @developer, :salary_changed?, "developer salary should have changed"
+    assert_predicate @developer, :changed?, "developer should be marked as changed"
+    assert_equal ["salary"], @developer.changed
+    assert_predicate @developer, :saved_changes?
+    assert_equal ["legacy_updated_at", "legacy_updated_on"], @developer.saved_changes.keys.sort
+
     @developer.reload
     assert_equal previous_salary, @developer.salary
   end
 
   def test_touching_a_record_with_default_scope_that_excludes_it_updates_its_timestamp
     developer = @developer.becomes(DeveloperCalledJamis)
-
     developer.touch
+
     assert_not_equal @previously_updated_at, developer.updated_at
+    assert_not_predicate developer, :changed?
+    assert_predicate developer, :saved_changes?
+    assert_equal ["legacy_updated_at", "legacy_updated_on"], developer.saved_changes.keys.sort
+
     developer.reload
     assert_not_equal @previously_updated_at, developer.updated_at
   end
@@ -90,9 +98,19 @@ class TimestampTest < ActiveRecord::TestCase
       @developer.touch(:created_at)
     end
 
-    assert !@developer.created_at_changed? , "created_at should not be changed"
-    assert !@developer.changed?, "record should not be changed"
+    assert_not @developer.created_at_changed?, "created_at should not be changed"
+    assert_not @developer.changed?, "record should not be changed"
     assert_not_equal previously_created_at, @developer.created_at
+    assert_not_equal @previously_updated_at, @developer.updated_at
+  end
+
+  def test_touching_update_at_attribute_as_symbol_updates_timestamp
+    travel(1.second) do
+      @developer.touch(:updated_at)
+    end
+
+    assert_not @developer.updated_at_changed?
+    assert_not @developer.changed?
     assert_not_equal @previously_updated_at, @developer.updated_at
   end
 
@@ -100,11 +118,8 @@ class TimestampTest < ActiveRecord::TestCase
     task = Task.first
     previous_value = task.ending
     task.touch(:ending)
-
-    now = Time.now.change(usec: 0)
-
     assert_not_equal previous_value, task.ending
-    assert_in_delta now, task.ending, 1
+    assert_in_delta Time.now, task.ending, 1
   end
 
   def test_touching_an_attribute_updates_timestamp_with_given_time
@@ -125,12 +140,10 @@ class TimestampTest < ActiveRecord::TestCase
     previous_ending = task.ending
     task.touch(:starting, :ending)
 
-    now = Time.now.change(usec: 0)
-
     assert_not_equal previous_starting, task.starting
     assert_not_equal previous_ending, task.ending
-    assert_in_delta now, task.starting, 1
-    assert_in_delta now, task.ending, 1
+    assert_in_delta Time.now, task.starting, 1
+    assert_in_delta Time.now, task.ending, 1
   end
 
   def test_touching_a_record_without_timestamps_is_unexceptional
@@ -139,13 +152,13 @@ class TimestampTest < ActiveRecord::TestCase
 
   def test_touching_a_no_touching_object
     Developer.no_touching do
-      assert @developer.no_touching?
-      assert !@owner.no_touching?
+      assert_predicate @developer, :no_touching?
+      assert_not_predicate @owner, :no_touching?
       @developer.touch
     end
 
-    assert !@developer.no_touching?
-    assert !@owner.no_touching?
+    assert_not_predicate @developer, :no_touching?
+    assert_not_predicate @owner, :no_touching?
     assert_equal @previously_updated_at, @developer.updated_at
   end
 
@@ -162,26 +175,26 @@ class TimestampTest < ActiveRecord::TestCase
 
   def test_global_no_touching
     ActiveRecord::Base.no_touching do
-      assert @developer.no_touching?
-      assert @owner.no_touching?
+      assert_predicate @developer, :no_touching?
+      assert_predicate @owner, :no_touching?
       @developer.touch
     end
 
-    assert !@developer.no_touching?
-    assert !@owner.no_touching?
+    assert_not_predicate @developer, :no_touching?
+    assert_not_predicate @owner, :no_touching?
     assert_equal @previously_updated_at, @developer.updated_at
   end
 
   def test_no_touching_threadsafe
     Thread.new do
       Developer.no_touching do
-        assert @developer.no_touching?
+        assert_predicate @developer, :no_touching?
 
         sleep(1)
       end
     end
 
-    assert !@developer.no_touching?
+    assert_not_predicate @developer, :no_touching?
   end
 
   def test_no_touching_with_callbacks
@@ -201,6 +214,88 @@ class TimestampTest < ActiveRecord::TestCase
       developer.touch
       assert_not developer.after_touch_called
     end
+  end
+
+  def test_saving_an_unchanged_record_with_a_mutating_before_save_callback_updates_its_timestamp
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "developers"
+
+      include Developer::TimestampAliases
+
+      before_save :change_name
+
+      private
+        def change_name
+          return if new_record?
+
+          self.name = "Jack Bauer"
+        end
+    end
+
+    @developer = klass.create!
+    @previously_updated_at = @developer.updated_at
+    @previous_name = @developer.name
+
+    travel(1.second) do
+      @developer.save!
+    end
+
+    assert_not_equal @previous_name, @developer.name
+    assert_not_equal @previously_updated_at, @developer.updated_at
+  end
+
+  def test_saving_an_unchanged_record_with_a_mutating_before_update_callback_updates_its_timestamp
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "developers"
+
+      include Developer::TimestampAliases
+
+      before_update :change_name
+
+      private
+        def change_name
+          return if new_record?
+
+          self.name = "Jack Bauer"
+        end
+    end
+
+    @developer = klass.create!
+    @previously_updated_at = @developer.updated_at
+    @previous_name = @developer.name
+
+    travel(1.second) do
+      @developer.save!
+    end
+
+    @developer.reload
+
+    assert_not_equal @previous_name, @developer.name
+    assert_not_equal @previously_updated_at, @developer.updated_at
+  end
+
+  def test_saving_an_unchanged_record_with_a_non_mutating_before_update_callback_does_not_update_its_timestamp
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "developers"
+
+      include Developer::TimestampAliases
+
+      before_update :change_name
+
+      private
+        def change_name; end
+    end
+
+    @developer = klass.create!
+    @previously_updated_at = @developer.updated_at
+
+    travel(1.second) do
+      @developer.save!
+    end
+
+    @developer.reload
+
+    assert_equal @previously_updated_at, @developer.updated_at
   end
 
   def test_saving_a_record_with_a_belongs_to_that_specifies_touching_the_parent_should_update_the_parent_updated_at
@@ -237,7 +332,7 @@ class TimestampTest < ActiveRecord::TestCase
     pet = Pet.new(owner: klass.new)
     pet.save!
 
-    assert pet.owner.new_record?
+    assert_predicate pet.owner, :new_record?
   end
 
   def test_saving_a_record_with_a_belongs_to_that_specifies_touching_a_specific_attribute_the_parent_should_update_that_attribute
@@ -419,7 +514,7 @@ class TimestampTest < ActiveRecord::TestCase
     assert_not_equal time, pet.updated_at
   end
 
-  def test_timestamp_column_values_are_present_in_the_callbacks
+  def test_timestamp_column_values_are_present_in_create_callbacks
     klass = Class.new(ActiveRecord::Base) do
       self.table_name = "people"
 
@@ -429,7 +524,34 @@ class TimestampTest < ActiveRecord::TestCase
     end
 
     person = klass.create first_name: "David"
-    assert_not_equal person.born_at, nil
+    assert_not_nil person.born_at
+  end
+
+  def test_timestamp_column_values_are_present_in_update_callbacks
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "people"
+
+      before_update do
+        self.born_at = created_at
+      end
+    end
+
+    person = klass.create first_name: "David"
+    person.update first_name: "John"
+    assert_not_nil person.born_at
+  end
+
+  def test_timestamp_column_values_are_present_in_save_callbacks
+    klass = Class.new(ActiveRecord::Base) do
+      self.table_name = "people"
+
+      before_create do
+        self.born_at = created_at
+      end
+    end
+
+    person = klass.create first_name: "David"
+    assert_not_nil person.born_at
   end
 
   def test_timestamp_attributes_for_create_in_model
@@ -457,7 +579,7 @@ class TimestampsWithoutTransactionTest < ActiveRecord::TestCase
   end
 
   def test_do_not_write_timestamps_on_save_if_they_are_not_attributes
-    with_example_table ActiveRecord::Base.connection, "timestamp_attribute_posts", "id integer primary key" do
+    with_example_table ActiveRecord::Base.lease_connection, "timestamp_attribute_posts", "id integer primary key" do
       post = TimestampAttributePost.new(id: 1)
       post.save! # should not try to assign and persist created_at, updated_at
       assert_nil post.created_at
@@ -466,13 +588,13 @@ class TimestampsWithoutTransactionTest < ActiveRecord::TestCase
   end
 
   def test_index_is_created_for_both_timestamps
-    ActiveRecord::Base.connection.create_table(:foos, force: true) do |t|
+    ActiveRecord::Base.lease_connection.create_table(:foos, force: true) do |t|
       t.timestamps null: true, index: true
     end
 
-    indexes = ActiveRecord::Base.connection.indexes("foos")
+    indexes = ActiveRecord::Base.lease_connection.indexes("foos")
     assert_equal ["created_at", "updated_at"], indexes.flat_map(&:columns).sort
   ensure
-    ActiveRecord::Base.connection.drop_table(:foos)
+    ActiveRecord::Base.lease_connection.drop_table(:foos)
   end
 end

@@ -11,7 +11,7 @@ class PostgresqlBitStringTest < ActiveRecord::PostgreSQLTestCase
   class PostgresqlBitString < ActiveRecord::Base; end
 
   def setup
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
     @connection.create_table("postgresql_bit_strings", force: true) do |t|
       t.bit :a_bit, default: "00000011", limit: 8
       t.bit_varying :a_bit_varying, default: "0011", limit: 4
@@ -29,20 +29,20 @@ class PostgresqlBitStringTest < ActiveRecord::PostgreSQLTestCase
     column = PostgresqlBitString.columns_hash["a_bit"]
     assert_equal :bit, column.type
     assert_equal "bit(8)", column.sql_type
-    assert_not column.array?
+    assert_not_predicate column, :array?
 
     type = PostgresqlBitString.type_for_attribute("a_bit")
-    assert_not type.binary?
+    assert_not_predicate type, :binary?
   end
 
   def test_bit_string_varying_column
     column = PostgresqlBitString.columns_hash["a_bit_varying"]
     assert_equal :bit_varying, column.type
     assert_equal "bit varying(4)", column.sql_type
-    assert_not column.array?
+    assert_not_predicate column, :array?
 
     type = PostgresqlBitString.type_for_attribute("a_bit_varying")
-    assert_not type.binary?
+    assert_not_predicate type, :binary?
   end
 
   def test_default
@@ -59,7 +59,7 @@ class PostgresqlBitStringTest < ActiveRecord::PostgreSQLTestCase
     assert_match %r{t\.bit_varying\s+"a_bit_varying",\s+limit: 4,\s+default: "0011"$}, output
   end
 
-  if ActiveRecord::Base.connection.prepared_statements
+  if ActiveRecord::Base.lease_connection.prepared_statements
     def test_assigning_invalid_hex_string_raises_exception
       assert_raises(ActiveRecord::StatementInvalid) { PostgresqlBitString.create! a_bit: "FF" }
       assert_raises(ActiveRecord::StatementInvalid) { PostgresqlBitString.create! a_bit_varying: "F" }

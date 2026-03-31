@@ -1,8 +1,10 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "minitest/mock"
 require "stubs/test_connection"
 require "stubs/room"
+require "concurrent/atomic/cyclic_barrier"
 
 module ActionCable::StreamTests
   class Connection < ActionCable::Connection::Base
@@ -25,16 +27,17 @@ module ActionCable::StreamTests
       transmit_subscription_confirmation
     end
 
-    private def pick_coder(coder)
-      case coder
-      when nil, "json"
-        ActiveSupport::JSON
-      when "custom"
-        DummyEncoder
-      when "none"
-        nil
+    private
+      def pick_coder(coder)
+        case coder
+        when nil, "json"
+          ActiveSupport::JSON
+        when "custom"
+          DummyEncoder
+        when "none"
+          nil
+        end
       end
-    end
   end
 
   module DummyEncoder
@@ -53,39 +56,91 @@ module ActionCable::StreamTests
     test "streaming start and stop" do
       run_in_eventmachine do
         connection = TestConnection.new
-        connection.expects(:pubsub).returns mock().tap { |m| m.expects(:subscribe).with("test_room_1", kind_of(Proc), kind_of(Proc)).returns stub_everything(:pubsub) }
-        channel = ChatChannel.new connection, "{id: 1}", id: 1
-        channel.subscribe_to_channel
+        pubsub = Minitest::Mock.new connection.pubsub
 
-        wait_for_async
+        pubsub.expect(:subscribe, nil, ["test_room_1", Proc, Proc])
+        pubsub.expect(:unsubscribe, nil, ["test_room_1", Proc])
 
-        connection.expects(:pubsub).returns mock().tap { |m| m.expects(:unsubscribe) }
-        channel.unsubscribe_from_channel
+        connection.stub(:pubsub, pubsub) do
+          channel = ChatChannel.new connection, "{id: 1}", id: 1
+          channel.subscribe_to_channel
+
+          wait_for_async
+          channel.unsubscribe_from_channel
+        end
+
+        assert pubsub.verify
       end
     end
 
     test "stream from non-string channel" do
       run_in_eventmachine do
         connection = TestConnection.new
-        connection.expects(:pubsub).returns mock().tap { |m| m.expects(:subscribe).with("channel", kind_of(Proc), kind_of(Proc)).returns stub_everything(:pubsub) }
-        channel = SymbolChannel.new connection, ""
-        channel.subscribe_to_channel
+        pubsub = Minitest::Mock.new connection.pubsub
 
-        wait_for_async
+        pubsub.expect(:subscribe, nil, ["channel", Proc, Proc])
+        pubsub.expect(:unsubscribe, nil, ["channel", Proc])
 
-        connection.expects(:pubsub).returns mock().tap { |m| m.expects(:unsubscribe) }
-        channel.unsubscribe_from_channel
+        connection.stub(:pubsub, pubsub) do
+          channel = SymbolChannel.new connection, ""
+          channel.subscribe_to_channel
+
+          wait_for_async
+
+          channel.unsubscribe_from_channel
+        end
+
+        assert pubsub.verify
       end
     end
 
     test "stream_for" do
       run_in_eventmachine do
         connection = TestConnection.new
-        connection.expects(:pubsub).returns mock().tap { |m| m.expects(:subscribe).with("action_cable:stream_tests:chat:Room#1-Campfire", kind_of(Proc), kind_of(Proc)).returns stub_everything(:pubsub) }
 
         channel = ChatChannel.new connection, ""
         channel.subscribe_to_channel
         channel.stream_for Room.new(1)
+        wait_for_async
+
+        pubsub_call = channel.pubsub.class.class_variable_get "@@subscribe_called"
+
+        assert_equal "action_cable:stream_tests:chat:Room#1-Campfire", pubsub_call[:channel]
+        assert_instance_of Proc, pubsub_call[:callback]
+        assert_instance_of Proc, pubsub_call[:success_callback]
+      end
+    end
+
+    test "stream_or_reject_for" do
+      run_in_eventmachine do
+        connection = TestConnection.new
+
+        channel = ChatChannel.new connection, ""
+        channel.subscribe_to_channel
+        channel.stream_or_reject_for Room.new(1)
+        wait_for_async
+
+        pubsub_call = channel.pubsub.class.class_variable_get "@@subscribe_called"
+
+        assert_equal "action_cable:stream_tests:chat:Room#1-Campfire", pubsub_call[:channel]
+        assert_instance_of Proc, pubsub_call[:callback]
+        assert_instance_of Proc, pubsub_call[:success_callback]
+      end
+    end
+
+    test "reject subscription when nil is passed to stream_or_reject_for" do
+      run_in_eventmachine do
+        connection = TestConnection.new
+        channel = ChatChannel.new connection, "{id: 1}", id: 1
+        channel.subscribe_to_channel
+        channel.stream_or_reject_for nil
+        assert_nil connection.last_transmission
+
+        wait_for_async
+
+        rejection = { "identifier" => "{id: 1}", "type" => "reject_subscription" }
+        connection.transmit(rejection)
+        assert_equal rejection, connection.last_transmission
       end
     end
 
@@ -123,9 +178,173 @@ module ActionCable::StreamTests
         assert_equal 1, connection.transmissions.size
       end
     end
-  end
 
-  require "action_cable/subscription_adapter/async"
+    test "stop_all_streams" do
+      run_in_eventmachine do
+        connection = TestConnection.new
+
+        channel = ChatChannel.new connection, "{id: 3}"
+        channel.subscribe_to_channel
+
+        assert_equal 0, subscribers_of(connection).size
+
+        channel.stream_from "room_one"
+        channel.stream_from "room_two"
+
+        wait_for_async
+        assert_equal 2, subscribers_of(connection).size
+
+        channel2 = ChatChannel.new connection, "{id: 3}"
+        channel2.subscribe_to_channel
+
+        channel2.stream_from "room_one"
+        wait_for_async
+
+        subscribers = subscribers_of(connection)
+
+        assert_equal 2, subscribers.size
+        assert_equal 2, subscribers["room_one"].size
+        assert_equal 1, subscribers["room_two"].size
+
+        channel.stop_all_streams
+
+        subscribers = subscribers_of(connection)
+        assert_equal 1, subscribers.size
+        assert_equal 1, subscribers["room_one"].size
+      end
+    end
+
+    test "stop_stream_from" do
+      run_in_eventmachine do
+        connection = TestConnection.new
+
+        channel = ChatChannel.new connection, "{id: 3}"
+        channel.subscribe_to_channel
+
+        channel.stream_from "room_one"
+        channel.stream_from "room_two"
+
+        channel2 = ChatChannel.new connection, "{id: 3}"
+        channel2.subscribe_to_channel
+
+        channel2.stream_from "room_one"
+
+        subscribers = subscribers_of(connection)
+
+        wait_for_async
+
+        assert_equal 2, subscribers.size
+        assert_equal 2, subscribers["room_one"].size
+        assert_equal 1, subscribers["room_two"].size
+
+        channel.stop_stream_from "room_one"
+
+        subscribers = subscribers_of(connection)
+
+        assert_equal 2, subscribers.size
+        assert_equal 1, subscribers["room_one"].size
+        assert_equal 1, subscribers["room_two"].size
+      end
+    end
+
+    test "stop_stream_for" do
+      run_in_eventmachine do
+        connection = TestConnection.new
+
+        channel = ChatChannel.new connection, "{id: 3}"
+        channel.subscribe_to_channel
+
+        channel.stream_for Room.new(1)
+        channel.stream_for Room.new(2)
+
+        channel2 = ChatChannel.new connection, "{id: 3}"
+        channel2.subscribe_to_channel
+
+        channel2.stream_for Room.new(1)
+
+        subscribers = subscribers_of(connection)
+
+        wait_for_async
+
+        assert_equal 2, subscribers.size
+
+        assert_equal 2, subscribers[ChatChannel.broadcasting_for(Room.new(1))].size
+        assert_equal 1, subscribers[ChatChannel.broadcasting_for(Room.new(2))].size
+
+        channel.stop_stream_for Room.new(1)
+
+        subscribers = subscribers_of(connection)
+
+        assert_equal 2, subscribers.size
+        assert_equal 1, subscribers[ChatChannel.broadcasting_for(Room.new(1))].size
+        assert_equal 1, subscribers[ChatChannel.broadcasting_for(Room.new(2))].size
+      end
+    end
+
+    test "concurrent unsubscribe_from_channel and stream_from do not raise RuntimeError" do
+      threads = []
+      run_in_eventmachine do
+        connection = TestConnection.new
+        connection.pubsub.unsubscribe_latency = 0.1
+
+        channel = ChatChannel.new connection, "{id: 1}", id: 1
+        channel.subscribe_to_channel
+
+        # Set up initial streams
+        channel.stream_from "room_one"
+        channel.stream_from "room_two"
+        wait_for_async
+
+        # Create barriers to synchronize thread execution
+        barrier = Concurrent::CyclicBarrier.new(2)
+
+        exception_caught = nil
+
+        # Thread 1: calls unsubscribe_from_channel
+        thread1 = Thread.new do
+          barrier.wait
+          # Add a small delay to increase the chance of concurrent execution
+          sleep 0.001
+          channel.unsubscribe_from_channel
+        rescue => e
+          exception_caught = e
+        ensure
+          barrier.wait
+        end
+        threads << thread1
+
+        # Thread 2: calls stream_from during unsubscribe_from_channel iteration
+        thread2 = Thread.new do
+          barrier.wait
+          # Try to add streams while unsubscribe_from_channel is potentially iterating
+          10.times do |i|
+            channel.stream_from "concurrent_room_#{i}"
+            sleep 0.0001 # Small delay to interleave with unsubscribe_from_channel
+          end
+        rescue => e
+          exception_caught = e
+        ensure
+          barrier.wait
+        end
+        threads << thread2
+
+        thread1.join
+        thread2.join
+
+        # Ensure no RuntimeError was raised during concurrent access
+        assert_nil exception_caught, "Concurrent unsubscribe_from_channel and stream_from should not raise RuntimeError: #{exception_caught}"
+      end
+    ensure
+      threads.each(&:kill)
+    end
+
+    private
+      def subscribers_of(connection)
+        connection
+          .pubsub
+          .subscriber_map
+      end
+  end
 
   class UserCallbackChannel < ActionCable::Channel::Base
     def subscribed
@@ -153,10 +372,11 @@ module ActionCable::StreamTests
         connection = open_connection
         subscribe_to connection, identifiers: { id: 1 }
 
-        connection.websocket.expects(:transmit)
-        @server.broadcast "test_room_1", { foo: "bar" }, { coder: DummyEncoder }
-        wait_for_async
-        wait_for_executor connection.server.worker_pool.executor
+        assert_called(connection.websocket, :transmit) do
+          @server.broadcast "test_room_1", { foo: "bar" }, coder: DummyEncoder
+          wait_for_async
+          wait_for_executor connection.server.worker_pool.executor
+        end
       end
     end
 
@@ -167,18 +387,18 @@ module ActionCable::StreamTests
 
         @server.broadcast "channel", {}
         wait_for_async
-        refute Thread.current[:ran_callback], "User callback was not run through the worker pool"
+        assert_not Thread.current[:ran_callback], "User callback was not run through the worker pool"
       end
     end
 
-    test "subscription confirmation should only be sent out once with muptiple stream_from" do
+    test "subscription confirmation should only be sent out once with multiple stream_from" do
       run_in_eventmachine do
         connection = open_connection
         expected = { "identifier" => { "channel" => MultiChatChannel.name }.to_json, "type" => "confirm_subscription" }
-        connection.websocket.expects(:transmit).with(expected.to_json)
-        receive(connection, command: "subscribe", channel: MultiChatChannel.name, identifiers: {})
-
-        wait_for_async
+        assert_called_with(connection.websocket, :transmit, [expected.to_json]) do
+          receive(connection, command: "subscribe", channel: MultiChatChannel.name, identifiers: {})
+          wait_for_async
+        end
       end
     end
 
@@ -192,15 +412,15 @@ module ActionCable::StreamTests
 
         Connection.new(@server, env).tap do |connection|
           connection.process
-          assert connection.websocket.possible?
+          assert_predicate connection.websocket, :possible?
 
           wait_for_async
-          assert connection.websocket.alive?
+          assert_predicate connection.websocket, :alive?
         end
       end
 
       def receive(connection, command:, identifiers:, channel: "ActionCable::StreamTests::ChatChannel")
-        identifier = JSON.generate(channel: channel, **identifiers)
+        identifier = JSON.generate(identifiers.merge(channel: channel))
         connection.dispatch_websocket_message JSON.generate(command: command, identifier: identifier)
         wait_for_async
       end

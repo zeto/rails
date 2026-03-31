@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../core_ext/numeric/inquiry"
+require "active_support/number_helper/number_converter"
 
 module ActiveSupport
   module NumberHelper
@@ -8,24 +8,24 @@ module ActiveSupport
       self.namespace = :currency
 
       def convert
-        number = self.number.to_s.strip
         format = options[:format]
 
-        if number.to_f.negative?
-          format = options[:negative_format]
-          number = absolute_value(number)
+        number_d = valid_bigdecimal
+        if number_d
+          if number_d.negative?
+            number_d = number_d.abs
+            format = options[:negative_format] if (number_d * 10**options[:precision]) >= 0.5
+          end
+          number_s = NumberToRoundedConverter.convert(number_d, options)
+        else
+          number_s = number.to_s.strip
+          format = options[:negative_format] if number_s.sub!(/^-/, "")
         end
 
-        rounded_number = NumberToRoundedConverter.convert(number, options)
-        format.gsub("%n".freeze, rounded_number).gsub("%u".freeze, options[:unit])
+        format.gsub("%n", number_s).gsub("%u", options[:unit])
       end
 
       private
-
-        def absolute_value(number)
-          number.respond_to?(:abs) ? number.abs : number.sub(/\A-/, "")
-        end
-
         def options
           @options ||= begin
             defaults = default_format_options.merge(i18n_opts)

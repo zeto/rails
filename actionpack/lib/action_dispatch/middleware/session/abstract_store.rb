@@ -1,14 +1,15 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 require "rack/utils"
 require "rack/request"
 require "rack/session/abstract/id"
-require_relative "../cookies"
-require_relative "../../request/session"
+require "action_dispatch/middleware/cookies"
 
 module ActionDispatch
   module Session
-    class SessionRestoreError < StandardError #:nodoc:
+    class SessionRestoreError < StandardError # :nodoc:
       def initialize
         super("Session contains objects whose class definition isn't available.\n" \
           "Remember to require the classes for all objects kept in the session.\n" \
@@ -30,7 +31,6 @@ module ActionDispatch
       end
 
     private
-
       def initialize_sid # :doc:
         @default_options.delete(:sidbits)
         @default_options.delete(:secure_random)
@@ -68,6 +68,11 @@ module ActionDispatch
     end
 
     module SessionObject # :nodoc:
+      def commit_session(req, res)
+        req.commit_csrf_token
+        super(req, res)
+      end
+
       def prepare_session(req)
         Request::Session.create(self, req, @default_options)
       end
@@ -83,8 +88,22 @@ module ActionDispatch
       include SessionObject
 
       private
+        def set_cookie(request, response, cookie)
+          request.cookie_jar[key] = cookie
+        end
+    end
 
-        def set_cookie(request, session_id, cookie)
+    class AbstractSecureStore < Rack::Session::Abstract::PersistedSecure
+      include Compatibility
+      include StaleSessionCheck
+      include SessionObject
+
+      def generate_sid
+        Rack::Session::SessionId.new(super)
+      end
+
+      private
+        def set_cookie(request, response, cookie)
           request.cookie_jar[key] = cookie
         end
     end

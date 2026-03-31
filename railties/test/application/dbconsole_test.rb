@@ -23,47 +23,47 @@ module ApplicationTests
         development:
            database: <%= Rails.application.config.database %>
            adapter: sqlite3
-           pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+           max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
            timeout: 5000
       YAML
 
       app_file "config/environments/development.rb", <<-RUBY
         Rails.application.configure do
-          config.database = "db/development.sqlite3"
+          config.database = "storage/development.sqlite3"
         end
       RUBY
 
-      master, slave = PTY.open
-      spawn_dbconsole(slave)
-      assert_output("sqlite>", master)
+      primary, replica = PTY.open
+      spawn_dbconsole(replica)
+      assert_output("sqlite>", primary, 100)
     ensure
-      master.puts ".exit"
+      primary.puts ".exit"
     end
 
     def test_respect_environment_option
       app_file "config/database.yml", <<-YAML
         default: &default
           adapter: sqlite3
-          pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+          max_connections: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
           timeout: 5000
 
         development:
           <<: *default
-          database: db/development.sqlite3
+          database: storage/development.sqlite3
 
         production:
           <<: *default
-          database: db/production.sqlite3
+          database: storage/production.sqlite3
       YAML
 
-      master, slave = PTY.open
-      spawn_dbconsole(slave, "-e production")
-      assert_output("sqlite>", master)
+      primary, replica = PTY.open
+      spawn_dbconsole(replica, "-e production")
+      assert_output("sqlite>", primary, 100)
 
-      master.puts "pragma database_list;"
-      assert_output("production.sqlite3", master)
+      primary.puts "pragma database_list;"
+      assert_output("production.sqlite3", primary)
     ensure
-      master.puts ".exit"
+      primary.puts ".exit"
     end
 
     private

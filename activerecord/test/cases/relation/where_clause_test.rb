@@ -15,9 +15,9 @@ class ActiveRecord::Relation
     end
 
     test "+ is associative, but not commutative" do
-      a = WhereClause.new(["a"])
-      b = WhereClause.new(["b"])
-      c = WhereClause.new(["c"])
+      a = WhereClause.new([Arel.sql("a")])
+      b = WhereClause.new([Arel.sql("b")])
+      c = WhereClause.new([Arel.sql("c")])
 
       assert_equal a + (b + c), (a + b) + c
       assert_not_equal a + b, b + a
@@ -74,9 +74,36 @@ class ActiveRecord::Relation
       assert_equal expected, a.merge(b)
     end
 
+    test "merge with or/and correctly handles SQL literals and attributes" do
+      a = WhereClause.new([
+        table["id"].eq(1),
+        Arel::Nodes::Grouping.new(Arel.sql("foo = bar"))
+      ])
+      b = (a + WhereClause.new([table["attr_1"].eq("val_1")])).or(
+        WhereClause.new([table["attr_2"].eq("val_2")])
+      )
+
+      expected = WhereClause.new([
+        table["id"].eq(1),
+        Arel::Nodes::Grouping.new(Arel.sql("foo = bar")),
+        Arel::Nodes::Grouping.new(
+          Arel::Nodes::Or.new([
+            Arel::Nodes::And.new([
+              table["id"].eq(1),
+              Arel::Nodes::Grouping.new(Arel.sql("foo = bar")),
+              table["attr_1"].eq("val_1")
+            ]),
+            table["attr_2"].eq("val_2")
+          ])
+        )
+      ])
+
+      assert_equal expected, a.merge(b)
+    end
+
     test "a clause knows if it is empty" do
-      assert WhereClause.empty.empty?
-      assert_not WhereClause.new(["anything"]).empty?
+      assert_empty WhereClause.empty
+      assert_not_empty WhereClause.new([Arel.sql("anything")])
     end
 
     test "invert cannot handle nil" do
@@ -87,19 +114,36 @@ class ActiveRecord::Relation
       end
     end
 
-    test "invert replaces each part of the predicate with its inverse" do
-      random_object = Object.new
+    test "invert wraps the ast inside a NAND node" do
       original = WhereClause.new([
         table["id"].in([1, 2, 3]),
+        table["id"].not_in([1, 2, 3]),
         table["id"].eq(1),
-        "sql literal",
-        random_object
+        table["id"].not_eq(2),
+        table["id"].gt(1),
+        table["id"].gteq(2),
+        table["id"].lt(1),
+        table["id"].lteq(2),
+        table["id"].is_not_distinct_from(1),
+        table["id"].is_distinct_from(2),
+        Arel.sql("sql literal"),
       ])
       expected = WhereClause.new([
-        table["id"].not_in([1, 2, 3]),
-        table["id"].not_eq(1),
-        Arel::Nodes::Not.new(Arel::Nodes::SqlLiteral.new("sql literal")),
-        Arel::Nodes::Not.new(random_object)
+        Arel::Nodes::Not.new(
+          Arel::Nodes::And.new([
+            table["id"].in([1, 2, 3]),
+            table["id"].not_in([1, 2, 3]),
+            table["id"].eq(1),
+            table["id"].not_eq(2),
+            table["id"].gt(1),
+            table["id"].gteq(2),
+            table["id"].lt(1),
+            table["id"].lteq(2),
+            table["id"].is_not_distinct_from(1),
+            table["id"].is_distinct_from(2),
+            Arel::Nodes::Grouping.new(Arel.sql("sql literal")),
+          ])
+        )
       ])
 
       assert_equal expected, original.invert
@@ -144,7 +188,7 @@ class ActiveRecord::Relation
       random_object = Object.new
       where_clause = WhereClause.new([
         table["id"].in([1, 2, 3]),
-        "foo = bar",
+        Arel.sql("foo = bar"),
         random_object,
       ])
       expected = Arel::Nodes::And.new([
@@ -158,7 +202,7 @@ class ActiveRecord::Relation
 
     test "ast removes any empty strings" do
       where_clause = WhereClause.new([table["id"].in([1, 2, 3])])
-      where_clause_with_empty = WhereClause.new([table["id"].in([1, 2, 3]), ""])
+      where_clause_with_empty = WhereClause.new([table["id"].in([1, 2, 3]), Arel.sql("")])
 
       assert_equal where_clause.ast, where_clause_with_empty.ast
     end
@@ -168,7 +212,7 @@ class ActiveRecord::Relation
       other_clause = WhereClause.new([table["name"].eq(bind_param("Sean"))])
       expected_ast =
         Arel::Nodes::Grouping.new(
-          Arel::Nodes::Or.new(table["id"].eq(bind_param(1)), table["name"].eq(bind_param("Sean")))
+          Arel::Nodes::Or.new([table["id"].eq(bind_param(1)), table["name"].eq(bind_param("Sean"))])
         )
 
       assert_equal expected_ast.to_sql, where_clause.or(other_clause).ast.to_sql
@@ -215,12 +259,12 @@ class ActiveRecord::Relation
     test "or will use only common conditions if one side only has common conditions" do
       only_common = WhereClause.new([
         table["id"].eq(bind_param(1)),
-        "foo = bar",
+        Arel.sql("foo = bar"),
       ])
 
       common_with_extra = WhereClause.new([
         table["id"].eq(bind_param(1)),
-        "foo = bar",
+        Arel.sql("foo = bar"),
         table["extra"].eq(bind_param("pluto")),
       ])
 
@@ -228,8 +272,20 @@ class ActiveRecord::Relation
       assert_equal only_common, common_with_extra.or(only_common)
     end
 
-    private
+    test "supports hash equality" do
+      h = Hash.new(0)
+      h[WhereClause.new([Arel.sql("a")])] += 1
+      h[WhereClause.new([Arel.sql("a")])] += 1
+      h[WhereClause.new([Arel.sql("b")])] += 1
 
+      expected = {
+        WhereClause.new([Arel.sql("a")]) => 2,
+        WhereClause.new([Arel.sql("b")]) => 1
+      }
+      assert_equal expected, h
+    end
+
+    private
       def table
         Arel::Table.new("table")
       end

@@ -9,7 +9,7 @@ module RailsGuides
       result = content_tag(:dt, link)
 
       if options[:work_in_progress]
-        result << content_tag(:dd, "Work in progress", class: "work-in-progress")
+        result << content_tag(:dd, "Work in progress", class: "interstitial work-in-progress")
       end
 
       result << content_tag(:dd, capture(&block))
@@ -28,6 +28,15 @@ module RailsGuides
       documents.reject { |document| document["work_in_progress"] }
     end
 
+    def all_images
+      base_path = File.expand_path("../assets", __dir__)
+      images_path = File.join(base_path, "images/**/*")
+      @all_images = Dir.glob(images_path).reject { |f| File.directory?(f) }.map { |item|
+        item.delete_prefix "#{base_path}/"
+      }
+      @all_images
+    end
+
     def docs_for_menu(position = nil)
       if position.nil?
         documents_by_section
@@ -38,18 +47,19 @@ module RailsGuides
       end
     end
 
-    def author(name, nick, image = "credits_pic_blank.gif", &block)
-      image = "images/#{image}"
-
-      result = tag(:img, src: image, class: "left pic", alt: name, width: 91, height: 91)
-      result << content_tag(:h3, name)
-      result << content_tag(:p, capture(&block))
-      content_tag(:div, result, class: "clearfix", id: nick)
+    def canonical_url(path)
+      url = "https://guides.rubyonrails.org/"
+      url += path unless path == "index.html"
+      url
     end
 
     def code(&block)
       c = capture(&block)
       content_tag(:code, c)
+    end
+
+    def digest_path(original_filename)
+      @digest_paths[original_filename] || original_filename
     end
   end
 end

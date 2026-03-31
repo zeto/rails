@@ -17,7 +17,7 @@ module ActiveRecord
         # association.
         attr_reader :base_klass, :children
 
-        delegate :table_name, :column_names, :primary_key, to: :base_klass
+        delegate :table_name, :column_names, :primary_key, :attribute_types, to: :base_klass
 
         def initialize(base_klass, children)
           @base_klass = base_klass
@@ -31,6 +31,13 @@ module ActiveRecord
         def each(&block)
           yield self
           children.each { |child| child.each(&block) }
+        end
+
+        def each_children(&block)
+          children.each do |child|
+            yield self, child
+            child.each_children(&block)
+          end
         end
 
         # An Arel::Table for the active_record
@@ -47,16 +54,16 @@ module ActiveRecord
           length = column_names_with_alias.length
 
           while index < length
-            column_name, alias_name = column_names_with_alias[index]
-            hash[column_name] = row[alias_name]
+            column = column_names_with_alias[index]
+            hash[column.name] = row[column.alias]
             index += 1
           end
 
           hash
         end
 
-        def instantiate(row, aliases, &block)
-          base_klass.instantiate(extract_record(row, aliases), &block)
+        def instantiate(row, aliases, column_types = {}, &block)
+          base_klass.instantiate(extract_record(row, aliases), column_types, &block)
         end
       end
     end

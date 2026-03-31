@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-module ActionView #:nodoc:
-  # = Action View Template Handlers
-  class Template #:nodoc:
-    module Handlers #:nodoc:
+module ActionView # :nodoc:
+  class Template # :nodoc:
+    # = Action View Template Handlers
+    module Handlers # :nodoc:
       autoload :Raw, "action_view/template/handlers/raw"
       autoload :ERB, "action_view/template/handlers/erb"
       autoload :Html, "action_view/template/handlers/html"
@@ -14,7 +14,7 @@ module ActionView #:nodoc:
         base.register_template_handler :erb, ERB.new
         base.register_template_handler :html, Html.new
         base.register_template_handler :builder, Builder.new
-        base.register_template_handler :ruby, :source.to_proc
+        base.register_template_handler :ruby, lambda { |_, source| source }
       end
 
       @@template_handlers = {}

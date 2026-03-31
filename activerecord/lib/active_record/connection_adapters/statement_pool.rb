@@ -42,13 +42,21 @@ module ActiveRecord
         cache.clear
       end
 
+      # Clear the pool without deallocating; this is only safe when we
+      # know the server has independently deallocated all statements
+      # (e.g. due to a reconnect, or a DISCARD ALL)
+      def reset
+        cache.clear
+      end
+
       def delete(key)
-        dealloc cache[key]
-        cache.delete(key)
+        if stmt = cache.delete(key)
+          dealloc(stmt)
+        end
+        stmt
       end
 
       private
-
         def cache
           @cache[Process.pid]
         end

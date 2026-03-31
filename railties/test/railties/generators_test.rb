@@ -44,8 +44,8 @@ module RailtiesTests
           f.write <<-GEMFILE.gsub(/^ {12}/, "")
             source "https://rubygems.org"
 
-            gem 'rails', path: '#{RAILS_FRAMEWORK_ROOT}'
-            gem 'sqlite3'
+            gem "rails", path: "#{RAILS_FRAMEWORK_ROOT}"
+            gem "sqlite3"
           GEMFILE
         end
       end
@@ -79,7 +79,7 @@ module RailtiesTests
         bundled_rails("g model namespaced/topic")
         assert_file "app/models/foo_bar/namespaced.rb", /module FooBar\n  module Namespaced/ do |content|
           assert_class_method :table_name_prefix, content do |method_content|
-            assert_match(/'foo_bar_namespaced_'/, method_content)
+            assert_match(/"foo_bar_namespaced_"/, method_content)
           end
         end
       end

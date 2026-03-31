@@ -9,6 +9,9 @@ require "rails-dom-testing"
 
 module ActionView
   # = Action View Test Case
+  #
+  # Read more about <tt>ActionView::TestCase</tt> in {Testing Rails Applications}[https://guides.rubyonrails.org/testing.html#testing-view-partials]
+  # in the guides.
   class TestCase < ActiveSupport::TestCase
     class TestController < ActionController::Base
       include ActionDispatch::TestProcess
@@ -16,11 +19,16 @@ module ActionView
       attr_accessor :request, :response, :params
 
       class << self
-        attr_writer :controller_path
+        # Overrides AbstractController::Base#controller_path
+        attr_accessor :controller_path
       end
 
       def controller_path=(path)
-        self.class.controller_path = (path)
+        self.class.controller_path = path
+      end
+
+      def self.controller_name
+        "test"
       end
 
       def initialize
@@ -52,9 +60,147 @@ module ActionView
       include ActiveSupport::Testing::ConstantLookup
 
       delegate :lookup_context, to: :controller
-      attr_accessor :controller, :output_buffer, :rendered
+      attr_accessor :controller, :request, :output_buffer
+
+      # Returns the content rendered by the last +render+ call.
+      #
+      # The returned object behaves like a string but also exposes a number of methods
+      # that allows you to parse the content string in formats registered using
+      # <tt>.register_parser</tt>.
+      #
+      # By default includes the following parsers:
+      #
+      # +.html+
+      #
+      # Parse the <tt>rendered</tt> content String into HTML. By default, this means
+      # a <tt>Nokogiri::XML::Node</tt>.
+      #
+      #   test "renders HTML" do
+      #     article = Article.create!(title: "Hello, world")
+      #
+      #     render partial: "articles/article", locals: { article: article }
+      #
+      #     assert_pattern { rendered.html.at("main h1") => { content: "Hello, world" } }
+      #   end
+      #
+      # To parse the rendered content into a <tt>Capybara::Simple::Node</tt>,
+      # re-register an <tt>:html</tt> parser with a call to
+      # <tt>Capybara.string</tt>:
+      #
+      #   register_parser :html, -> rendered { Capybara.string(rendered) }
+      #
+      #   test "renders HTML" do
+      #     article = Article.create!(title: "Hello, world")
+      #
+      #     render partial: article
+      #
+      #     rendered.html.assert_css "h1", text: "Hello, world"
+      #   end
+      #
+      # +.json+
+      #
+      # Parse the <tt>rendered</tt> content String into JSON. By default, this means
+      # a <tt>ActiveSupport::HashWithIndifferentAccess</tt>.
+      #
+      #   test "renders JSON" do
+      #     article = Article.create!(title: "Hello, world")
+      #
+      #     render formats: :json, partial: "articles/article", locals: { article: article }
+      #
+      #     assert_pattern { rendered.json => { title: "Hello, world" } }
+      #   end
+      attr_accessor :rendered
 
       module ClassMethods
+        def inherited(descendant) # :nodoc:
+          super
+
+          descendant_content_class = content_class.dup
+
+          if descendant_content_class.respond_to?(:set_temporary_name)
+            descendant_content_class.set_temporary_name("rendered_content")
+          end
+
+          descendant.content_class = descendant_content_class
+        end
+
+        # Register a callable to parse rendered content for a given template
+        # format.
+        #
+        # Each registered parser will also define a +#rendered.[FORMAT]+ helper
+        # method, where +[FORMAT]+ corresponds to the value of the
+        # +format+ argument.
+        #
+        # By default, ActionView::TestCase defines parsers for:
+        #
+        # * +:html+ - returns an instance of +Nokogiri::XML::Node+
+        # * +:json+ - returns an instance of ActiveSupport::HashWithIndifferentAccess
+        #
+        # These pre-registered parsers also define corresponding helpers:
+        #
+        # * +:html+ - defines +rendered.html+
+        # * +:json+ - defines +rendered.json+
+        #
+        # ==== Parameters
+        #
+        # [+format+]
+        #   The name (as a +Symbol+) of the format used to render the content.
+        #
+        # [+callable+]
+        #   The parser. A callable object that accepts the rendered string as
+        #   its sole argument. Alternatively, the parser can be specified as a
+        #   block.
+        #
+        # ==== Examples
+        #
+        #   test "renders HTML" do
+        #     article = Article.create!(title: "Hello, world")
+        #
+        #     render partial: "articles/article", locals: { article: article }
+        #
+        #     assert_pattern { rendered.html.at("main h1") => { content: "Hello, world" } }
+        #   end
+        #
+        #   test "renders JSON" do
+        #     article = Article.create!(title: "Hello, world")
+        #
+        #     render formats: :json, partial: "articles/article", locals: { article: article }
+        #
+        #     assert_pattern { rendered.json => { title: "Hello, world" } }
+        #   end
+        #
+        # To parse the rendered content into RSS, register a call to +RSS::Parser.parse+:
+        #
+        #   register_parser :rss, -> rendered { RSS::Parser.parse(rendered) }
+        #
+        #   test "renders RSS" do
+        #     article = Article.create!(title: "Hello, world")
+        #
+        #     render formats: :rss, partial: article
+        #
+        #     assert_equal "Hello, world", rendered.rss.items.last.title
+        #   end
+        #
+        # To parse the rendered content into a +Capybara::Simple::Node+,
+        # re-register an +:html+ parser with a call to +Capybara.string+:
+        #
+        #   register_parser :html, -> rendered { Capybara.string(rendered) }
+        #
+        #   test "renders HTML" do
+        #     article = Article.create!(title: "Hello, world")
+        #
+        #     render partial: article
+        #
+        #     rendered.html.assert_css "h1", text: "Hello, world"
+        #   end
+        #
+        def register_parser(format, callable = nil, &block)
+          parser = callable || block || :itself.to_proc
+          content_class.redefine_method(format) do
+            parser.call(to_s)
+          end
+        end
+
         def tests(helper_class)
           case helper_class
           when String, Symbol
@@ -73,10 +219,10 @@ module ActionView
         def helper_method(*methods)
           # Almost a duplicate from ActionController::Helpers
           methods.flatten.each do |method|
-            _helpers.module_eval <<-end_eval, __FILE__, __LINE__ + 1
-              def #{method}(*args, &block)                    # def current_user(*args, &block)
-                _test_case.send(%(#{method}), *args, &block)  #   _test_case.send(%(current_user), *args, &block)
-              end                                             # end
+            _helpers_for_modification.module_eval <<~end_eval, __FILE__, __LINE__ + 1
+              def #{method}(...)                    # def current_user(...)
+                _test_case.send(:'#{method}', ...)  #   _test_case.send(:'current_user', ...)
+              end                                   # end
             end_eval
           end
         end
@@ -93,24 +239,43 @@ module ActionView
         end
 
       private
-
         def include_helper_modules!
           helper(helper_class) if helper_class
           include _helpers
         end
       end
 
+      included do
+        class_attribute :content_class, instance_accessor: false, default: RenderedViewContent
+
+        setup :setup_with_controller
+
+        register_parser :html, -> rendered { Rails::Dom::Testing.html_document_fragment.parse(rendered) }
+        register_parser :json, -> rendered { JSON.parse(rendered, object_class: ActiveSupport::HashWithIndifferentAccess) }
+
+        ActiveSupport.run_load_hooks(:action_view_test_case, self)
+
+        helper do
+          def protect_against_forgery?
+            false
+          end
+
+          def _test_case
+            controller._test_case
+          end
+        end
+      end
+
       def setup_with_controller
-        @controller = ActionView::TestCase::TestController.new
+        controller_class = Class.new(ActionView::TestCase::TestController)
+        @controller = controller_class.new
         @request = @controller.request
         @view_flow = ActionView::OutputFlow.new
-        # empty string ensures buffer has UTF-8 encoding as
-        # new without arguments returns ASCII-8BIT encoded buffer like String#new
-        @output_buffer = ActiveSupport::SafeBuffer.new ""
-        @rendered = "".dup
+        @output_buffer = ActionView::OutputBuffer.new
+        @rendered = self.class.content_class.new(+"")
 
-        make_test_case_available_to_view!
-        say_no_to_protect_against_forgery!
+        test_case_instance = self
+        controller_class.define_method(:_test_case) { test_case_instance }
       end
 
       def config
@@ -131,7 +296,9 @@ module ActionView
         @controller._routes if @controller.respond_to?(:_routes)
       end
 
-      # Need to experiment if this priority is the best one: rendered => output_buffer
+      class RenderedViewContent < String # :nodoc:
+      end
+
       class RenderedViewsCollection
         def initialize
           @rendered_views ||= Hash.new { |hash, key| hash[key] = [] }
@@ -157,35 +324,10 @@ module ActionView
         end
       end
 
-      included do
-        setup :setup_with_controller
-        ActiveSupport.run_load_hooks(:action_view_test_case, self)
-      end
-
     private
-
       # Need to experiment if this priority is the best one: rendered => output_buffer
       def document_root_element
-        Nokogiri::HTML::Document.parse(@rendered.blank? ? @output_buffer : @rendered).root
-      end
-
-      def say_no_to_protect_against_forgery!
-        _helpers.module_eval do
-          silence_redefinition_of_method :protect_against_forgery?
-          def protect_against_forgery?
-            false
-          end
-        end
-      end
-
-      def make_test_case_available_to_view!
-        test_case_instance = self
-        _helpers.module_eval do
-          unless private_method_defined?(:_test_case)
-            define_method(:_test_case) { test_case_instance }
-            private :_test_case
-          end
-        end
+        Rails::Dom::Testing.html_document.parse(@rendered.blank? ? @output_buffer.to_str : @rendered).root
       end
 
       module Locals
@@ -231,6 +373,10 @@ module ActionView
         :@_result,
         :@_routes,
         :@controller,
+        :@_controller,
+        :@_request,
+        :@_config,
+        :@_default_form_builder,
         :@_layouts,
         :@_files,
         :@_rendered_views,
@@ -249,7 +395,8 @@ module ActionView
         :@view_context_class,
         :@view_flow,
         :@_subscribers,
-        :@html_document
+        :@html_document,
+        :@__leak_checker_before_env,
       ]
 
       def _user_defined_ivars
@@ -266,7 +413,7 @@ module ActionView
         end]
       end
 
-      def method_missing(selector, *args)
+      def method_missing(selector, ...)
         begin
           routes = @controller.respond_to?(:_routes) && @controller._routes
         rescue
@@ -276,7 +423,7 @@ module ActionView
         if routes &&
            (routes.named_routes.route_defined?(selector) ||
              routes.mounted_helpers.method_defined?(selector))
-          @controller.__send__(selector, *args)
+          @controller.__send__(selector, ...)
         else
           super
         end

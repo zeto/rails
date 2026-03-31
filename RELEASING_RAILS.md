@@ -14,20 +14,8 @@ Today is mostly coordination tasks. Here are the things you must do today:
 Do not release with a Red CI. You can find the CI status here:
 
 ```
-http://travis-ci.org/rails/rails
+https://buildkite.com/rails/rails
 ```
-
-### Is Sam Ruby happy? If not, make him happy.
-
-Sam Ruby keeps a [test suite](https://github.com/rubys/awdwr) that makes
-sure the code samples in his book
-([Agile Web Development with Rails](https://pragprog.com/titles/rails5/agile-web-development-with-rails-5th-edition))
-all work. These are valuable system tests
-for Rails. You can check the status of these tests here:
-
-[http://intertwingly.net/projects/dashboard.html](http://intertwingly.net/projects/dashboard.html)
-
-Do not release with Red AWDwR tests.
 
 ### Do we have any Git dependencies? If so, contact those authors.
 
@@ -36,49 +24,9 @@ Obviously Rails cannot be released when it depends on unreleased code.
 Contact the authors of those particular gems and work out a release date that
 suits them.
 
-### Contact the security team (either tenderlove or rafaelfranca)
+### Announce your plans to the rest of the team on Basecamp
 
-Let them know of your plans to release. There may be security issues to be
-addressed, and that can impact your release date.
-
-### Notify implementors.
-
-Ruby implementors have high stakes in making sure Rails works. Be kind and
-give them a heads up that Rails will be released soonish.
-
-This is only required for major and minor releases, bugfix releases aren't a
-big enough deal, and are supposed to be backward compatible.
-
-Send an email just giving a heads up about the upcoming release to these
-lists:
-
-* team@jruby.org
-* community@rubini.us
-* rubyonrails-core@googlegroups.com
-
-Implementors will love you and help you.
-
-## 3 Days before release
-
-This is when you should release the release candidate. Here are your tasks
-for today:
-
-### Is the CI green? If not, make it green.
-
-### Is Sam Ruby happy? If not, make him happy.
-
-### Contact the security team. CVE emails must be sent on this day.
-
-### Create a release branch.
-
-From the stable branch, create a release branch. For example, if you're
-releasing Rails 3.0.10, do this:
-
-```
-[aaron@higgins rails (3-0-stable)]$ git checkout -b 3-0-10
-Switched to a new branch '3-0-10'
-[aaron@higgins rails (3-0-10)]$
-```
+Let them know of your plans to release.
 
 ### Update each CHANGELOG.
 
@@ -93,8 +41,14 @@ You can review the commits for the 3.0.10 release like this:
 ```
 
 If you're doing a stable branch release, you should also ensure that all of
-the CHANGELOG entries in the stable branch are also synced to the master
+the CHANGELOG entries in the stable branch are also synced to the main
 branch.
+
+## Day of release
+
+If making multiple releases. Publish them in order from oldest to newest, to
+ensure that the "greatest" version also shows up in npm and GitHub Releases as
+"latest".
 
 ### Put the new version in the RAILS_VERSION file.
 
@@ -102,31 +56,38 @@ Include an RC number if appropriate, e.g. `6.0.0.rc1`.
 
 ### Build and test the gem.
 
-Run `rake verify` to generate the gems and install them locally. `verify` also
-generates a Rails app with a migration and boots it to smoke test with in your
-browser.
+Run `rake install` to generate the gems and install them locally. You can now
+use the version installed locally to generate a new app and check if everything
+is working as expected.
 
 This will stop you from looking silly when you push an RC to rubygems.org and
 then realize it is broken.
 
-### Release to RubyGems and NPM.
+### Check credentials for GitHub
 
-IMPORTANT: The Action Cable client and Action View's UJS adapter are released
-as NPM packages, so you must have Node.js installed, have an NPM account
-(npmjs.com), and be a package owner for `actioncable` and `rails-ujs` (you can
-check this via `npm owner ls actioncable` and `npm owner ls rails-ujs`) in
-order to do a full release. Do not release until you're set up with NPM!
+For GitHub run `gh auth status` to check that you are logged in (run `gh login` if not).
 
 The release task will sign the release tag. If you haven't got commit signing
-set up, use https://git-scm.com/book/tr/v2/Git-Tools-Signing-Your-Work as a
+set up, use https://git-scm.com/book/en/v2/Git-Tools-Signing-Your-Work as a
 guide. You can generate keys with the GPG suite from here: https://gpgtools.org.
 
-Run `rake changelog:header` to put a header with the new version in every
-CHANGELOG. Don't commit this, the release task handles it.
+Run `rake prep_release` to prepare the release. This will populate the gemspecs and
+npm package.json with the current RAILS_VERSION, add the header to the CHANGELOGs,
+build the gems, and check if bundler can resolve the dependencies.
 
-Run `rake release`. This will populate the gemspecs and NPM package.json with
-the current RAILS_VERSION, commit the changes, tag it, and push the gems to
-rubygems.org.
+You can now inspect the results in the diff and see if you are happy with the
+changes.
+
+To release, Run `rake release`. This will commit the changes, tag it, and create a GitHub
+release with the proper release notes in draft mode.
+
+Open the corresponding GitHub release draft and check that the release notes
+are correct. If everything is fine, publish the release.
+
+### Publish the gems
+
+To publish the gems approve the [Release workflow in GitHub Actions](https://github.com/rails/rails/actions/workflows/release.yml),
+that was created after the release was published.
 
 ### Send Rails release announcements
 
@@ -134,14 +95,13 @@ Write a release announcement that includes the version, changes, and links to
 GitHub where people can find the specific commit list. Here are the mailing
 lists where you should announce:
 
-* rubyonrails-core@googlegroups.com
-* rubyonrails-talk@googlegroups.com
-* ruby-talk@ruby-lang.org
+* [rubyonrails-core](https://discuss.rubyonrails.org/c/rubyonrails-core)
+* [rubyonrails-talk](https://discuss.rubyonrails.org/c/rubyonrails-talk)
 
 Use Markdown format for your announcement. Remember to ask people to report
-issues with the release candidate to the rails-core mailing list.
+issues with the release candidate to the rubyonrails-core forum.
 
-NOTE: For patch releases there's a `rake announce` task to generate the release
+NOTE: For patch releases, there's a `rake announce` task to generate the release
 post. It supports multiple patch releases too:
 
 ```
@@ -154,44 +114,33 @@ break existing applications.
 
 ### Post the announcement to the Rails blog.
 
-If you used Markdown format for your email, you can just paste it into the
-blog.
+The blog at https://rubyonrails.org/blog is built from
+https://github.com/rails/website.
 
-* http://weblog.rubyonrails.org
+Create a file named like
+`_posts/$(date +'%F')-Rails-<versions>-have-been-released.markdown`
 
-### Post the announcement to the Rails Twitter account.
+Add YAML frontmatter
+```
+---
+layout: post
+title: 'Rails <VERSIONS> have been released!'
+categories: releases
+author: <your handle>
+published: true
+date: <YYYY-MM-DD or `date +%F`>
+---
+```
 
-## Time between release candidate and actual release
+Use the markdown generated by `rake announce` earlier as a base for the post.
+Add some context for users as to the purpose of this release (bugfix/security).
 
-Check the rails-core mailing list and the GitHub issue list for regressions in
-the RC.
+If this is a part of the latest release series, update `_data/version.yml` so
+that the homepage points to the latest version.
 
-If any regressions are found, fix the regressions and repeat the release
-candidate process. We will not release the final until 72 hours after the
-last release candidate has been pushed. This means that if users find
-regressions, the scheduled release date must be postponed.
+### Post the announcement to the Rails X account.
 
-When you fix the regressions, do not create a new branch. Fix them on the
-stable branch, then cherry pick the commit to your release branch. No other
-commits should be added to the release branch besides regression fixing commits.
-
-## Day of release
-
-Many of these steps are the same as for the release candidate, so if you need
-more explanation on a particular step, see the RC steps.
-
-Today, do this stuff in this order:
-
-* Apply security patches to the release branch
-* Update CHANGELOG with security fixes
-* Update RAILS_VERSION to remove the rc
-* Build and test the gem
-* Release the gems
-* If releasing a new stable version:
-  - Trigger stable docs generation (see below)
-  - Update the version in the home page
-* Email security lists
-* Email general announcement lists
+## Security releases
 
 ### Emailing the Rails security announce list
 
@@ -209,7 +158,7 @@ and links to each patch. Some people may not be able to upgrade right away,
 so we need to give them the security fixes in patch form.
 
 * Blog announcements
-* Twitter announcements
+* X announcements
 * Merge the release branch to the stable branch
 * Drink beer (or other cocktail)
 

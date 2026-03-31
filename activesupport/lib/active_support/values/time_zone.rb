@@ -2,21 +2,22 @@
 
 require "tzinfo"
 require "concurrent/map"
-require_relative "../core_ext/object/blank"
 
 module ActiveSupport
-  # The TimeZone class serves as a wrapper around TZInfo::Timezone instances.
+  # = Active Support \Time Zone
+  #
+  # The TimeZone class serves as a wrapper around +TZInfo::Timezone+ instances.
   # It allows us to do the following:
   #
   # * Limit the set of zones provided by TZInfo to a meaningful subset of 134
   #   zones.
   # * Retrieve and display zones with a friendlier name
-  #   (e.g., "Eastern Time (US & Canada)" instead of "America/New_York").
-  # * Lazily load TZInfo::Timezone instances only when they're needed.
+  #   (e.g., "Eastern \Time (US & Canada)" instead of "America/New_York").
+  # * Lazily load +TZInfo::Timezone+ instances only when they're needed.
   # * Create ActiveSupport::TimeWithZone instances via TimeZone's +local+,
-  #   +parse+, +at+ and +now+ methods.
+  #   +parse+, +at+, and +now+ methods.
   #
-  # If you set <tt>config.time_zone</tt> in the Rails Application, you can
+  # If you set <tt>config.time_zone</tt> in the \Rails Application, you can
   # access this TimeZone object via <tt>Time.zone</tt>:
   #
   #   # application.rb:
@@ -28,9 +29,9 @@ module ActiveSupport
   #   Time.zone.name # => "Eastern Time (US & Canada)"
   #   Time.zone.now  # => Sun, 18 May 2008 14:30:44 EDT -04:00
   class TimeZone
-    # Keys are Rails TimeZone names, values are TZInfo identifiers.
+    # Keys are \Rails TimeZone names, values are TZInfo identifiers.
     MAPPING = {
-      "International Date Line West" => "Pacific/Midway",
+      "International Date Line West" => "Etc/GMT+12",
       "Midway Island"                => "Pacific/Midway",
       "American Samoa"               => "Pacific/Pago_Pago",
       "Hawaii"                       => "Pacific/Honolulu",
@@ -56,13 +57,14 @@ module ActiveSupport
       "Caracas"                      => "America/Caracas",
       "La Paz"                       => "America/La_Paz",
       "Santiago"                     => "America/Santiago",
+      "Asuncion"                     => "America/Asuncion",
       "Newfoundland"                 => "America/St_Johns",
       "Brasilia"                     => "America/Sao_Paulo",
       "Buenos Aires"                 => "America/Argentina/Buenos_Aires",
       "Montevideo"                   => "America/Montevideo",
       "Georgetown"                   => "America/Guyana",
       "Puerto Rico"                  => "America/Puerto_Rico",
-      "Greenland"                    => "America/Godthab",
+      "Greenland"                    => "America/Nuuk",
       "Mid-Atlantic"                 => "Atlantic/South_Georgia",
       "Azores"                       => "Atlantic/Azores",
       "Cape Verde Is."               => "Atlantic/Cape_Verde",
@@ -133,10 +135,10 @@ module ActiveSupport
       "Mumbai"                       => "Asia/Kolkata",
       "New Delhi"                    => "Asia/Kolkata",
       "Kathmandu"                    => "Asia/Kathmandu",
-      "Astana"                       => "Asia/Dhaka",
       "Dhaka"                        => "Asia/Dhaka",
       "Sri Jayawardenepura"          => "Asia/Colombo",
       "Almaty"                       => "Asia/Almaty",
+      "Astana"                       => "Asia/Almaty",
       "Novosibirsk"                  => "Asia/Novosibirsk",
       "Rangoon"                      => "Asia/Rangoon",
       "Bangkok"                      => "Asia/Bangkok",
@@ -160,7 +162,7 @@ module ActiveSupport
       "Yakutsk"                      => "Asia/Yakutsk",
       "Darwin"                       => "Australia/Darwin",
       "Adelaide"                     => "Australia/Adelaide",
-      "Canberra"                     => "Australia/Melbourne",
+      "Canberra"                     => "Australia/Canberra",
       "Melbourne"                    => "Australia/Melbourne",
       "Sydney"                       => "Australia/Sydney",
       "Brisbane"                     => "Australia/Brisbane",
@@ -183,8 +185,9 @@ module ActiveSupport
       "Samoa"                        => "Pacific/Apia"
     }
 
-    UTC_OFFSET_WITH_COLON = "%s%02d:%02d"
-    UTC_OFFSET_WITHOUT_COLON = UTC_OFFSET_WITH_COLON.tr(":", "")
+    UTC_OFFSET_WITH_COLON = "%s%02d:%02d" # :nodoc:
+    UTC_OFFSET_WITHOUT_COLON = UTC_OFFSET_WITH_COLON.tr(":", "") # :nodoc:
+    private_constant :UTC_OFFSET_WITH_COLON, :UTC_OFFSET_WITHOUT_COLON
 
     @lazy_zones_map = Concurrent::Map.new
     @country_zones  = Concurrent::Map.new
@@ -203,10 +206,10 @@ module ActiveSupport
       end
 
       def find_tzinfo(name)
-        TZInfo::Timezone.new(MAPPING[name] || name)
+        TZInfo::Timezone.get(MAPPING[name] || name)
       end
 
-      alias_method :create, :new
+      alias_method :create, :new # :nodoc:
 
       # Returns a TimeZone instance with the given name, or +nil+ if no
       # such TimeZone instance exists. (This exists to support the use of
@@ -229,16 +232,20 @@ module ActiveSupport
       # Returns +nil+ if no such time zone is known to the system.
       def [](arg)
         case arg
+        when self
+          arg
         when String
           begin
             @lazy_zones_map[arg] ||= create(arg)
           rescue TZInfo::InvalidTimezoneIdentifier
             nil
           end
+        when TZInfo::Timezone
+          @lazy_zones_map[arg.name] ||= create(arg.name, nil, arg)
         when Numeric, ActiveSupport::Duration
           arg *= 3600 if arg.abs <= 13
           all.find { |z| z.utc_offset == arg.to_i }
-          else
+        else
           raise ArgumentError, "invalid argument to TimeZone[]: #{arg.inspect}"
         end
       end
@@ -256,22 +263,32 @@ module ActiveSupport
         @country_zones[code] ||= load_country_zones(code)
       end
 
+      def clear # :nodoc:
+        @lazy_zones_map = Concurrent::Map.new
+        @country_zones  = Concurrent::Map.new
+        @zones = nil
+        @zones_map = nil
+      end
+
       private
         def load_country_zones(code)
           country = TZInfo::Country.get(code)
-          country.zone_identifiers.map do |tz_id|
+          country.zone_identifiers.flat_map do |tz_id|
             if MAPPING.value?(tz_id)
-              self[MAPPING.key(tz_id)]
+              MAPPING.inject([]) do |memo, (key, value)|
+                memo << self[key] if value == tz_id
+                memo
+              end
             else
-              create(tz_id, nil, TZInfo::Timezone.new(tz_id))
+              create(tz_id, nil, TZInfo::Timezone.get(tz_id))
             end
           end.sort!
         end
 
         def zones_map
-          @zones_map ||= begin
-            MAPPING.each_key { |place| self[place] } # load all the zones
-            @lazy_zones_map
+          @zones_map ||= MAPPING.each_with_object({}) do |(name, _), zones|
+            timezone = self[name]
+            zones[name] = timezone if timezone
           end
         end
     end
@@ -280,23 +297,32 @@ module ActiveSupport
     attr_reader :name
     attr_reader :tzinfo
 
+    ##
+    # :singleton-method: create
+    # :call-seq: create(name, utc_offset = nil, tzinfo = nil)
+    #
     # Create a new TimeZone object with the given name and offset. The
     # offset is the number of seconds that this time zone is offset from UTC
     # (GMT). Seconds were chosen as the offset unit because that is the unit
     # that Ruby uses to represent time zone offsets (see Time#utc_offset).
+
+    # :stopdoc:
     def initialize(name, utc_offset = nil, tzinfo = nil)
       @name = name
       @utc_offset = utc_offset
       @tzinfo = tzinfo || TimeZone.find_tzinfo(name)
     end
+    # :startdoc:
+
+    # Returns a standard time zone name defined by IANA
+    # https://www.iana.org/time-zones
+    def standard_name
+      MAPPING[name] || name
+    end
 
     # Returns the offset of this time zone from UTC in seconds.
     def utc_offset
-      if @utc_offset
-        @utc_offset
-      else
-        tzinfo.current_period.utc_offset if tzinfo && tzinfo.current_period
-      end
+      @utc_offset || tzinfo&.current_period&.base_utc_offset
     end
 
     # Returns a formatted string of the offset from UTC, or an alternative
@@ -324,12 +350,19 @@ module ActiveSupport
       re === name || re === MAPPING[name]
     end
 
+    # Compare #name and TZInfo identifier to a supplied regexp, returning +true+
+    # if a match is found.
+    def match?(re)
+      (re == name) || (re == MAPPING[name]) ||
+        ((Regexp === re) && (re.match?(name) || re.match?(MAPPING[name])))
+    end
+
     # Returns a textual representation of this time zone.
     def to_s
       "(GMT#{formatted_offset}) #{name}"
     end
 
-    # Method for creating new ActiveSupport::TimeWithZone instance in time zone
+    # \Method for creating new ActiveSupport::TimeWithZone instance in time zone
     # of +self+ from given values.
     #
     #   Time.zone = 'Hawaii'                    # => "Hawaii"
@@ -339,17 +372,22 @@ module ActiveSupport
       ActiveSupport::TimeWithZone.new(nil, self, time)
     end
 
-    # Method for creating new ActiveSupport::TimeWithZone instance in time zone
+    # \Method for creating new ActiveSupport::TimeWithZone instance in time zone
     # of +self+ from number of seconds since the Unix epoch.
     #
     #   Time.zone = 'Hawaii'        # => "Hawaii"
     #   Time.utc(2000).to_f         # => 946684800.0
     #   Time.zone.at(946684800.0)   # => Fri, 31 Dec 1999 14:00:00 HST -10:00
-    def at(secs)
-      Time.at(secs).utc.in_time_zone(self)
+    #
+    # A second argument can be supplied to specify sub-second precision.
+    #
+    #   Time.zone = 'Hawaii'                # => "Hawaii"
+    #   Time.at(946684800, 123456.789).nsec # => 123456789
+    def at(*args)
+      Time.at(*args).utc.in_time_zone(self)
     end
 
-    # Method for creating new ActiveSupport::TimeWithZone instance in time zone
+    # \Method for creating new ActiveSupport::TimeWithZone instance in time zone
     # of +self+ from an ISO 8601 string.
     #
     #   Time.zone = 'Hawaii'                     # => "Hawaii"
@@ -363,14 +401,28 @@ module ActiveSupport
     # If the string is invalid then an +ArgumentError+ will be raised unlike +parse+
     # which usually returns +nil+ when given an invalid date string.
     def iso8601(str)
+      # Historically `Date._iso8601(nil)` returns `{}`, but in the `date` gem versions `3.2.1`, `3.1.2`, `3.0.2`,
+      # and `2.0.1`, `Date._iso8601(nil)` raises `TypeError` https://github.com/ruby/date/issues/39
+      # Future `date` releases are expected to revert back to the original behavior.
+      raise ArgumentError, "invalid date" if str.nil?
+
       parts = Date._iso8601(str)
 
-      raise ArgumentError, "invalid date" if parts.empty?
+      year = parts.fetch(:year)
+
+      if parts.key?(:yday)
+        ordinal_date = Date.ordinal(year, parts.fetch(:yday))
+        month = ordinal_date.month
+        day = ordinal_date.day
+      else
+        month = parts.fetch(:mon)
+        day = parts.fetch(:mday)
+      end
 
       time = Time.new(
-        parts.fetch(:year),
-        parts.fetch(:mon),
-        parts.fetch(:mday),
+        year,
+        month,
+        day,
         parts.fetch(:hour, 0),
         parts.fetch(:min, 0),
         parts.fetch(:sec, 0) + parts.fetch(:sec_fraction, 0),
@@ -382,9 +434,12 @@ module ActiveSupport
       else
         TimeWithZone.new(nil, self, time)
       end
+
+    rescue Date::Error, KeyError
+      raise ArgumentError, "invalid date"
     end
 
-    # Method for creating new ActiveSupport::TimeWithZone instance in time zone
+    # \Method for creating new ActiveSupport::TimeWithZone instance in time zone
     # of +self+ from parsed string.
     #
     #   Time.zone = 'Hawaii'                   # => "Hawaii"
@@ -406,7 +461,7 @@ module ActiveSupport
       parts_to_time(Date._parse(str, false), now)
     end
 
-    # Method for creating new ActiveSupport::TimeWithZone instance in time zone
+    # \Method for creating new ActiveSupport::TimeWithZone instance in time zone
     # of +self+ from an RFC 3339 string.
     #
     #   Time.zone = 'Hawaii'                     # => "Hawaii"
@@ -485,10 +540,17 @@ module ActiveSupport
     end
 
     # Adjust the given time to the simultaneous time in the time zone
-    # represented by +self+. Returns a Time.utc() instance -- if you want an
-    # ActiveSupport::TimeWithZone instance, use Time#in_time_zone() instead.
+    # represented by +self+. Returns a local time with the appropriate offset
+    # -- if you want an ActiveSupport::TimeWithZone instance, use
+    # Time#in_time_zone() instead.
+    #
+    # As of tzinfo 2, utc_to_local returns a Time with a non-zero utc_offset.
+    # See the +utc_to_local_returns_utc_offset_times+ config for more info.
     def utc_to_local(time)
-      tzinfo.utc_to_local(time)
+      tzinfo.utc_to_local(time).yield_self do |t|
+        ActiveSupport.utc_to_local_returns_utc_offset_times ?
+          t : Time.utc(t.year, t.month, t.day, t.hour, t.min, t.sec, t.sec_fraction * 1_000_000)
+      end
     end
 
     # Adjust the given time to the simultaneous time in UTC. Returns a
@@ -497,27 +559,31 @@ module ActiveSupport
       tzinfo.local_to_utc(time, dst)
     end
 
-    # Available so that TimeZone instances respond like TZInfo::Timezone
-    # instances.
-    def period_for_utc(time)
+    def period_for_utc(time) # :nodoc:
       tzinfo.period_for_utc(time)
     end
 
-    # Available so that TimeZone instances respond like TZInfo::Timezone
-    # instances.
-    def period_for_local(time, dst = true)
-      tzinfo.period_for_local(time, dst)
+    def period_for_local(time, dst = true) # :nodoc:
+      tzinfo.period_for_local(time, dst) { |periods| periods.last }
     end
 
-    def periods_for_local(time) #:nodoc:
+    def periods_for_local(time) # :nodoc:
       tzinfo.periods_for_local(time)
     end
 
-    def init_with(coder) #:nodoc:
+    def abbr(time) # :nodoc:
+      tzinfo.abbr(time)
+    end
+
+    def dst?(time) # :nodoc:
+      tzinfo.dst?(time)
+    end
+
+    def init_with(coder) # :nodoc:
       initialize(coder["name"])
     end
 
-    def encode_with(coder) #:nodoc:
+    def encode_with(coder) # :nodoc:
       coder.tag = "!ruby/object:#{self.class}"
       coder.map = { "name" => tzinfo.name }
     end

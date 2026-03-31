@@ -15,6 +15,7 @@ class RailtieTest < ActiveModel::TestCase
     @app ||= Class.new(::Rails::Application) do
       config.eager_load = false
       config.logger = fake_logger
+      config.active_support.cache_format_version = 7.1
     end
   end
 
@@ -30,5 +31,25 @@ class RailtieTest < ActiveModel::TestCase
     @app.initialize!
 
     assert_equal true, ActiveModel::SecurePassword.min_cost
+  end
+
+  test "i18n customize full message defaults to false" do
+    @app.initialize!
+
+    assert_equal false, ActiveModel::Error.i18n_customize_full_message
+  end
+
+  test "i18n customize full message can be disabled" do
+    @app.config.active_model.i18n_customize_full_message = false
+    @app.initialize!
+
+    assert_equal false, ActiveModel::Error.i18n_customize_full_message
+  end
+
+  test "i18n customize full message can be enabled" do
+    @app.config.active_model.i18n_customize_full_message = true
+    @app.initialize!
+
+    assert_equal true, ActiveModel::Error.i18n_customize_full_message
   end
 end

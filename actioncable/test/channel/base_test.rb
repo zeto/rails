@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "minitest/mock"
 require "stubs/test_connection"
 require "stubs/room"
 
-class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
+class ActionCable::Channel::BaseTest < ActionCable::TestCase
   class ActionCable::Channel::Base
     def kick
       @last_action = [ :kick ]
@@ -24,6 +25,9 @@ class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
     attr_reader :room, :last_action
     after_subscribe :toggle_subscribed
     after_unsubscribe :toggle_subscribed
+
+    class SomeCustomError < StandardError; end
+    rescue_from SomeCustomError, with: :error_handler
 
     def initialize(*)
       @subscribed = false
@@ -60,16 +64,24 @@ class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
     end
 
     def get_latest
-      transmit data: "latest"
+      transmit({ data: "latest" })
     end
 
     def receive
       @last_action = [ :receive ]
     end
 
+    def error_action
+      raise SomeCustomError
+    end
+
     private
       def rm_rf
         @last_action = [ :rm_rf ]
+      end
+
+      def error_handler
+        @last_action = [ :error_action ]
       end
   end
 
@@ -93,16 +105,35 @@ class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
     assert_equal({ id: 1 }, @channel.params)
   end
 
+  test "does not log filtered parameters" do
+    @connection.server.config.filter_parameters << :password
+    data = { password: "password", foo: "foo" }
+
+    assert_logged({ password: "[FILTERED]" }.inspect[1..-2]) do
+      @channel.perform_action data
+    end
+  end
+
   test "unsubscribing from a channel" do
     @channel.subscribe_to_channel
 
     assert @channel.room
-    assert @channel.subscribed?
+    assert_predicate @channel, :subscribed?
 
     @channel.unsubscribe_from_channel
 
-    assert ! @channel.room
-    assert ! @channel.subscribed?
+    assert_not @channel.room
+    assert_not_predicate @channel, :subscribed?
+  end
+
+  test "unsubscribed? method returns correct status" do
+    assert_not @channel.unsubscribed?
+
+    @channel.subscribe_to_channel
+    assert_not @channel.unsubscribed?
+
+    @channel.unsubscribe_from_channel
+    assert @channel.unsubscribed?
   end
 
   test "connection identifiers" do
@@ -167,7 +198,7 @@ class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
   end
 
   test "actions available on Channel" do
-    available_actions = %w(room last_action subscribed unsubscribed toggle_subscribed leave speak subscribed? get_latest receive chatters topic).to_set
+    available_actions = %w(room last_action subscribed unsubscribed toggle_subscribed leave speak subscribed? get_latest receive chatters topic error_action).to_set
     assert_equal available_actions, ChatChannel.action_methods
   end
 
@@ -178,80 +209,54 @@ class ActionCable::Channel::BaseTest < ActiveSupport::TestCase
   end
 
   test "notification for perform_action" do
-    begin
-      events = []
-      ActiveSupport::Notifications.subscribe "perform_action.action_cable" do |*args|
-        events << ActiveSupport::Notifications::Event.new(*args)
+    data = { "action" => :speak, "content" => "hello" }
+    expected_payload = { channel_class: "ActionCable::Channel::BaseTest::ChatChannel", action: :speak, data: }
+
+    assert_notifications_count("perform_action.action_cable", 1) do
+      assert_notification("perform_action.action_cable", expected_payload) do
+        @channel.perform_action data
       end
-
-      data = { "action" => :speak, "content" => "hello" }
-      @channel.perform_action data
-
-      assert_equal 1, events.length
-      assert_equal "perform_action.action_cable", events[0].name
-      assert_equal "ActionCable::Channel::BaseTest::ChatChannel", events[0].payload[:channel_class]
-      assert_equal :speak, events[0].payload[:action]
-      assert_equal data, events[0].payload[:data]
-    ensure
-      ActiveSupport::Notifications.unsubscribe "perform_action.action_cable"
     end
   end
 
   test "notification for transmit" do
-    begin
-      events = []
-      ActiveSupport::Notifications.subscribe "transmit.action_cable" do |*args|
-        events << ActiveSupport::Notifications::Event.new(*args)
+    data = { data: "latest" }
+    expected_payload = { channel_class: "ActionCable::Channel::BaseTest::ChatChannel", data:, via: nil }
+
+    assert_notifications_count("transmit.action_cable", 1) do
+      assert_notification("transmit.action_cable", expected_payload) do
+        @channel.perform_action "action" => :get_latest
       end
-
-      @channel.perform_action "action" => :get_latest
-      expected_data = { data: "latest" }
-
-      assert_equal 1, events.length
-      assert_equal "transmit.action_cable", events[0].name
-      assert_equal "ActionCable::Channel::BaseTest::ChatChannel", events[0].payload[:channel_class]
-      assert_equal expected_data, events[0].payload[:data]
-      assert_nil events[0].payload[:via]
-    ensure
-      ActiveSupport::Notifications.unsubscribe "transmit.action_cable"
     end
   end
 
   test "notification for transmit_subscription_confirmation" do
-    begin
-      @channel.subscribe_to_channel
+    expected_payload = { channel_class: "ActionCable::Channel::BaseTest::ChatChannel", identifier: "{id: 1}" }
 
-      events = []
-      ActiveSupport::Notifications.subscribe "transmit_subscription_confirmation.action_cable" do |*args|
-        events << ActiveSupport::Notifications::Event.new(*args)
+    @channel.subscribe_to_channel
+
+    assert_notifications_count("transmit_subscription_confirmation.action_cable", 1) do
+      assert_notification("transmit_subscription_confirmation.action_cable", expected_payload) do
+        @channel.stub(:subscription_confirmation_sent?, false) do
+          @channel.send(:transmit_subscription_confirmation)
+        end
       end
-
-      @channel.stubs(:subscription_confirmation_sent?).returns(false)
-      @channel.send(:transmit_subscription_confirmation)
-
-      assert_equal 1, events.length
-      assert_equal "transmit_subscription_confirmation.action_cable", events[0].name
-      assert_equal "ActionCable::Channel::BaseTest::ChatChannel", events[0].payload[:channel_class]
-    ensure
-      ActiveSupport::Notifications.unsubscribe "transmit_subscription_confirmation.action_cable"
     end
   end
 
   test "notification for transmit_subscription_rejection" do
-    begin
-      events = []
-      ActiveSupport::Notifications.subscribe "transmit_subscription_rejection.action_cable" do |*args|
-        events << ActiveSupport::Notifications::Event.new(*args)
+    expected_payload = { channel_class: "ActionCable::Channel::BaseTest::ChatChannel", identifier: "{id: 1}" }
+
+    assert_notifications_count("transmit_subscription_rejection.action_cable", 1) do
+      assert_notification("transmit_subscription_rejection.action_cable", expected_payload) do
+        @channel.send(:transmit_subscription_rejection)
       end
-
-      @channel.send(:transmit_subscription_rejection)
-
-      assert_equal 1, events.length
-      assert_equal "transmit_subscription_rejection.action_cable", events[0].name
-      assert_equal "ActionCable::Channel::BaseTest::ChatChannel", events[0].payload[:channel_class]
-    ensure
-      ActiveSupport::Notifications.unsubscribe "transmit_subscription_rejection.action_cable"
     end
+  end
+
+  test "behaves like rescuable" do
+    @channel.perform_action "action" => :error_action
+    assert_equal [ :error_action ], @channel.last_action
   end
 
   private

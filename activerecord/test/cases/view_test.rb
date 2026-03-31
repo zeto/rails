@@ -19,9 +19,9 @@ module ViewBehavior
 
   def setup
     super
-    @connection = ActiveRecord::Base.connection
-    create_view "ebooks'", <<-SQL
-      SELECT id, name, status FROM books WHERE format = 'ebook'
+    @connection = ActiveRecord::Base.lease_connection
+    create_view "ebooks'", <<~SQL
+      SELECT id, name, cover, status FROM books WHERE format = 'ebook'
     SQL
   end
 
@@ -58,11 +58,12 @@ module ViewBehavior
   def test_column_definitions
     assert_equal([["id", :integer],
                   ["name", :string],
+                  ["cover", :string],
                   ["status", :integer]], Ebook.columns.map { |c| [c.name, c.type] })
   end
 
   def test_attributes
-    assert_equal({ "id" => 2, "name" => "Ruby for Rails", "status" => 0 },
+    assert_equal({ "id" => 2, "name" => "Ruby for Rails", "cover" => "hard", "status" => 0 },
                  Ebook.first.attributes)
   end
 
@@ -77,14 +78,9 @@ module ViewBehavior
     schema = dump_table_schema "ebooks'"
     assert_no_match %r{create_table "ebooks'"}, schema
   end
-
-  private
-    def quote_table_name(name)
-      @connection.quote_table_name(name)
-    end
 end
 
-if ActiveRecord::Base.connection.supports_views?
+if ActiveRecord::Base.lease_connection.supports_views?
   class ViewWithPrimaryKeyTest < ActiveRecord::TestCase
     include ViewBehavior
 
@@ -100,20 +96,22 @@ if ActiveRecord::Base.connection.supports_views?
 
   class ViewWithoutPrimaryKeyTest < ActiveRecord::TestCase
     include SchemaDumpingHelper
+
+    self.use_transactional_tests = false
     fixtures :books
 
     class Paperback < ActiveRecord::Base; end
 
     setup do
-      @connection = ActiveRecord::Base.connection
-      @connection.execute <<-SQL
+      @connection = ActiveRecord::Base.lease_connection
+      @connection.execute <<~SQL
         CREATE VIEW paperbacks
           AS SELECT name, status FROM books WHERE format = 'paperback'
       SQL
     end
 
     teardown do
-      @connection.execute "DROP VIEW paperbacks" if @connection.view_exists? "paperbacks"
+      @connection.execute "DROP VIEW paperbacks" if @connection&.view_exists? "paperbacks"
     end
 
     def test_reading
@@ -142,7 +140,7 @@ if ActiveRecord::Base.connection.supports_views?
 
     def test_attributes
       assert_equal({ "name" => "Agile Web Development with Rails", "status" => 2 },
-                   Paperback.first.attributes)
+                   Paperback.take.attributes)
     end
 
     def test_does_not_have_a_primary_key
@@ -155,11 +153,9 @@ if ActiveRecord::Base.connection.supports_views?
     end
   end
 
-  # sqlite dose not support CREATE, INSERT, and DELETE for VIEW
-  if current_adapter?(:Mysql2Adapter, :SQLServerAdapter) ||
-      current_adapter?(:PostgreSQLAdapter) && ActiveRecord::Base.connection.postgresql_version >= 90300
-
-    class UpdateableViewTest < ActiveRecord::TestCase
+  class UpdateableViewTest < ActiveRecord::TestCase
+    # SQLite does not support CREATE, INSERT, and DELETE for VIEW
+    if current_adapter?(:Mysql2Adapter, :TrilogyAdapter, :PostgreSQLAdapter)
       self.use_transactional_tests = false
       fixtures :books
 
@@ -168,8 +164,8 @@ if ActiveRecord::Base.connection.supports_views?
       end
 
       setup do
-        @connection = ActiveRecord::Base.connection
-        @connection.execute <<-SQL
+        @connection = ActiveRecord::Base.lease_connection
+        @connection.execute <<~SQL
           CREATE VIEW printed_books
             AS SELECT id, name, status, format FROM books WHERE format = 'paperback'
         SQL
@@ -194,6 +190,12 @@ if ActiveRecord::Base.connection.supports_views?
         assert_equal "Rails in Action", new_book.name
       end
 
+      def test_insert_record_populates_primary_key
+        book = PrintedBook.create! name: "Rails in Action", status: 0, format: "paperback"
+        assert_not_nil book.id
+        assert book.id > 0
+      end if current_adapter?(:PostgreSQLAdapter, :SQLite3Adapter) && supports_insert_returning?
+
       def test_update_record_to_fail_view_conditions
         book = PrintedBook.first
         book.format = "ebook"
@@ -203,12 +205,11 @@ if ActiveRecord::Base.connection.supports_views?
           book.reload
         end
       end
-    end
-  end # end of `if current_adapter?(:Mysql2Adapter, :PostgreSQLAdapter, :SQLServerAdapter)`
-end # end of `if ActiveRecord::Base.connection.supports_views?`
+    end # end of `if current_adapter?(:Mysql2Adapter, :TrilogyAdapter, :PostgreSQLAdapter)`
+  end
+end # end of `if ActiveRecord::Base.lease_connection.supports_views?`
 
-if ActiveRecord::Base.connection.respond_to?(:supports_materialized_views?) &&
-    ActiveRecord::Base.connection.supports_materialized_views?
+if ActiveRecord::Base.lease_connection.supports_materialized_views?
   class MaterializedViewTest < ActiveRecord::PostgreSQLTestCase
     include ViewBehavior
 

@@ -1,101 +1,90 @@
 # frozen_string_literal: true
 
-require_relative "../http/request"
-require_relative "exception_wrapper"
-require_relative "../routing/inspector"
-require "action_view"
-require "action_view/base"
+# :markup: markdown
 
-require "pp"
+require "action_dispatch/middleware/exception_wrapper"
+require "action_dispatch/routing/inspector"
+
+require "action_view"
 
 module ActionDispatch
-  # This middleware is responsible for logging exceptions and
-  # showing a debugging page in case the request is local.
+  # # Action Dispatch DebugExceptions
+  #
+  # This middleware is responsible for logging exceptions and showing a debugging
+  # page in case the request is local.
   class DebugExceptions
-    RESCUES_TEMPLATE_PATH = File.expand_path("templates", __dir__)
+    cattr_reader :interceptors, instance_accessor: false, default: []
 
-    class DebugView < ActionView::Base
-      def debug_params(params)
-        clean_params = params.clone
-        clean_params.delete("action")
-        clean_params.delete("controller")
-
-        if clean_params.empty?
-          "None"
-        else
-          PP.pp(clean_params, "".dup, 200)
-        end
-      end
-
-      def debug_headers(headers)
-        if headers.present?
-          headers.inspect.gsub(",", ",\n")
-        else
-          "None"
-        end
-      end
-
-      def debug_hash(object)
-        object.to_hash.sort_by { |k, _| k.to_s }.map { |k, v| "#{k}: #{v.inspect rescue $!.message}" }.join("\n")
-      end
-
-      def render(*)
-        logger = ActionView::Base.logger
-
-        if logger && logger.respond_to?(:silence)
-          logger.silence { super }
-        else
-          super
-        end
-      end
+    def self.register_interceptor(object = nil, &block)
+      interceptor = object || block
+      interceptors << interceptor
     end
 
-    def initialize(app, routes_app = nil, response_format = :default)
+    def initialize(app, routes_app = nil, response_format = :default, interceptors = self.class.interceptors)
       @app             = app
       @routes_app      = routes_app
       @response_format = response_format
+      @interceptors    = interceptors
     end
 
     def call(env)
-      request = ActionDispatch::Request.new env
       _, headers, body = response = @app.call(env)
 
-      if headers["X-Cascade"] == "pass"
+      if headers[Constants::X_CASCADE] == "pass"
         body.close if body.respond_to?(:close)
         raise ActionController::RoutingError, "No route matches [#{env['REQUEST_METHOD']}] #{env['PATH_INFO'].inspect}"
       end
 
       response
     rescue Exception => exception
-      raise exception unless request.show_exceptions?
-      render_exception(request, exception)
+      request = ActionDispatch::Request.new env
+      backtrace_cleaner = request.get_header("action_dispatch.backtrace_cleaner")
+      wrapper = ExceptionWrapper.new(backtrace_cleaner, exception)
+
+      invoke_interceptors(request, exception, wrapper)
+      raise exception unless wrapper.show?(request)
+      render_exception(request, exception, wrapper)
     end
 
     private
+      def invoke_interceptors(request, exception, wrapper)
+        @interceptors.each do |interceptor|
+          interceptor.call(request, exception)
+        rescue Exception
+          log_error(request, wrapper)
+        end
+      end
 
-      def render_exception(request, exception)
-        backtrace_cleaner = request.get_header("action_dispatch.backtrace_cleaner")
-        wrapper = ExceptionWrapper.new(backtrace_cleaner, exception)
+      def render_exception(request, exception, wrapper)
         log_error(request, wrapper)
 
         if request.get_header("action_dispatch.show_detailed_exceptions")
-          content_type = request.formats.first
+          begin
+            content_type = request.formats.first
+          rescue ActionDispatch::Http::MimeNegotiation::InvalidType
+            content_type = Mime[:text]
+          end
 
-          if api_request?(content_type)
+          if request.raw_request_method == "HEAD"
+            render(wrapper.status_code, "", content_type)
+          elsif api_request?(content_type)
             render_for_api_request(content_type, wrapper)
           else
-            render_for_browser_request(request, wrapper)
+            render_for_browser_request(request, wrapper, content_type)
           end
         else
           raise exception
         end
       end
 
-      def render_for_browser_request(request, wrapper)
+      def render_for_browser_request(request, wrapper, content_type)
         template = create_template(request, wrapper)
         file = "rescues/#{wrapper.rescue_template}"
 
-        if request.xhr?
+        if content_type == Mime[:md]
+          body = template.render(template: file, layout: false, formats: [:text])
+          format = "text/markdown"
+        elsif request.xhr?
           body = template.render(template: file, layout: false, formats: [:text])
           format = "text/plain"
         else
@@ -112,7 +101,7 @@ module ActionDispatch
             wrapper.status_code,
             Rack::Utils::HTTP_STATUS_CODES[500]
           ),
-          exception: wrapper.exception.inspect,
+          exception: wrapper.exception_inspect,
           traces: wrapper.traces
         }
 
@@ -130,57 +119,76 @@ module ActionDispatch
       end
 
       def create_template(request, wrapper)
-        traces = wrapper.traces
-
-        trace_to_show = "Application Trace"
-        if traces[trace_to_show].empty? && wrapper.rescue_template != "routing_error"
-          trace_to_show = "Full Trace"
-        end
-
-        if source_to_show = traces[trace_to_show].first
-          source_to_show_id = source_to_show[:id]
-        end
-
-        DebugView.new([RESCUES_TEMPLATE_PATH],
+        DebugView.new(
           request: request,
+          exception_wrapper: wrapper,
+          # Everything should use the wrapper, but we need to pass `exception` for legacy
+          # code.
           exception: wrapper.exception,
-          traces: traces,
-          show_source_idx: source_to_show_id,
-          trace_to_show: trace_to_show,
-          routes_inspector: routes_inspector(wrapper.exception),
+          traces: wrapper.traces,
+          show_source_idx: wrapper.source_to_show_id,
+          trace_to_show: wrapper.trace_to_show,
+          routes_inspector: routes_inspector(wrapper),
           source_extracts: wrapper.source_extracts,
-          line_number: wrapper.line_number,
-          file: wrapper.file
+          exception_message_for_copy: compose_exception_message(wrapper).join("\n"),
         )
       end
 
       def render(status, body, format)
-        [status, { "Content-Type" => "#{format}; charset=#{Response.default_charset}", "Content-Length" => body.bytesize.to_s }, [body]]
+        [status, { Rack::CONTENT_TYPE => "#{format}; charset=#{Response.default_charset}", Rack::CONTENT_LENGTH => body.bytesize.to_s }, [body]]
       end
 
       def log_error(request, wrapper)
         logger = logger(request)
+
         return unless logger
+        return if !log_rescued_responses?(request) && wrapper.rescue_response?
 
-        exception = wrapper.exception
-
-        trace = wrapper.application_trace
-        trace = wrapper.framework_trace if trace.empty?
-
-        ActiveSupport::Deprecation.silence do
-          logger.fatal "  "
-          logger.fatal "#{exception.class} (#{exception.message}):"
-          log_array logger, exception.annoted_source_code if exception.respond_to?(:annoted_source_code)
-          logger.fatal "  "
-          log_array logger, trace
-        end
+        message = compose_exception_message(wrapper)
+        log_array(logger, message, request)
       end
 
-      def log_array(logger, array)
-        if logger.formatter && logger.formatter.respond_to?(:tags_text)
-          logger.fatal array.join("\n#{logger.formatter.tags_text}")
+      def compose_exception_message(wrapper)
+        trace = wrapper.exception_trace
+
+        message = []
+        message << "  "
+        if wrapper.has_cause?
+          message << "#{wrapper.exception_class_name} (#{wrapper.message})"
+          wrapper.wrapped_causes.each do |wrapped_cause|
+            message << "Caused by: #{wrapped_cause.exception_class_name} (#{wrapped_cause.message})"
+          end
+
+          message << "\nInformation for: #{wrapper.exception_class_name} (#{wrapper.message}):"
         else
-          logger.fatal array.join("\n")
+          message << "#{wrapper.exception_class_name} (#{wrapper.message}):"
+        end
+
+        message.concat(wrapper.annotated_source_code)
+        message << "  "
+        message.concat(trace)
+
+        if wrapper.has_cause?
+          wrapper.wrapped_causes.each do |wrapped_cause|
+            message << "\nInformation for cause: #{wrapped_cause.exception_class_name} (#{wrapped_cause.message}):"
+            message.concat(wrapped_cause.annotated_source_code)
+            message << "  "
+            message.concat(wrapped_cause.exception_trace)
+          end
+        end
+
+        message
+      end
+
+      def log_array(logger, lines, request)
+        return if lines.empty?
+
+        level = request.get_header("action_dispatch.debug_exception_log_level")
+
+        if logger.formatter && logger.formatter.respond_to?(:tags_text)
+          logger.add(level, lines.join("\n#{logger.formatter.tags_text}"))
+        else
+          logger.add(level, lines.join("\n"))
         end
       end
 
@@ -193,13 +201,17 @@ module ActionDispatch
       end
 
       def routes_inspector(exception)
-        if @routes_app.respond_to?(:routes) && (exception.is_a?(ActionController::RoutingError) || exception.is_a?(ActionView::Template::Error))
+        if @routes_app.respond_to?(:routes) && (exception.routing_error? || exception.template_error?)
           ActionDispatch::Routing::RoutesInspector.new(@routes_app.routes.routes)
         end
       end
 
       def api_request?(content_type)
         @response_format == :api && !content_type.html?
+      end
+
+      def log_rescued_responses?(request)
+        request.get_header("action_dispatch.log_rescued_responses")
       end
   end
 end

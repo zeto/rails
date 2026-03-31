@@ -37,7 +37,6 @@ module ActionView
         end
 
         private
-
           def instantiate_builder(builder_class, item, value, text, html_options)
             builder_class.new(@template_object, @object_name, @method_name, item,
                               sanitize_attribute_name(value), text, value, html_options)
@@ -107,7 +106,8 @@ module ActionView
 
           def hidden_field
             hidden_name = @html_options[:name] || hidden_field_name
-            @template_object.hidden_field_tag(hidden_name, "", id: nil)
+            options = { id: nil, form: @html_options[:form] }
+            @template_object.hidden_field_tag(hidden_name, "", options)
           end
 
           def hidden_field_name

@@ -1,13 +1,13 @@
 # frozen_string_literal: true
 
 require "securerandom"
-require "abstract_unit"
+require_relative "../abstract_unit"
 require "active_support/core_ext/string/inflections"
-require "active_support/core_ext/regexp"
+require "active_support/core_ext/object/with"
 require "active_support/json"
 require "active_support/time"
-require "time_zone_test_helpers"
-require "json/encoding_test_cases"
+require_relative "../time_zone_test_helpers"
+require_relative "../json/encoding_test_cases"
 
 class TestJSONEncoding < ActiveSupport::TestCase
   include TimeZoneTestHelpers
@@ -22,26 +22,22 @@ class TestJSONEncoding < ActiveSupport::TestCase
 
   JSONTest::EncodingTestCases.constants.each do |class_tests|
     define_method("test_#{class_tests[0..-6].underscore}") do
-      begin
-        prev = ActiveSupport.use_standard_json_time_format
+      prev = ActiveSupport.use_standard_json_time_format
 
-        standard_class_tests = /Standard/.match?(class_tests)
+      standard_class_tests = /Standard/.match?(class_tests)
 
-        ActiveSupport.escape_html_entities_in_json  = !standard_class_tests
-        ActiveSupport.use_standard_json_time_format = standard_class_tests
-        JSONTest::EncodingTestCases.const_get(class_tests).each do |pair|
-          assert_equal pair.last, sorted_json(ActiveSupport::JSON.encode(pair.first))
-        end
-      ensure
-        ActiveSupport.escape_html_entities_in_json  = false
-        ActiveSupport.use_standard_json_time_format = prev
+      ActiveSupport.escape_html_entities_in_json  = !standard_class_tests
+      ActiveSupport.use_standard_json_time_format = standard_class_tests
+      JSONTest::EncodingTestCases.const_get(class_tests).each do |pair|
+        assert_equal pair.last, sorted_json(ActiveSupport::JSON.encode(pair.first))
       end
+    ensure
+      ActiveSupport.escape_html_entities_in_json  = false
+      ActiveSupport.use_standard_json_time_format = prev
     end
   end
 
   def test_process_status
-    rubinius_skip "https://github.com/rubinius/rubinius/issues/3334"
-
     # There doesn't seem to be a good way to get a handle on a Process::Status object without actually
     # creating a child process, hence this to populate $?
     system("not_a_real_program_#{SecureRandom.hex}")
@@ -57,11 +53,31 @@ class TestJSONEncoding < ActiveSupport::TestCase
     assert_equal %({\"a\":\"b\",\"c\":\"d\"}), sorted_json(ActiveSupport::JSON.encode(a: :b, c: :d))
   end
 
+  def test_unicode_escape
+    assert_equal %{{"\\u2028":"\\u2029"}}, ActiveSupport::JSON.encode("\u2028" => "\u2029")
+    assert_equal %{{"\u2028":"\u2029"}}, ActiveSupport::JSON.encode({ "\u2028" => "\u2029" }, escape: false)
+    ActiveSupport::JSON::Encoding.with(escape_js_separators_in_json: false) do
+      assert_equal %{{"\u2028":"\u2029"}}, ActiveSupport::JSON.encode({ "\u2028" => "\u2029" })
+    end
+  end
+
   def test_hash_keys_encoding
     ActiveSupport.escape_html_entities_in_json = true
     assert_equal "{\"\\u003c\\u003e\":\"\\u003c\\u003e\"}", ActiveSupport::JSON.encode("<>" => "<>")
   ensure
     ActiveSupport.escape_html_entities_in_json = false
+  end
+
+  def test_hash_keys_encoding_option
+    global_config = ActiveSupport.escape_html_entities_in_json
+
+    ActiveSupport.escape_html_entities_in_json = true
+    assert_equal "{\"<>\":\"<>\"}", ActiveSupport::JSON.encode({ "<>" => "<>" }, escape_html_entities: false)
+
+    ActiveSupport.escape_html_entities_in_json = false
+    assert_equal "{\"\\u003c\\u003e\":\"\\u003c\\u003e\"}", ActiveSupport::JSON.encode({ "<>" => "<>" }, escape_html_entities: true)
+  ensure
+    ActiveSupport.escape_html_entities_in_json = global_config
   end
 
   def test_utf8_string_encoded_properly
@@ -98,6 +114,34 @@ class TestJSONEncoding < ActiveSupport::TestCase
     values = { 0 => 0, 1 => 1, :_ => :_, "$" => "$", "a" => "a", :A => :A, :A0 => :A0, "A0B" => "A0B" }
     assert_equal %w( "$" "A" "A0" "A0B" "_" "a" "0" "1" ).sort, object_keys(ActiveSupport::JSON.encode(values))
   end
+
+  def test_hash_with_object_keys_that_have_complex_as_json
+    skip "JSONGemCoderEncoder not available" unless defined?(ActiveSupport::JSON::Encoding::JSONGemCoderEncoder)
+
+    # Define CustomKey inline (typically this will be a full Class)
+    custom_key_class = Struct.new(:id) do
+      def to_s
+        "custom_#{id}"
+      end
+
+      def as_json(options = nil)
+        { id: id, metadata: { created_at: Time.now.iso8601 } }
+      end
+    end
+
+    key = custom_key_class.new(123)
+    hash = { key => "some_value" }
+
+    assert_equal "custom_123", key.to_s
+    assert_instance_of Hash, key.as_json
+
+    # When serializing to JSON, the key should be converted via to_s
+    json = hash.to_json
+    parsed = JSON.parse(json)
+
+    assert_equal "some_value", parsed["custom_123"]
+  end
+
 
   def test_hash_should_allow_key_filtering_with_only
     assert_equal %({"a":1}), ActiveSupport::JSON.encode({ "a" => 1, :b => 2, :c => 3 }, { only: "a" })
@@ -158,6 +202,15 @@ class TestJSONEncoding < ActiveSupport::TestCase
     assert_equal({ "foo" => "hello" }, JSON.parse(json))
   end
 
+  def test_struct_to_json_with_options_nested
+    klass = Struct.new(:foo, :bar)
+    struct = klass.new "hello", "world"
+    parent_struct = klass.new struct, "world"
+    json = parent_struct.to_json only: [:foo]
+
+    assert_equal({ "foo" => { "foo" => "hello" } }, JSON.parse(json))
+  end
+
   def test_hash_should_pass_encoding_options_to_children_in_as_json
     person = {
       name: "John",
@@ -187,7 +240,7 @@ class TestJSONEncoding < ActiveSupport::TestCase
   def test_array_should_pass_encoding_options_to_children_in_as_json
     people = [
       { name: "John", address: { city: "London", country: "UK" } },
-      { name: "Jean", address: { city: "Paris" , country: "France" } }
+      { name: "Jean", address: { city: "Paris", country: "France" } }
     ]
     json = people.as_json only: [:address, :city]
     expected = [
@@ -201,7 +254,7 @@ class TestJSONEncoding < ActiveSupport::TestCase
   def test_array_should_pass_encoding_options_to_children_in_to_json
     people = [
       { name: "John", address: { city: "London", country: "UK" } },
-      { name: "Jean", address: { city: "Paris" , country: "France" } }
+      { name: "Jean", address: { city: "Paris", country: "France" } }
     ]
     json = people.to_json only: [:address, :city]
 
@@ -210,10 +263,10 @@ class TestJSONEncoding < ActiveSupport::TestCase
 
   People = Class.new(BasicObject) do
     include Enumerable
-    def initialize()
+    def initialize
       @people = [
         { name: "John", address: { city: "London", country: "UK" } },
-        { name: "Jean", address: { city: "Paris" , country: "France" } }
+        { name: "Jean", address: { city: "Paris", country: "France" } }
       ]
     end
     def each(*, &blk)
@@ -300,13 +353,14 @@ class TestJSONEncoding < ActiveSupport::TestCase
     assert_equal([:default], json)
   end
 
+  UserNameAndEmail = Struct.new(:name, :email)
+  UserNameAndDate = Struct.new(:name, :date)
+  Custom = Struct.new(:name, :sub)
+
   def test_struct_encoding
-    Struct.new("UserNameAndEmail", :name, :email)
-    Struct.new("UserNameAndDate", :name, :date)
-    Struct.new("Custom", :name, :sub)
-    user_email = Struct::UserNameAndEmail.new "David", "sample@example.com"
-    user_birthday = Struct::UserNameAndDate.new "David", Date.new(2010, 01, 01)
-    custom = Struct::Custom.new "David", user_birthday
+    user_email = UserNameAndEmail.new "David", "sample@example.com"
+    user_birthday = UserNameAndDate.new "David", Date.new(2010, 01, 01)
+    custom = Custom.new "David", user_birthday
 
     json_strings = ""
     json_string_and_date = ""
@@ -328,6 +382,15 @@ class TestJSONEncoding < ActiveSupport::TestCase
 
     assert_equal({ "name" => "David", "date" => "2010-01-01" },
                  ActiveSupport::JSON.decode(json_string_and_date))
+  end
+
+  def test_data_encoding
+    data = Data.define(:name, :email).new("test", "test@example.com")
+
+    assert_nothing_raised { data.to_json }
+
+    assert_equal({ "name" => "test", "email" => "test@example.com" },
+      ActiveSupport::JSON.decode(data.to_json))
   end
 
   def test_nil_true_and_false_represented_as_themselves
@@ -454,8 +517,55 @@ EXPECTED
     assert_equal '{"number":null}', NaNNumber.new.to_json
   end
 
-  private
+  def test_to_json_works_on_io_objects
+    assert_equal STDOUT.to_s.to_json, STDOUT.to_json
+  end
 
+  class AsJSONLoop
+    def initialize(count)
+      @count = count
+    end
+
+    def as_json
+      if @count > 0
+        @count -= 1
+        dup
+      else
+        self
+      end
+    end
+  end
+
+  def test_as_json_infinite_loop
+    assert_raise SystemStackError do
+      AsJSONLoop.new(Float::INFINITY).to_json
+    end
+  end
+
+  def test_as_json_too_recursive
+    assert_raise SystemStackError do
+      AsJSONLoop.new(20).to_json
+    end
+  end
+
+  def test_no_nesting_error_on_consecutive_encoding_calls
+    hash = { a: 1 }
+    assert_equal '{"a":1}', ActiveSupport::JSON.encode(hash)
+
+    # We simulate a circular reference
+    circular_array = []
+    circular_array << circular_array
+
+    assert_raise(SystemStackError, JSON::NestingError) do
+      ActiveSupport::JSON.encode(circular_array)
+    end
+
+    # We should be able to continue to generate JSONs as usual after
+    # encountering a JSON::NestingError
+    assert_equal '{"a":1}', ActiveSupport::JSON.encode(hash)
+  end
+
+  private
     def object_keys(json_object)
       json_object[1..-2].scan(/([^{}:,\s]+):/).flatten.sort
     end
@@ -474,4 +584,17 @@ EXPECTED
     ensure
       ActiveSupport::JSON::Encoding.time_precision = old_value
     end
+end
+
+if defined?(::JSON::Coder)
+  class OldJSONEncodingTest < TestJSONEncoding
+    setup do
+      @json_encoder = ActiveSupport::JSON::Encoding.json_encoder
+      ActiveSupport::JSON::Encoding.json_encoder = ActiveSupport::JSON::Encoding::JSONGemEncoder
+    end
+
+    teardown do
+      ActiveSupport::JSON::Encoding.json_encoder = @json_encoder
+    end
+  end
 end

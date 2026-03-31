@@ -1,10 +1,41 @@
 # frozen_string_literal: true
 
 require "active_support/core_ext/module/attribute_accessors"
-require_relative "../attribute_mutation_tracker"
 
 module ActiveRecord
   module AttributeMethods
+    # = Active Record Attribute Methods \Dirty
+    #
+    # Provides a way to track changes in your Active Record models. It adds all
+    # methods from ActiveModel::Dirty and adds database-specific methods.
+    #
+    # A newly created +Person+ object is unchanged:
+    #
+    #   class Person < ActiveRecord::Base
+    #   end
+    #
+    #   person = Person.create(name: "Allison")
+    #   person.changed? # => false
+    #
+    # Change the name:
+    #
+    #   person.name = 'Alice'
+    #   person.name_in_database          # => "Allison"
+    #   person.will_save_change_to_name? # => true
+    #   person.name_change_to_be_saved   # => ["Allison", "Alice"]
+    #   person.changes_to_save           # => {"name"=>["Allison", "Alice"]}
+    #
+    # Save the changes:
+    #
+    #   person.save
+    #   person.name_in_database        # => "Alice"
+    #   person.saved_change_to_name?   # => true
+    #   person.saved_change_to_name    # => ["Allison", "Alice"]
+    #   person.name_before_last_save   # => "Allison"
+    #
+    # Similar to ActiveModel::Dirty, methods can be invoked as
+    # +saved_change_to_name?+ or by passing an argument to the generic method
+    # <tt>saved_change_to_attribute?("name")</tt>.
     module Dirty
       extend ActiveSupport::Concern
 
@@ -15,19 +46,17 @@ module ActiveRecord
           raise "You cannot include Dirty after Timestamp"
         end
 
-        class_attribute :partial_writes, instance_writer: false, default: true
-
-        after_create { changes_applied }
-        after_update { changes_applied }
+        class_attribute :partial_updates, instance_writer: false, default: true
+        class_attribute :partial_inserts, instance_writer: false, default: true
 
         # Attribute methods for "changed in last call to save?"
-        attribute_method_affix(prefix: "saved_change_to_", suffix: "?")
-        attribute_method_prefix("saved_change_to_")
-        attribute_method_suffix("_before_last_save")
+        attribute_method_affix(prefix: "saved_change_to_", suffix: "?", parameters: "**options")
+        attribute_method_prefix("saved_change_to_", parameters: false)
+        attribute_method_suffix("_before_last_save", parameters: false)
 
         # Attribute methods for "will change if I call save?"
-        attribute_method_affix(prefix: "will_save_change_to_", suffix: "?")
-        attribute_method_suffix("_change_to_be_saved", "_in_database")
+        attribute_method_affix(prefix: "will_save_change_to_", suffix: "?", parameters: "**options")
+        attribute_method_suffix("_change_to_be_saved", "_in_database", parameters: false)
       end
 
       # <tt>reload</tt> the record and clears changed attributes.
@@ -35,99 +64,49 @@ module ActiveRecord
         super.tap do
           @mutations_before_last_save = nil
           @mutations_from_database = nil
-          @changed_attributes = ActiveSupport::HashWithIndifferentAccess.new
         end
       end
 
-      def initialize_dup(other) # :nodoc:
-        super
-        @attributes = self.class._default_attributes.map do |attr|
-          attr.with_value_from_user(@attributes.fetch_value(attr.name))
-        end
-        @mutations_from_database = nil
-      end
-
-      def changes_applied # :nodoc:
-        @mutations_before_last_save = mutations_from_database
-        @changed_attributes = ActiveSupport::HashWithIndifferentAccess.new
-        forget_attribute_assignments
-        @mutations_from_database = nil
-      end
-
-      def clear_changes_information # :nodoc:
-        @mutations_before_last_save = nil
-        @changed_attributes = ActiveSupport::HashWithIndifferentAccess.new
-        forget_attribute_assignments
-        @mutations_from_database = nil
-      end
-
-      def clear_attribute_changes(attr_names) # :nodoc:
-        super
-        attr_names.each do |attr_name|
-          clear_attribute_change(attr_name)
-        end
-      end
-
-      def changed_attributes # :nodoc:
-        # This should only be set by methods which will call changed_attributes
-        # multiple times when it is known that the computed value cannot change.
-        if defined?(@cached_changed_attributes)
-          @cached_changed_attributes
-        else
-          super.reverse_merge(mutations_from_database.changed_values).freeze
-        end
-      end
-
-      def changes # :nodoc:
-        cache_changed_attributes do
-          super
-        end
-      end
-
-      def previous_changes # :nodoc:
-        mutations_before_last_save.changes
-      end
-
-      def attribute_changed_in_place?(attr_name) # :nodoc:
-        mutations_from_database.changed_in_place?(attr_name)
-      end
-
-      # Did this attribute change when we last saved? This method can be invoked
-      # as +saved_change_to_name?+ instead of <tt>saved_change_to_attribute?("name")</tt>.
-      # Behaves similarly to +attribute_changed?+. This method is useful in
-      # after callbacks to determine if the call to save changed a certain
-      # attribute.
+      # Did this attribute change when we last saved?
+      #
+      # This method is useful in after callbacks to determine if an attribute
+      # was changed during the save that triggered the callbacks to run. It can
+      # be invoked as +saved_change_to_name?+ instead of
+      # <tt>saved_change_to_attribute?("name")</tt>.
       #
       # ==== Options
       #
-      # +from+ When passed, this method will return false unless the original
-      # value is equal to the given option
+      # [+from+]
+      #   When specified, this method will return false unless the original
+      #   value is equal to the given value.
       #
-      # +to+ When passed, this method will return false unless the value was
-      # changed to the given value
+      # [+to+]
+      #   When specified, this method will return false unless the value will be
+      #   changed to the given value.
       def saved_change_to_attribute?(attr_name, **options)
-        mutations_before_last_save.changed?(attr_name, **options)
+        mutations_before_last_save.changed?(attr_name.to_s, **options)
       end
 
       # Returns the change to an attribute during the last save. If the
       # attribute was changed, the result will be an array containing the
       # original value and the saved value.
       #
-      # Behaves similarly to +attribute_change+. This method is useful in after
-      # callbacks, to see the change in an attribute that just occurred
-      #
-      # This method can be invoked as +saved_change_to_name+ in instead of
-      # <tt>saved_change_to_attribute("name")</tt>
+      # This method is useful in after callbacks, to see the change in an
+      # attribute during the save that triggered the callbacks to run. It can be
+      # invoked as +saved_change_to_name+ instead of
+      # <tt>saved_change_to_attribute("name")</tt>.
       def saved_change_to_attribute(attr_name)
-        mutations_before_last_save.change_to_attribute(attr_name)
+        mutations_before_last_save.change_to_attribute(attr_name.to_s)
       end
 
       # Returns the original value of an attribute before the last save.
-      # Behaves similarly to +attribute_was+. This method is useful in after
-      # callbacks to get the original value of an attribute before the save that
-      # just occurred
+      #
+      # This method is useful in after callbacks to get the original value of an
+      # attribute before the save that triggered the callbacks to run. It can be
+      # invoked as +name_before_last_save+ instead of
+      # <tt>attribute_before_last_save("name")</tt>.
       def attribute_before_last_save(attr_name)
-        mutations_before_last_save.original_value(attr_name)
+        mutations_before_last_save.original_value(attr_name.to_s)
       end
 
       # Did the last call to +save+ have any changes to change?
@@ -140,97 +119,143 @@ module ActiveRecord
         mutations_before_last_save.changes
       end
 
-      # Alias for +attribute_changed?+
+      # Will this attribute change the next time we save?
+      #
+      # This method is useful in validations and before callbacks to determine
+      # if the next call to +save+ will change a particular attribute. It can be
+      # invoked as +will_save_change_to_name?+ instead of
+      # <tt>will_save_change_to_attribute?("name")</tt>.
+      #
+      # ==== Options
+      #
+      # [+from+]
+      #   When specified, this method will return false unless the original
+      #   value is equal to the given value.
+      #
+      # [+to+]
+      #   When specified, this method will return false unless the value will be
+      #   changed to the given value.
       def will_save_change_to_attribute?(attr_name, **options)
-        mutations_from_database.changed?(attr_name, **options)
+        mutations_from_database.changed?(attr_name.to_s, **options)
       end
 
-      # Alias for +attribute_change+
+      # Returns the change to an attribute that will be persisted during the
+      # next save.
+      #
+      # This method is useful in validations and before callbacks, to see the
+      # change to an attribute that will occur when the record is saved. It can
+      # be invoked as +name_change_to_be_saved+ instead of
+      # <tt>attribute_change_to_be_saved("name")</tt>.
+      #
+      # If the attribute will change, the result will be an array containing the
+      # original value and the new value about to be saved.
       def attribute_change_to_be_saved(attr_name)
-        mutations_from_database.change_to_attribute(attr_name)
+        mutations_from_database.change_to_attribute(attr_name.to_s)
       end
 
-      # Alias for +attribute_was+
+      # Returns the value of an attribute in the database, as opposed to the
+      # in-memory value that will be persisted the next time the record is
+      # saved.
+      #
+      # This method is useful in validations and before callbacks, to see the
+      # original value of an attribute prior to any changes about to be
+      # saved. It can be invoked as +name_in_database+ instead of
+      # <tt>attribute_in_database("name")</tt>.
       def attribute_in_database(attr_name)
-        mutations_from_database.original_value(attr_name)
+        mutations_from_database.original_value(attr_name.to_s)
       end
 
-      # Alias for +changed?+
+      # Will the next call to +save+ have any changes to persist?
       def has_changes_to_save?
         mutations_from_database.any_changes?
       end
 
-      # Alias for +changes+
+      # Returns a hash containing all the changes that will be persisted during
+      # the next save.
       def changes_to_save
         mutations_from_database.changes
       end
 
-      # Alias for +changed+
+      # Returns an array of the names of any attributes that will change when
+      # the record is next saved.
       def changed_attribute_names_to_save
-        changes_to_save.keys
+        mutations_from_database.changed_attribute_names
       end
 
-      # Alias for +changed_attributes+
+      # Returns a hash of the attributes that will change when the record is
+      # next saved.
+      #
+      # The hash keys are the attribute names, and the hash values are the
+      # original attribute values in the database (as opposed to the in-memory
+      # values about to be saved).
       def attributes_in_database
-        changes_to_save.transform_values(&:first)
+        mutations_from_database.changed_values
       end
 
       private
-        def write_attribute_without_type_cast(attr_name, _)
-          result = super
-          clear_attribute_change(attr_name)
-          result
-        end
-
-        def mutations_from_database
-          unless defined?(@mutations_from_database)
-            @mutations_from_database = nil
-          end
-          @mutations_from_database ||= AttributeMutationTracker.new(@attributes)
-        end
-
-        def changes_include?(attr_name)
-          super || mutations_from_database.changed?(attr_name)
-        end
-
-        def clear_attribute_change(attr_name)
-          mutations_from_database.forget_change(attr_name)
-        end
-
-        def attribute_will_change!(attr_name)
+        def init_internals
           super
-          mutations_from_database.force_change(attr_name)
+          @mutations_before_last_save = nil
+          @mutations_from_database = nil
+          @_touch_attr_names = nil
+          @_skip_dirty_tracking = nil
         end
 
-        def _update_record(*)
-          partial_writes? ? super(keys_for_partial_write) : super
-        end
+        def _touch_row(attribute_names, time)
+          @_touch_attr_names = Set.new(attribute_names)
 
-        def _create_record(*)
-          partial_writes? ? super(keys_for_partial_write) : super
-        end
+          affected_rows = super
 
-        def keys_for_partial_write
-          changed_attribute_names_to_save & self.class.column_names
-        end
+          if @_skip_dirty_tracking ||= false
+            clear_attribute_changes(@_touch_attr_names)
+            return affected_rows
+          end
 
-        def forget_attribute_assignments
-          @attributes = @attributes.map(&:forgetting_assignment)
-        end
+          changes = {}
+          @attributes.keys.each do |attr_name|
+            next if @_touch_attr_names.include?(attr_name)
 
-        def mutations_before_last_save
-          @mutations_before_last_save ||= NullMutationTracker.instance
-        end
+            if attribute_changed?(attr_name)
+              changes[attr_name] = _read_attribute(attr_name)
+              _write_attribute(attr_name, attribute_was(attr_name))
+              clear_attribute_change(attr_name)
+            end
+          end
 
-        def cache_changed_attributes
-          @cached_changed_attributes = changed_attributes
-          yield
+          changes_applied
+          changes.each { |attr_name, value| _write_attribute(attr_name, value) }
+
+          affected_rows
         ensure
-          clear_changed_attributes_cache
+          @_touch_attr_names, @_skip_dirty_tracking = nil, nil
         end
 
-        def clear_changed_attributes_cache
-          remove_instance_variable(:@cached_changed_attributes) if defined?(@cached_changed_attributes)
+        def _update_record(attribute_names = attribute_names_for_partial_updates)
+          affected_rows = super
+          changes_applied
+          affected_rows
+        end
+
+        def _create_record(attribute_names = attribute_names_for_partial_inserts)
+          id = super
+          changes_applied
+          id
+        end
+
+        def attribute_names_for_partial_updates
+          partial_updates? ? changed_attribute_names_to_save : attribute_names
+        end
+
+        def attribute_names_for_partial_inserts
+          if partial_inserts?
+            changed_attribute_names_to_save
+          else
+            attribute_names.reject do |attr_name|
+              if column_for_attribute(attr_name).auto_populated?
+                !attribute_changed?(attr_name)
+              end
+            end
+          end
         end
     end
   end

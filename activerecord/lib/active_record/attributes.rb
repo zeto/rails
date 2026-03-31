@@ -1,17 +1,19 @@
 # frozen_string_literal: true
 
-require_relative "attribute/user_provided_default"
+require "active_model/attribute/user_provided_default"
 
 module ActiveRecord
   # See ActiveRecord::Attributes::ClassMethods for documentation
   module Attributes
     extend ActiveSupport::Concern
+    include ActiveModel::AttributeRegistration
+    include ActiveModel::Attributes::Normalization
 
-    included do
-      class_attribute :attributes_to_define_after_schema_loads, instance_accessor: false, default: {} # :internal:
-    end
-
+    # = Active Record \Attributes
     module ClassMethods
+      # :method: attribute
+      # :call-seq: attribute(name, cast_type = nil, **options)
+      #
       # Defines an attribute with a type on this model. It will override the
       # type of existing attributes if needed. This allows control over how
       # values are converted to and from SQL when assigned to a model. It also
@@ -20,26 +22,37 @@ module ActiveRecord
       # your domain objects across much of Active Record, without having to
       # rely on implementation details or monkey patching.
       #
-      # +name+ The name of the methods to define attribute methods for, and the
-      # column which this will persist to.
+      # ==== Parameters
       #
-      # +cast_type+ A symbol such as +:string+ or +:integer+, or a type object
-      # to be used for this attribute. See the examples below for more
-      # information about providing custom type objects.
+      # [+name+]
+      #   The name of the methods to define attribute methods for, and the
+      #   column which this will persist to.
+      #
+      # [+cast_type+]
+      #   A symbol such as +:string+ or +:integer+, or a type object to be used
+      #   for this attribute. If this parameter is not passed, the previously
+      #   defined type (if any) will be used. Otherwise, the type will be
+      #   ActiveModel::Type::Value. See the examples below for more information
+      #   about providing custom type objects.
       #
       # ==== Options
       #
-      # The following options are accepted:
+      # [+:default+]
+      #   The default value to use when no value is provided. If this option is
+      #   not passed, the previously defined default value (if any) on the
+      #   superclass or in the schema will be used. Otherwise, the default will
+      #   be +nil+.
       #
-      # +default+ The default value to use when no value is provided. If this option
-      # is not passed, the previous default value (if any) will be used.
-      # Otherwise, the default will be +nil+.
+      # [+:array+]
+      #   (PostgreSQL only) Specifies that the type should be an array. See the
+      #   examples below.
       #
-      # +array+ (PostgreSQL only) specifies that the type should be an array (see the
-      # examples below).
+      # [+:range+]
+      #   (PostgreSQL only) Specifies that the type should be a range. See the
+      #   examples below.
       #
-      # +range+ (PostgreSQL only) specifies that the type should be a range (see the
-      # examples below).
+      # When using a symbol for +cast_type+, extra options are forwarded to the
+      # constructor of the type object.
       #
       # ==== Examples
       #
@@ -57,7 +70,7 @@ module ActiveRecord
       #   store_listing = StoreListing.new(price_in_cents: '10.1')
       #
       #   # before
-      #   store_listing.price_in_cents # => BigDecimal.new(10.1)
+      #   store_listing.price_in_cents # => BigDecimal(10.1)
       #
       #   class StoreListing < ActiveRecord::Base
       #     attribute :price_in_cents, :integer
@@ -112,6 +125,16 @@ module ActiveRecord
       #       my_float_range: 1.0..3.5
       #     }
       #
+      # Passing options to the type constructor
+      #
+      #   # app/models/my_model.rb
+      #   class MyModel < ActiveRecord::Base
+      #     attribute :small_int, :integer, limit: 2
+      #   end
+      #
+      #   MyModel.create(small_int: 65537)
+      #   # => Error: 65537 is out of range for the limit of two bytes
+      #
       # ==== Creating Custom Types
       #
       # Users may also define their own custom types, as long as they respond
@@ -121,7 +144,7 @@ module ActiveRecord
       # expected API. It is recommended that your type objects inherit from an
       # existing type, or from ActiveRecord::Type::Value
       #
-      #   class MoneyType < ActiveRecord::Type::Integer
+      #   class PriceType < ActiveRecord::Type::Integer
       #     def cast(value)
       #       if !value.kind_of?(Numeric) && value.include?('$')
       #         price_in_dollars = value.gsub(/\$/, '').to_f
@@ -133,11 +156,11 @@ module ActiveRecord
       #   end
       #
       #   # config/initializers/types.rb
-      #   ActiveRecord::Type.register(:money, MoneyType)
+      #   ActiveRecord::Type.register(:price, PriceType)
       #
       #   # app/models/store_listing.rb
       #   class StoreListing < ActiveRecord::Base
-      #     attribute :price_in_cents, :money
+      #     attribute :price_in_cents, :price
       #   end
       #
       #   store_listing = StoreListing.new(price_in_cents: '$10.00')
@@ -157,13 +180,13 @@ module ActiveRecord
       #   class Money < Struct.new(:amount, :currency)
       #   end
       #
-      #   class MoneyType < Type::Value
+      #   class PriceType < ActiveRecord::Type::Value
       #     def initialize(currency_converter:)
       #       @currency_converter = currency_converter
       #     end
       #
-      #     # value will be the result of +deserialize+ or
-      #     # +cast+. Assumed to be an instance of +Money+ in
+      #     # value will be the result of #deserialize or
+      #     # #cast. Assumed to be an instance of Money in
       #     # this case.
       #     def serialize(value)
       #       value_in_bitcoins = @currency_converter.convert_to_bitcoins(value)
@@ -172,19 +195,19 @@ module ActiveRecord
       #   end
       #
       #   # config/initializers/types.rb
-      #   ActiveRecord::Type.register(:money, MoneyType)
+      #   ActiveRecord::Type.register(:price, PriceType)
       #
       #   # app/models/product.rb
       #   class Product < ActiveRecord::Base
       #     currency_converter = ConversionRatesFromTheInternet.new
-      #     attribute :price_in_bitcoins, :money, currency_converter: currency_converter
+      #     attribute :price_in_bitcoins, :price, currency_converter: currency_converter
       #   end
       #
       #   Product.where(price_in_bitcoins: Money.new(5, "USD"))
-      #   # => SELECT * FROM products WHERE price_in_bitcoins = 0.02230
+      #   # SELECT * FROM products WHERE price_in_bitcoins = 0.02230
       #
       #   Product.where(price_in_bitcoins: Money.new(5, "GBP"))
-      #   # => SELECT * FROM products WHERE price_in_bitcoins = 0.03412
+      #   # SELECT * FROM products WHERE price_in_bitcoins = 0.03412
       #
       # ==== Dirty Tracking
       #
@@ -192,34 +215,31 @@ module ActiveRecord
       # tracking is performed. The methods +changed?+ and +changed_in_place?+
       # will be called from ActiveModel::Dirty. See the documentation for those
       # methods in ActiveModel::Type::Value for more details.
-      def attribute(name, cast_type = Type::Value.new, **options)
-        name = name.to_s
-        reload_schema_from_cache
+      #
+      #--
+      # Implemented by ActiveModel::AttributeRegistration#attribute.
 
-        self.attributes_to_define_after_schema_loads =
-          attributes_to_define_after_schema_loads.merge(
-            name => [cast_type, options]
-          )
-      end
-
-      # This is the low level API which sits beneath +attribute+. It only
-      # accepts type objects, and will do its work immediately instead of
-      # waiting for the schema to load. Automatic schema detection and
-      # ClassMethods#attribute both call this under the hood. While this method
+      # This API only accepts type objects, and will do its work immediately instead of
+      # waiting for the schema to load. While this method
       # is provided so it can be used by plugin authors, application code
       # should probably use ClassMethods#attribute.
       #
-      # +name+ The name of the attribute being defined. Expected to be a +String+.
+      # ==== Parameters
       #
-      # +cast_type+ The type object to use for this attribute.
+      # [+name+]
+      #   The name of the attribute being defined. Expected to be a +String+.
       #
-      # +default+ The default value to use when no value is provided. If this option
-      # is not passed, the previous default value (if any) will be used.
-      # Otherwise, the default will be +nil+. A proc can also be passed, and
-      # will be called once each time a new value is needed.
+      # [+cast_type+]
+      #   The type object to use for this attribute.
       #
-      # +user_provided_default+ Whether the default value should be cast using
-      # +cast+ or +deserialize+.
+      # [+default+]
+      #   The default value to use when no value is provided. If this option
+      #   is not passed, the previous default value (if any) will be used.
+      #   Otherwise, the default will be +nil+. A proc can also be passed, and
+      #   will be called once each time a new value is needed.
+      #
+      # [+user_provided_default+]
+      #   Whether the default value should be cast using +cast+ or +deserialize+.
       def define_attribute(
         name,
         cast_type,
@@ -230,19 +250,37 @@ module ActiveRecord
         define_default_attribute(name, default, cast_type, from_user: user_provided_default)
       end
 
-      def load_schema! # :nodoc:
-        super
-        attributes_to_define_after_schema_loads.each do |name, (type, options)|
-          if type.is_a?(Symbol)
-            type = ActiveRecord::Type.lookup(type, **options.except(:default))
+      def _default_attributes # :nodoc:
+        @default_attributes ||= begin
+          attributes_hash = columns_hash.transform_values do |column|
+            ActiveModel::Attribute.from_database(column.name, column.default, type_for_column(column))
           end
 
-          define_attribute(name, type, **options.slice(:default))
+          attribute_set = ActiveModel::AttributeSet.new(attributes_hash)
+          apply_pending_attribute_modifications(attribute_set)
+          attribute_set
         end
       end
 
-      private
+      ##
+      # :method: type_for_attribute
+      # :call-seq: type_for_attribute(attribute_name, &block)
+      #
+      # See ActiveModel::Attributes::ClassMethods#type_for_attribute.
+      #
+      # This method will access the database and load the model's schema if
+      # necessary.
+      #--
+      # Implemented by ActiveModel::AttributeRegistration::ClassMethods#type_for_attribute.
 
+      ##
+      protected
+        def reload_schema_from_cache(*)
+          reset_default_attributes!
+          super
+        end
+
+      private
         NO_DEFAULT_PROVIDED = Object.new # :nodoc:
         private_constant :NO_DEFAULT_PROVIDED
 
@@ -250,16 +288,28 @@ module ActiveRecord
           if value == NO_DEFAULT_PROVIDED
             default_attribute = _default_attributes[name].with_type(type)
           elsif from_user
-            default_attribute = Attribute::UserProvidedDefault.new(
+            default_attribute = ActiveModel::Attribute::UserProvidedDefault.new(
               name,
               value,
               type,
               _default_attributes.fetch(name.to_s) { nil },
             )
           else
-            default_attribute = Attribute.from_database(name, value, type)
+            default_attribute = ActiveModel::Attribute.from_database(name, value, type)
           end
           _default_attributes[name] = default_attribute
+        end
+
+        def reset_default_attributes
+          reload_schema_from_cache
+        end
+
+        def resolve_type_name(name, **options)
+          Type.lookup(name, **options, adapter: Type.adapter_name_from(self))
+        end
+
+        def type_for_column(column)
+          hook_attribute_type(column.name, super)
         end
     end
   end

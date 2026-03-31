@@ -1,35 +1,6 @@
 # frozen_string_literal: true
 
 class Hash
-  # Returns a new hash with all keys converted using the +block+ operation.
-  #
-  #  hash = { name: 'Rob', age: '28' }
-  #
-  #  hash.transform_keys { |key| key.to_s.upcase } # => {"NAME"=>"Rob", "AGE"=>"28"}
-  #
-  # If you do not provide a +block+, it will return an Enumerator
-  # for chaining with other methods:
-  #
-  #  hash.transform_keys.with_index { |k, i| [k, i].join } # => {"name0"=>"Rob", "age1"=>"28"}
-  def transform_keys
-    return enum_for(:transform_keys) { size } unless block_given?
-    result = {}
-    each_key do |key|
-      result[yield(key)] = self[key]
-    end
-    result
-  end unless method_defined? :transform_keys
-
-  # Destructively converts all keys using the +block+ operations.
-  # Same as +transform_keys+ but modifies +self+.
-  def transform_keys!
-    return enum_for(:transform_keys!) { size } unless block_given?
-    keys.each do |key|
-      self[yield(key)] = delete(key)
-    end
-    self
-  end unless method_defined? :transform_keys!
-
   # Returns a new hash with all keys converted to strings.
   #
   #   hash = { name: 'Rob', age: '28' }
@@ -37,13 +8,13 @@ class Hash
   #   hash.stringify_keys
   #   # => {"name"=>"Rob", "age"=>"28"}
   def stringify_keys
-    transform_keys(&:to_s)
+    transform_keys { |k| Symbol === k ? k.name : k.to_s }
   end
 
   # Destructively converts all keys to strings. Same as
   # +stringify_keys+, but modifies +self+.
   def stringify_keys!
-    transform_keys!(&:to_s)
+    transform_keys! { |k| Symbol === k ? k.name : k.to_s }
   end
 
   # Returns a new hash with all keys converted to symbols, as long as
@@ -87,10 +58,10 @@ class Hash
   # This includes the keys from the root hash and from all
   # nested hashes and arrays.
   #
-  #  hash = { person: { name: 'Rob', age: '28' } }
+  #   hash = { person: { name: 'Rob', age: '28' } }
   #
-  #  hash.deep_transform_keys{ |key| key.to_s.upcase }
-  #  # => {"PERSON"=>{"NAME"=>"Rob", "AGE"=>"28"}}
+  #   hash.deep_transform_keys{ |key| key.to_s.upcase }
+  #   # => {"PERSON"=>{"NAME"=>"Rob", "AGE"=>"28"}}
   def deep_transform_keys(&block)
     _deep_transform_keys_in_object(self, &block)
   end
@@ -111,14 +82,14 @@ class Hash
   #   hash.deep_stringify_keys
   #   # => {"person"=>{"name"=>"Rob", "age"=>"28"}}
   def deep_stringify_keys
-    deep_transform_keys(&:to_s)
+    deep_transform_keys { |k| Symbol === k ? k.name : k.to_s }
   end
 
   # Destructively converts all keys to strings.
   # This includes the keys from the root hash and from all
   # nested hashes and arrays.
   def deep_stringify_keys!
-    deep_transform_keys!(&:to_s)
+    deep_transform_keys! { |k| Symbol === k ? k.name : k.to_s }
   end
 
   # Returns a new hash with all keys converted to symbols, as long as
@@ -141,11 +112,11 @@ class Hash
   end
 
   private
-    # support methods for deep transforming nested hashes and arrays
+    # Support methods for deep transforming nested hashes and arrays.
     def _deep_transform_keys_in_object(object, &block)
       case object
       when Hash
-        object.each_with_object({}) do |(key, value), result|
+        object.each_with_object(self.class.new) do |(key, value), result|
           result[yield(key)] = _deep_transform_keys_in_object(value, &block)
         end
       when Array

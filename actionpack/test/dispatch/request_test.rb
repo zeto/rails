@@ -4,10 +4,6 @@ require "abstract_unit"
 
 class BaseRequestTest < ActiveSupport::TestCase
   def setup
-    @env = {
-      :ip_spoofing_check => true,
-      "rack.input" => "foo"
-    }
     @original_tld_length = ActionDispatch::Http::URL.tld_length
   end
 
@@ -23,13 +19,23 @@ class BaseRequestTest < ActiveSupport::TestCase
   private
     def stub_request(env = {})
       ip_spoofing_check = env.key?(:ip_spoofing_check) ? env.delete(:ip_spoofing_check) : true
-      @trusted_proxies ||= nil
-      ip_app = ActionDispatch::RemoteIp.new(Proc.new {}, ip_spoofing_check, @trusted_proxies)
       ActionDispatch::Http::URL.tld_length = env.delete(:tld_length) if env.key?(:tld_length)
 
+      uri = env["HTTPS"] == "on" ? "https://www.example.org" : "http://www.example.org"
+
+      env = Rack::MockRequest.env_for(uri, env)
+      @additional_trusted_proxy ||= nil
+      trusted_proxies = ActionDispatch::RemoteIp::TRUSTED_PROXIES + [@additional_trusted_proxy]
+
+      ip_app = Rack::Lint.new(
+        ActionDispatch::RemoteIp.new(
+          Rack::Lint.new(Proc.new { [200, {}, []] }),
+          ip_spoofing_check,
+          trusted_proxies,
+        )
+      )
       ip_app.call(env)
 
-      env = @env.merge(env)
       ActionDispatch::Request.new(env)
     end
 end
@@ -40,9 +46,6 @@ class RequestUrlFor < BaseRequestTest
     assert_match(/Please provide the :host parameter/, e.message)
 
     assert_equal "/books", url_for(only_path: true, path: "/books")
-
-    assert_equal "http://www.example.com/books/?q=code", url_for(trailing_slash: true, path: "/books?q=code")
-    assert_equal "http://www.example.com/books/?spareslashes=////", url_for(trailing_slash: true, path: "/books?spareslashes=////")
 
     assert_equal "http://www.example.com",  url_for
     assert_equal "http://api.example.com",  url_for(subdomain: "api")
@@ -77,6 +80,10 @@ class RequestIP < BaseRequestTest
                            "HTTP_X_FORWARDED_FOR" => "3.4.5.6"
     assert_equal "3.4.5.6", request.remote_ip
 
+    request = stub_request "REMOTE_ADDR" => "127.0.0.1",
+                           "HTTP_X_FORWARDED_FOR" => "172.31.4.4, 10.0.0.1"
+    assert_equal "172.31.4.4", request.remote_ip
+
     request = stub_request "HTTP_X_FORWARDED_FOR" => "3.4.5.6,unknown"
     assert_equal "3.4.5.6", request.remote_ip
 
@@ -89,20 +96,31 @@ class RequestIP < BaseRequestTest
     request = stub_request "HTTP_X_FORWARDED_FOR" => "3.4.5.6,10.0.0.1"
     assert_equal "3.4.5.6", request.remote_ip
 
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "172.31.4.4, 10.0.0.1"
+    assert_equal "172.31.4.4", request.remote_ip
+
     request = stub_request "HTTP_X_FORWARDED_FOR" => "3.4.5.6, 10.0.0.1, 10.0.0.1"
     assert_equal "3.4.5.6", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "3.4.5.6,127.0.0.1"
     assert_equal "3.4.5.6", request.remote_ip
 
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "3.4.5.6:1234,127.0.0.1"
+    assert_equal "3.4.5.6", request.remote_ip
+
     request = stub_request "HTTP_X_FORWARDED_FOR" => "unknown,192.168.0.1"
-    assert_nil request.remote_ip
+    assert_equal "192.168.0.1", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "9.9.9.9, 3.4.5.6, 172.31.4.4, 10.0.0.1"
     assert_equal "3.4.5.6", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "not_ip_address"
     assert_nil request.remote_ip
+
+    request = stub_request "REMOTE_ADDR" => "1.2.3.4"
+    assert_equal "1.2.3.4", request.remote_ip
+    request.remote_ip = "2.3.4.5"
+    assert_equal "2.3.4.5", request.remote_ip
   end
 
   test "remote ip spoof detection" do
@@ -114,6 +132,23 @@ class RequestIP < BaseRequestTest
     assert_match(/IP spoofing attack/, e.message)
     assert_match(/HTTP_X_FORWARDED_FOR="1\.1\.1\.1"/, e.message)
     assert_match(/HTTP_CLIENT_IP="2\.2\.2\.2"/, e.message)
+  end
+
+  test "remote ip spoof detection with both headers" do
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "1.1.1.1",
+                           "HTTP_FORWARDED"       => "for=2.2.2.2, for=3.3.3.3",
+                           "HTTP_CLIENT_IP"       => "127.0.0.1"
+    e = assert_raise(ActionDispatch::RemoteIp::IpSpoofAttackError) {
+      request.remote_ip
+    }
+    assert_match(/IP spoofing attack/, e.message)
+    assert_match(/HTTP_X_FORWARDED_FOR="1\.1\.1\.1"/, e.message)
+    if Rack.release < "3"
+      assert_match(/HTTP_FORWARDED="for=1\.1\.1\.1"/, e.message)
+    else
+      assert_match(/HTTP_FORWARDED="for=2\.2\.2\.2, for=3\.3\.3\.3"/, e.message)
+    end
+    assert_match(/HTTP_CLIENT_IP="127\.0\.0\.1"/, e.message)
   end
 
   test "remote ip with spoof detection disabled" do
@@ -135,31 +170,34 @@ class RequestIP < BaseRequestTest
     request = stub_request "REMOTE_ADDR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
     assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7334", request.remote_ip
 
-    request = stub_request "REMOTE_ADDR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329,2001:0db8:85a3:0000:0000:8a2e:0370:7334"
+    request = stub_request "REMOTE_ADDR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335,2001:0db8:85a3:0000:0000:8a2e:0370:7334"
     assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7334", request.remote_ip
 
     request = stub_request "REMOTE_ADDR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
-                           "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
-    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
+                           "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335"
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
 
     request = stub_request "REMOTE_ADDR" => "::1",
-                           "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
-    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
+                           "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335"
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
 
-    request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329,unknown"
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335,unknown"
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
+
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "[fe80:0000:0000:0000:0202:b3ff:fe1e:8329]:3000,unknown"
     assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329,::1"
     assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
 
-    request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329, ::1, ::1"
-    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335, ::1, ::1"
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "unknown,::1"
-    assert_nil request.remote_ip
+    assert_equal "::1", request.remote_ip
 
-    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334, fe80:0000:0000:0000:0202:b3ff:fe1e:8329, ::1, fc00::, fc01::, fdff"
-    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334, 2001:0db8:85a3:0000:0000:8a2e:0370:7335, ::1, fc00::, fc01::, fdff"
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "FE00::, FDFF::"
     assert_equal "FE00::", request.remote_ip
@@ -169,25 +207,25 @@ class RequestIP < BaseRequestTest
   end
 
   test "remote ip v6 spoof detection" do
-    request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329",
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335",
                            "HTTP_CLIENT_IP"       => "2001:0db8:85a3:0000:0000:8a2e:0370:7334"
     e = assert_raise(ActionDispatch::RemoteIp::IpSpoofAttackError) {
       request.remote_ip
     }
     assert_match(/IP spoofing attack/, e.message)
-    assert_match(/HTTP_X_FORWARDED_FOR="fe80:0000:0000:0000:0202:b3ff:fe1e:8329"/, e.message)
+    assert_match(/HTTP_X_FORWARDED_FOR="2001:0db8:85a3:0000:0000:8a2e:0370:7335"/, e.message)
     assert_match(/HTTP_CLIENT_IP="2001:0db8:85a3:0000:0000:8a2e:0370:7334"/, e.message)
   end
 
   test "remote ip v6 spoof detection disabled" do
-    request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329",
+    request = stub_request "HTTP_X_FORWARDED_FOR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7335",
                            "HTTP_CLIENT_IP"       => "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
                            :ip_spoofing_check     => false
-    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
+    assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7335", request.remote_ip
   end
 
   test "remote ip with user specified trusted proxies String" do
-    @trusted_proxies = "67.205.106.73"
+    @additional_trusted_proxy = "67.205.106.73"
 
     request = stub_request "REMOTE_ADDR" => "3.4.5.6",
                            "HTTP_X_FORWARDED_FOR" => "67.205.106.73"
@@ -202,14 +240,14 @@ class RequestIP < BaseRequestTest
     assert_equal "3.4.5.6", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "67.205.106.73,unknown"
-    assert_nil request.remote_ip
+    assert_equal "67.205.106.73", request.remote_ip # change
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "9.9.9.9, 3.4.5.6, 10.0.0.1, 67.205.106.73"
     assert_equal "3.4.5.6", request.remote_ip
   end
 
   test "remote ip v6 with user specified trusted proxies String" do
-    @trusted_proxies = "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
+    @additional_trusted_proxy = "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
 
     request = stub_request "REMOTE_ADDR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
                            "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
@@ -221,17 +259,17 @@ class RequestIP < BaseRequestTest
 
     request = stub_request "REMOTE_ADDR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329,::1",
                            "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
-    assert_equal "::1", request.remote_ip
+    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "unknown,fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
-    assert_nil request.remote_ip
+    assert_equal "fe80:0000:0000:0000:0202:b3ff:fe1e:8329", request.remote_ip
 
     request = stub_request "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329,2001:0db8:85a3:0000:0000:8a2e:0370:7334"
     assert_equal "2001:0db8:85a3:0000:0000:8a2e:0370:7334", request.remote_ip
   end
 
   test "remote ip with user specified trusted proxies Regexp" do
-    @trusted_proxies = /^67\.205\.106\.73$/i
+    @additional_trusted_proxy = /^67\.205\.106\.73$/i
 
     request = stub_request "REMOTE_ADDR" => "67.205.106.73",
                            "HTTP_X_FORWARDED_FOR" => "3.4.5.6"
@@ -242,7 +280,7 @@ class RequestIP < BaseRequestTest
   end
 
   test "remote ip v6 with user specified trusted proxies Regexp" do
-    @trusted_proxies = /^fe80:0000:0000:0000:0202:b3ff:fe1e:8329$/i
+    @additional_trusted_proxy = /^fe80:0000:0000:0000:0202:b3ff:fe1e:8329$/i
 
     request = stub_request "REMOTE_ADDR" => "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
                            "HTTP_X_FORWARDED_FOR" => "fe80:0000:0000:0000:0202:b3ff:fe1e:8329"
@@ -296,7 +334,7 @@ class RequestDomain < BaseRequestTest
     assert_equal %w( 192 168 1 ), request.subdomains
     assert_equal "192.168.1", request.subdomain
 
-    request = stub_request "HTTP_HOST" => nil
+    request = stub_request "HTTP_HOST" => ""
     assert_equal [], request.subdomains
     assert_equal "", request.subdomain
 
@@ -318,6 +356,34 @@ class RequestDomain < BaseRequestTest
   end
 end
 
+class RequestDomainExtractor < BaseRequestTest
+  module CustomExtractor
+    extend self
+
+    def domain_from(_, _)
+      "world"
+    end
+
+    def subdomains_from(_, _)
+      ["hello"]
+    end
+  end
+
+  setup { ActionDispatch::Http::URL.domain_extractor = CustomExtractor }
+
+  teardown { ActionDispatch::Http::URL.domain_extractor = ActionDispatch::Http::URL::DomainExtractor }
+
+  test "domain" do
+    request = stub_request "HTTP_HOST" => "foobar.foobar.com"
+    assert_equal "world", request.domain
+  end
+
+  test "subdomains" do
+    request = stub_request "HTTP_HOST" => "foobar.foobar.com"
+    assert_equal "hello", request.subdomain
+  end
+end
+
 class RequestPort < BaseRequestTest
   test "standard_port" do
     request = stub_request
@@ -329,20 +395,20 @@ class RequestPort < BaseRequestTest
 
   test "standard_port?" do
     request = stub_request
-    assert !request.ssl?
-    assert request.standard_port?
+    assert_not_predicate request, :ssl?
+    assert_predicate request, :standard_port?
 
     request = stub_request "HTTPS" => "on"
-    assert request.ssl?
-    assert request.standard_port?
+    assert_predicate request, :ssl?
+    assert_predicate request, :standard_port?
 
     request = stub_request "HTTP_HOST" => "www.example.org:8080"
-    assert !request.ssl?
-    assert !request.standard_port?
+    assert_not_predicate request, :ssl?
+    assert_not_predicate request, :standard_port?
 
     request = stub_request "HTTP_HOST" => "www.example.org:8443", "HTTPS" => "on"
-    assert request.ssl?
-    assert !request.standard_port?
+    assert_predicate request, :ssl?
+    assert_not_predicate request, :standard_port?
   end
 
   test "optional port" do
@@ -368,7 +434,7 @@ class RequestPort < BaseRequestTest
     request = stub_request "SERVER_PORT" => "80"
     assert_equal 80, request.server_port
 
-    request = stub_request "SERVER_PORT" => ""
+    request = stub_request "SERVER_PORT" => "0"
     assert_equal 0, request.server_port
   end
 end
@@ -411,7 +477,7 @@ class RequestPath < BaseRequestTest
     assert_equal "/foo?bar", path
   end
 
-  test "original_url returns url built using ORIGINAL_FULLPATH" do
+  test "original_url returns URL built using ORIGINAL_FULLPATH" do
     request = stub_request("ORIGINAL_FULLPATH" => "/foo?bar",
                            "HTTP_HOST"         => "example.org",
                            "rack.url_scheme"   => "http")
@@ -571,7 +637,7 @@ end
 class LocalhostTest < BaseRequestTest
   test "IPs that match localhost" do
     request = stub_request("REMOTE_IP" => "127.1.1.1", "REMOTE_ADDR" => "127.1.1.1")
-    assert request.local?
+    assert_predicate request, :local?
   end
 end
 
@@ -580,57 +646,85 @@ class RequestCookie < BaseRequestTest
     request = stub_request("HTTP_COOKIE" => "_session_id=c84ace84796670c052c6ceb2451fb0f2; is_admin=yes")
     assert_equal "c84ace84796670c052c6ceb2451fb0f2", request.cookies["_session_id"], request.cookies.inspect
     assert_equal "yes", request.cookies["is_admin"], request.cookies.inspect
-
-    # some Nokia phone browsers omit the space after the semicolon separator.
-    # some developers have grown accustomed to using comma in cookie values.
-    request = stub_request("HTTP_COOKIE" => "_session_id=c84ace847,96670c052c6ceb2451fb0f2;is_admin=yes")
-    assert_equal "c84ace847", request.cookies["_session_id"], request.cookies.inspect
-    assert_equal "yes", request.cookies["is_admin"], request.cookies.inspect
   end
 end
 
 class RequestParamsParsing < BaseRequestTest
-  test "doesnt break when content type has charset" do
+  test "doesn't break when content type has charset" do
     request = stub_request(
       "REQUEST_METHOD" => "POST",
-      "CONTENT_LENGTH" => "flamenco=love".length,
+      "CONTENT_LENGTH" => "flamenco=love".length.to_s,
       "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8",
-      "rack.input" => StringIO.new("flamenco=love")
+      :input => "flamenco=love"
     )
 
     assert_equal({ "flamenco" => "love" }, request.request_parameters)
   end
 
-  test "doesnt interpret request uri as query string when missing" do
+  test "doesn't interpret request uri as query string when missing" do
     request = stub_request("REQUEST_URI" => "foo")
     assert_equal({}, request.query_parameters)
   end
-end
 
-class RequestRewind < BaseRequestTest
-  test "body should be rewound" do
-    data = "rewind"
-    env = {
-      "rack.input" => StringIO.new(data),
-      "CONTENT_LENGTH" => data.length,
-      "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8"
-    }
+  # partially mimics https://github.com/rack/rack/blob/249dd785625f0cbe617d3144401de90ecf77025a/test/spec_multipart.rb#L114
+  test "request_parameters raises BadRequest when content length lower than actual data length for a multipart request" do
+    request = stub_request(
+      "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x",
+      "CONTENT_LENGTH" => "9", # lower than data length
+      "REQUEST_METHOD" => "POST",
+      :input => "0123456789"
+    )
 
-    # Read the request body by parsing params.
-    request = stub_request(env)
-    request.request_parameters
+    err = assert_raises(ActionController::BadRequest) do
+      request.request_parameters
+    end
 
-    # Should have rewound the body.
-    assert_equal 0, request.body.pos
+    # original error message is Rack::Multipart::EmptyContentError for rack > 3 otherwise EOFError
+    assert_match "Invalid request parameters:", err.message
   end
 
-  test "raw_post rewinds rack.input if RAW_POST_DATA is nil" do
+  test "request_parameters raises BadRequest when content length is higher than actual data length" do
     request = stub_request(
-      "rack.input" => StringIO.new("raw"),
-      "CONTENT_LENGTH" => 3
+      "CONTENT_TYPE" => "multipart/form-data; boundary=AaB03x",
+      "CONTENT_LENGTH" => "11", # higher than data length
+      "REQUEST_METHOD" => "POST",
+      :input => "0123456789"
     )
-    assert_equal "raw", request.raw_post
-    assert_equal "raw", request.env["rack.input"].read
+
+    err = assert_raises(ActionController::BadRequest) do
+      request.request_parameters
+    end
+
+    assert_equal "Invalid request parameters: bad content body", err.message
+  end
+end
+
+if Rack.release < "3"
+  class RequestRewind < BaseRequestTest
+    test "body should be rewound" do
+      data = "rewind"
+      env = {
+        :input => data,
+        "CONTENT_LENGTH" => data.length.to_s,
+        "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8"
+      }
+
+      # Read the request body by parsing params.
+      request = stub_request(env)
+      request.request_parameters
+
+      # Should have rewound the body.
+      assert_equal "rewind", request.body.read
+    end
+
+    test "raw_post rewinds rack.input if RAW_POST_DATA is nil" do
+      request = stub_request(
+        :input => "raw",
+        "CONTENT_LENGTH" => "3"
+      )
+      assert_equal "raw", request.raw_post
+      assert_equal "raw", request.env["rack.input"].read
+    end
   end
 end
 
@@ -643,37 +737,37 @@ class RequestProtocol < BaseRequestTest
   test "xml http request" do
     request = stub_request
 
-    assert !request.xml_http_request?
-    assert !request.xhr?
+    assert_not_predicate request, :xml_http_request?
+    assert_not_predicate request, :xhr?
 
     request = stub_request "HTTP_X_REQUESTED_WITH" => "DefinitelyNotAjax1.0"
-    assert !request.xml_http_request?
-    assert !request.xhr?
+    assert_not_predicate request, :xml_http_request?
+    assert_not_predicate request, :xhr?
 
     request = stub_request "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest"
-    assert request.xml_http_request?
-    assert request.xhr?
+    assert_predicate request, :xml_http_request?
+    assert_predicate request, :xhr?
   end
 
   test "reports ssl" do
-    assert !stub_request.ssl?
-    assert stub_request("HTTPS" => "on").ssl?
+    assert_not_predicate stub_request, :ssl?
+    assert_predicate stub_request("HTTPS" => "on"), :ssl?
   end
 
   test "reports ssl when proxied via lighttpd" do
-    assert stub_request("HTTP_X_FORWARDED_PROTO" => "https").ssl?
+    assert_predicate stub_request("HTTP_X_FORWARDED_PROTO" => "https"), :ssl?
   end
 
   test "scheme returns https when proxied" do
     request = stub_request "rack.url_scheme" => "http"
-    assert !request.ssl?
+    assert_not_predicate request, :ssl?
     assert_equal "http", request.scheme
 
     request = stub_request(
       "rack.url_scheme" => "http",
       "HTTP_X_FORWARDED_PROTO" => "https"
     )
-    assert request.ssl?
+    assert_predicate request, :ssl?
     assert_equal "https", request.scheme
   end
 end
@@ -681,7 +775,6 @@ end
 class RequestMethod < BaseRequestTest
   test "method returns environment's request method when it has not been
     overridden by middleware".squish do
-
     ActionDispatch::Request::HTTP_METHODS.each do |method|
       request = stub_request("REQUEST_METHOD" => method)
 
@@ -700,7 +793,7 @@ class RequestMethod < BaseRequestTest
 
     assert_equal "GET", request.request_method
     assert_equal "GET", request.env["REQUEST_METHOD"]
-    assert request.get?
+    assert_predicate request, :get?
   end
 
   test "invalid http method raises exception" do
@@ -748,7 +841,7 @@ class RequestMethod < BaseRequestTest
 
     assert_equal "POST", request.method
     assert_equal "PATCH",  request.request_method
-    assert request.patch?
+    assert_predicate request, :patch?
   end
 
   test "post masquerading as put" do
@@ -758,12 +851,11 @@ class RequestMethod < BaseRequestTest
     )
     assert_equal "POST", request.method
     assert_equal "PUT",  request.request_method
-    assert request.put?
+    assert_predicate request, :put?
   end
 
   test "post uneffected by local inflections" do
     existing_acronyms = ActiveSupport::Inflector.inflections.acronyms.dup
-    existing_acronym_regex = ActiveSupport::Inflector.inflections.acronym_regex.dup
     begin
       ActiveSupport::Inflector.inflections do |inflect|
         inflect.acronym "POS"
@@ -772,63 +864,65 @@ class RequestMethod < BaseRequestTest
       request = stub_request "REQUEST_METHOD" => "POST"
       assert_equal :post, ActionDispatch::Request::HTTP_METHOD_LOOKUP["POST"]
       assert_equal :post, request.method_symbol
-      assert request.post?
+      assert_predicate request, :post?
     ensure
       # Reset original acronym set
       ActiveSupport::Inflector.inflections do |inflect|
-        inflect.send(:instance_variable_set, "@acronyms", existing_acronyms)
-        inflect.send(:instance_variable_set, "@acronym_regex", existing_acronym_regex)
+        inflect.instance_variable_set :@acronyms, existing_acronyms
+        inflect.send(:define_acronym_regex_patterns)
       end
+    end
+  end
+
+  test "delegates to Object#method if an argument is passed" do
+    request = stub_request
+
+    assert_nothing_raised do
+      request.method(:POST)
     end
   end
 end
 
 class RequestFormat < BaseRequestTest
   test "xml format" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :xml }) do
-      assert_equal Mime[:xml], request.format
-    end
+    request = stub_request "QUERY_STRING" => "format=xml"
+
+    assert_equal Mime[:xml], request.format
   end
 
   test "xhtml format" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :xhtml }) do
-      assert_equal Mime[:html], request.format
-    end
+    request = stub_request "QUERY_STRING" => "format=xhtml"
+
+    assert_equal Mime[:html], request.format
   end
 
   test "txt format" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :txt }) do
-      assert_equal Mime[:text], request.format
-    end
+    request = stub_request "QUERY_STRING" => "format=txt"
+
+    assert_equal Mime[:text], request.format
   end
 
   test "XMLHttpRequest" do
     request = stub_request(
       "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest",
-      "HTTP_ACCEPT" => [Mime[:js], Mime[:html], Mime[:xml], "text/xml", "*/*"].join(",")
+      "HTTP_ACCEPT" => [Mime[:js], Mime[:html], Mime[:xml], "text/xml", "*/*"].join(","),
+      "QUERY_STRING" => ""
     )
 
-    assert_called(request, :parameters, times: 1, returns: {}) do
-      assert request.xhr?
-      assert_equal Mime[:js], request.format
-    end
+    assert_predicate request, :xhr?
+    assert_equal Mime[:js], request.format
   end
 
   test "can override format with parameter negative" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :txt }) do
-      assert !request.format.xml?
-    end
+    request = stub_request("QUERY_STRING" => "format=txt")
+
+    assert_not_predicate request.format, :xml?
   end
 
   test "can override format with parameter positive" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :xml }) do
-      assert request.format.xml?
-    end
+    request = stub_request("QUERY_STRING" => "format=xml")
+
+    assert_predicate request.format, :xml?
   end
 
   test "formats text/html with accept header" do
@@ -853,40 +947,54 @@ class RequestFormat < BaseRequestTest
   end
 
   test "formats format:text with accept header" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :txt }) do
-      assert_equal [Mime[:text]], request.formats
-    end
+    request = stub_request("QUERY_STRING" => "format=txt")
+
+    assert_equal [Mime[:text]], request.formats
   end
 
   test "formats format:unknown with accept header" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :unknown }) do
-      assert_instance_of Mime::NullType, request.format
-    end
+    request = stub_request("QUERY_STRING" => "format=unknown")
+
+    assert_instance_of Mime::NullType, request.format
   end
 
   test "format is not nil with unknown format" do
-    request = stub_request
-    assert_called(request, :parameters, times: 2, returns: { format: :hello }) do
-      assert request.format.nil?
-      assert_not request.format.html?
-      assert_not request.format.xml?
-      assert_not request.format.json?
-    end
+    request = stub_request("QUERY_STRING" => "format=hello")
+
+    assert_nil request.format
+    assert_not_predicate request.format, :html?
+    assert_not_predicate request.format, :xml?
+    assert_not_predicate request.format, :json?
   end
 
-  test "format does not throw exceptions when malformed parameters" do
+  test "format does not throw exceptions when malformed GET parameters" do
     request = stub_request("QUERY_STRING" => "x[y]=1&x[y][][w]=2")
     assert request.formats
-    assert request.format.html?
+    assert_predicate request.format, :html?
+  end
+
+  test "format does not throw exceptions when invalid POST parameters" do
+    body = "{record:{content:127.0.0.1}}"
+
+    request = stub_request(
+      "REQUEST_METHOD" => "POST",
+      "CONTENT_LENGTH" => body.length.to_s,
+      "CONTENT_TYPE" => "application/json",
+      :input => body,
+      "action_dispatch.logger" => Logger.new(output = StringIO.new)
+    )
+    assert request.formats
+    assert_predicate request.format, :html?
+
+    output.rewind && (err = output.read)
+    assert_match(/Error occurred while parsing request parameters/, err)
   end
 
   test "formats with xhr request" do
-    request = stub_request "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest"
-    assert_called(request, :parameters, times: 1, returns: {}) do
-      assert_equal [Mime[:js]], request.formats
-    end
+    request = stub_request "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest",
+                           "QUERY_STRING" => ""
+
+    assert_equal [Mime[:js]], request.formats
   end
 
   test "ignore_accept_header" do
@@ -894,80 +1002,100 @@ class RequestFormat < BaseRequestTest
     ActionDispatch::Request.ignore_accept_header = true
 
     begin
-      request = stub_request "HTTP_ACCEPT" => "application/xml"
-      assert_called(request, :parameters, times: 1, returns: {}) do
-        assert_equal [ Mime[:html] ], request.formats
-      end
+      request = stub_request "HTTP_ACCEPT" => "application/xml",
+                             "QUERY_STRING" => ""
 
-      request = stub_request "HTTP_ACCEPT" => "koz-asked/something-crazy"
-      assert_called(request, :parameters, times: 1, returns: {}) do
-        assert_equal [ Mime[:html] ], request.formats
-      end
+      assert_equal [ Mime[:html] ], request.formats
 
-      request = stub_request "HTTP_ACCEPT" => "*/*;q=0.1"
-      assert_called(request, :parameters, times: 1, returns: {}) do
-        assert_equal [ Mime[:html] ], request.formats
-      end
+      request = stub_request "HTTP_ACCEPT" => "koz-asked/something-wild",
+                             "QUERY_STRING" => ""
 
-      request = stub_request "HTTP_ACCEPT" => "application/jxw"
-      assert_called(request, :parameters, times: 1, returns: {}) do
-        assert_equal [ Mime[:html] ], request.formats
-      end
+      assert_equal [ Mime[:html] ], request.formats
+
+      request = stub_request "HTTP_ACCEPT" => "*/*;q=0.1",
+                             "QUERY_STRING" => ""
+
+      assert_equal [ Mime[:html] ], request.formats
+
+      request = stub_request "HTTP_ACCEPT" => "application/jxw",
+                             "QUERY_STRING" => ""
+
+      assert_equal [ Mime[:html] ], request.formats
 
       request = stub_request "HTTP_ACCEPT" => "application/xml",
-                             "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest"
+                             "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest",
+                             "QUERY_STRING" => ""
 
-      assert_called(request, :parameters, times: 1, returns: {}) do
-        assert_equal [ Mime[:js] ], request.formats
-      end
+      assert_equal [ Mime[:js] ], request.formats
 
       request = stub_request "HTTP_ACCEPT" => "application/xml",
-                             "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest"
-      assert_called(request, :parameters, times: 2, returns: { format: :json }) do
-        assert_equal [ Mime[:json] ], request.formats
-      end
+                             "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest",
+                             "QUERY_STRING" => "format=json"
+
+      assert_equal [ Mime[:json] ], request.formats
     ensure
       ActionDispatch::Request.ignore_accept_header = old_ignore_accept_header
     end
   end
 
   test "format taken from the path extension" do
-    request = stub_request "PATH_INFO" => "/foo.xml"
-    assert_called(request, :parameters, times: 1, returns: {}) do
-      assert_equal [Mime[:xml]], request.formats
-    end
+    request = stub_request "PATH_INFO" => "/foo.xml", "QUERY_STRING" => ""
 
-    request = stub_request "PATH_INFO" => "/foo.123"
-    assert_called(request, :parameters, times: 1, returns: {}) do
-      assert_equal [Mime[:html]], request.formats
-    end
+    assert_equal [Mime[:xml]], request.formats
+
+    request = stub_request "PATH_INFO" => "/foo.123", "QUERY_STRING" => ""
+
+    assert_equal [Mime[:html]], request.formats
   end
 
   test "formats from accept headers have higher precedence than path extension" do
     request = stub_request "HTTP_ACCEPT" => "application/json",
-                           "PATH_INFO" => "/foo.xml"
+                           "PATH_INFO" => "/foo.xml",
+                           "QUERY_STRING" => ""
 
-    assert_called(request, :parameters, times: 1, returns: {}) do
-      assert_equal [Mime[:json]], request.formats
-    end
+    assert_equal [Mime[:json]], request.formats
   end
 end
 
 class RequestMimeType < BaseRequestTest
   test "content type" do
-    assert_equal Mime[:html], stub_request("CONTENT_TYPE" => "text/html").content_mime_type
+    request = stub_request("CONTENT_TYPE" => "text/html")
+
+    assert_equal(Mime[:html], request.content_mime_type)
+    assert_equal("text/html", request.media_type)
+    assert_nil(request.content_charset)
+    assert_equal({}, request.media_type_params)
+    assert_equal("text/html", request.content_type)
   end
 
   test "no content type" do
-    assert_nil stub_request.content_mime_type
+    request = stub_request
+
+    assert_nil(request.content_mime_type)
+    assert_nil(request.media_type)
+    assert_nil(request.content_charset)
+    assert_equal({}, request.media_type_params)
+    assert_nil(request.content_type)
   end
 
   test "content type is XML" do
-    assert_equal Mime[:xml], stub_request("CONTENT_TYPE" => "application/xml").content_mime_type
+    request = stub_request("CONTENT_TYPE" => "application/xml")
+
+    assert_equal(Mime[:xml], request.content_mime_type)
+    assert_equal("application/xml", request.media_type)
+    assert_nil(request.content_charset)
+    assert_equal({}, request.media_type_params)
+    assert_equal("application/xml", request.content_type)
   end
 
   test "content type with charset" do
-    assert_equal Mime[:xml], stub_request("CONTENT_TYPE" => "application/xml; charset=UTF-8").content_mime_type
+    request = stub_request("CONTENT_TYPE" => "application/xml; charset=UTF-8")
+
+    assert_equal(Mime[:xml], request.content_mime_type)
+    assert_equal("application/xml", request.media_type)
+    assert_equal("UTF-8", request.content_charset)
+    assert_equal({ "charset" => "UTF-8" }, request.media_type_params)
+    assert_equal("application/xml; charset=UTF-8", request.content_type)
   end
 
   test "user agent" do
@@ -997,15 +1125,14 @@ end
 
 class RequestParameters < BaseRequestTest
   test "parameters" do
-    request = stub_request
+    request = stub_request "CONTENT_TYPE" => "application/json",
+                           "CONTENT_LENGTH" => "9",
+                           "RAW_POST_DATA" => '{"foo":1}',
+                           "QUERY_STRING" => "bar=2"
 
-    assert_called(request, :request_parameters, times: 2, returns: { "foo" => 1 }) do
-      assert_called(request, :query_parameters, times: 2, returns: { "bar" => 2 }) do
-        assert_equal({ "foo" => 1, "bar" => 2 }, request.parameters)
-        assert_equal({ "foo" => 1 }, request.request_parameters)
-        assert_equal({ "bar" => 2 }, request.query_parameters)
-      end
-    end
+    assert_equal({ "foo" => 1, "bar" => "2" }, request.parameters)
+    assert_equal({ "foo" => 1 }, request.request_parameters)
+    assert_equal({ "bar" => "2" }, request.query_parameters)
   end
 
   test "parameters not accessible after rack parse error" do
@@ -1030,13 +1157,23 @@ class RequestParameters < BaseRequestTest
     assert_equal "Invalid path parameters: Invalid encoding for parameter: �", err.message
   end
 
-  test "parameters not accessible after rack parse error of invalid UTF8 character" do
-    request = stub_request("QUERY_STRING" => "foo%81E=1")
-    assert_raises(ActionController::BadRequest) { request.parameters }
+  test "path parameters don't re-encode frozen strings" do
+    request = stub_request
+
+    ActionDispatch::Request::Utils::CustomParamEncoder.stub(:action_encoding_template, Hash.new { Encoding::BINARY }) do
+      request.path_parameters = { foo: "frozen", bar: +"mutable", controller: "test_controller" }
+      assert_equal Encoding::BINARY, request.params[:bar].encoding
+      assert_equal Encoding::UTF_8, request.params[:foo].encoding
+    end
   end
 
   test "parameters containing an invalid UTF8 character" do
     request = stub_request("QUERY_STRING" => "foo=%81E")
+    assert_raises(ActionController::BadRequest) { request.parameters }
+  end
+
+  test "parameters key containing an invalid UTF8 character" do
+    request = stub_request("QUERY_STRING" => "%81E=bar")
     assert_raises(ActionController::BadRequest) { request.parameters }
   end
 
@@ -1045,12 +1182,53 @@ class RequestParameters < BaseRequestTest
     assert_raises(ActionController::BadRequest) { request.parameters }
   end
 
+  test "POST parameters containing invalid UTF8 character" do
+    data = "foo=%81E"
+    request = stub_request(
+      "REQUEST_METHOD" => "POST",
+      "CONTENT_LENGTH" => data.length.to_s,
+      "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8",
+      :input => data
+    )
+
+    err = assert_raises(ActionController::BadRequest) { request.parameters }
+
+    assert_predicate err.message, :valid_encoding?
+    assert_equal "Invalid request parameters: Invalid encoding for parameter: �E", err.message
+  end
+
+  test "query parameters specified as ASCII_8BIT encoded do not raise InvalidParameterError" do
+    request = stub_request("QUERY_STRING" => "foo=%81E")
+
+    ActionDispatch::Request::Utils::CustomParamEncoder.stub(:action_encoding_template, { "foo" => Encoding::ASCII_8BIT }) do
+      assert_nothing_raised do
+        request.parameters
+      end
+    end
+  end
+
+  test "POST parameters specified as ASCII_8BIT encoded do not raise InvalidParameterError" do
+    data = "foo=%81E"
+    request = stub_request(
+      "REQUEST_METHOD" => "POST",
+      "CONTENT_LENGTH" => data.length.to_s,
+      "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8",
+      :input => data
+    )
+
+    ActionDispatch::Request::Utils::CustomParamEncoder.stub(:action_encoding_template, { "foo" => Encoding::ASCII_8BIT }) do
+      assert_nothing_raised do
+        request.parameters
+      end
+    end
+  end
+
   test "parameters not accessible after rack parse error 1" do
     request = stub_request(
       "REQUEST_METHOD" => "POST",
-      "CONTENT_LENGTH" => "a%=".length,
+      "CONTENT_LENGTH" => "a%=".length.to_s,
       "CONTENT_TYPE" => "application/x-www-form-urlencoded; charset=utf-8",
-      "rack.input" => StringIO.new("a%=")
+      :input => "a%="
     )
 
     assert_raises(ActionController::BadRequest) do
@@ -1070,50 +1248,16 @@ class RequestParameters < BaseRequestTest
     assert_not_nil e.cause
     assert_equal e.cause.backtrace, e.backtrace
   end
+
+  test "raw_post does not raise when rack.input is nil" do
+    request = stub_request
+
+    # "" on Rack < 3.1, nil on Rack 3.1+
+    assert_predicate request.raw_post, :blank?
+  end
 end
 
 class RequestParameterFilter < BaseRequestTest
-  test "process parameter filter" do
-    test_hashes = [
-    [{ "foo" => "bar" }, { "foo" => "bar" }, %w'food'],
-    [{ "foo" => "bar" }, { "foo" => "[FILTERED]" }, %w'foo'],
-    [{ "foo" => "bar", "bar" => "foo" }, { "foo" => "[FILTERED]", "bar" => "foo" }, %w'foo baz'],
-    [{ "foo" => "bar", "baz" => "foo" }, { "foo" => "[FILTERED]", "baz" => "[FILTERED]" }, %w'foo baz'],
-    [{ "bar" => { "foo" => "bar", "bar" => "foo" } }, { "bar" => { "foo" => "[FILTERED]", "bar" => "foo" } }, %w'fo'],
-    [{ "foo" => { "foo" => "bar", "bar" => "foo" } }, { "foo" => "[FILTERED]" }, %w'f banana'],
-    [{ "deep" => { "cc" => { "code" => "bar", "bar" => "foo" }, "ss" => { "code" => "bar" } } }, { "deep" => { "cc" => { "code" => "[FILTERED]", "bar" => "foo" }, "ss" => { "code" => "bar" } } }, %w'deep.cc.code'],
-    [{ "baz" => [{ "foo" => "baz" }, "1"] }, { "baz" => [{ "foo" => "[FILTERED]" }, "1"] }, [/foo/]]]
-
-    test_hashes.each do |before_filter, after_filter, filter_words|
-      parameter_filter = ActionDispatch::Http::ParameterFilter.new(filter_words)
-      assert_equal after_filter, parameter_filter.filter(before_filter)
-
-      filter_words << "blah"
-      filter_words << lambda { |key, value|
-        value.reverse! if key =~ /bargain/
-      }
-
-      parameter_filter = ActionDispatch::Http::ParameterFilter.new(filter_words)
-      before_filter["barg"] = { :bargain => "gain", "blah" => "bar", "bar" => { "bargain" => { "blah" => "foo" } } }
-      after_filter["barg"]  = { :bargain => "niag", "blah" => "[FILTERED]", "bar" => { "bargain" => { "blah" => "[FILTERED]" } } }
-
-      assert_equal after_filter, parameter_filter.filter(before_filter)
-    end
-  end
-
-  test "parameter filter should maintain hash with indifferent access" do
-    test_hashes = [
-      [{ "foo" => "bar" }.with_indifferent_access, ["blah"]],
-      [{ "foo" => "bar" }.with_indifferent_access, []]
-    ]
-
-    test_hashes.each do |before_filter, filter_words|
-      parameter_filter = ActionDispatch::Http::ParameterFilter.new(filter_words)
-      assert_instance_of ActiveSupport::HashWithIndifferentAccess,
-                         parameter_filter.filter(before_filter)
-    end
-  end
-
   test "filtered_parameters returns params filtered" do
     request = stub_request(
       "action_dispatch.request.parameters" => {
@@ -1191,6 +1335,18 @@ class RequestParameterFilter < BaseRequestTest
     path = request.filtered_path
     assert_equal request.script_name + "/authenticate?secret", path
   end
+
+  test "parameter_filter returns the same instance of ActiveSupport::ParameterFilter" do
+    request = stub_request(
+      "action_dispatch.parameter_filter" => [:secret]
+    )
+
+    filter = request.parameter_filter
+
+    assert_kind_of ActiveSupport::ParameterFilter, filter
+    assert_equal({ "secret" => "[FILTERED]", "something" => "bar" }, filter.filter("secret" => "foo", "something" => "bar"))
+    assert_same filter, request.parameter_filter
+  end
 end
 
 class RequestEtag < BaseRequestTest
@@ -1234,7 +1390,7 @@ class RequestEtag < BaseRequestTest
     assert_equal header, request.if_none_match
     assert_equal expected, request.if_none_match_etags
     expected.each do |etag|
-      assert request.etag_matches?(etag), etag
+      assert request.etag_matches?(etag), "Etag #{etag} did not match HTTP_IF_NONE_MATCH values"
     end
   end
 end
@@ -1248,8 +1404,8 @@ class RequestVariant < BaseRequestTest
   test "setting variant to a symbol" do
     @request.variant = :phone
 
-    assert @request.variant.phone?
-    assert_not @request.variant.tablet?
+    assert_predicate @request.variant, :phone?
+    assert_not_predicate @request.variant, :tablet?
     assert @request.variant.any?(:phone, :tablet)
     assert_not @request.variant.any?(:tablet, :desktop)
   end
@@ -1257,9 +1413,9 @@ class RequestVariant < BaseRequestTest
   test "setting variant to an array of symbols" do
     @request.variant = [:phone, :tablet]
 
-    assert @request.variant.phone?
-    assert @request.variant.tablet?
-    assert_not @request.variant.desktop?
+    assert_predicate @request.variant, :phone?
+    assert_predicate @request.variant, :tablet?
+    assert_not_predicate @request.variant, :desktop?
     assert @request.variant.any?(:tablet, :desktop)
     assert_not @request.variant.any?(:desktop, :watch)
   end
@@ -1267,8 +1423,8 @@ class RequestVariant < BaseRequestTest
   test "clearing variant" do
     @request.variant = nil
 
-    assert @request.variant.empty?
-    assert_not @request.variant.phone?
+    assert_empty @request.variant
+    assert_not_predicate @request.variant, :phone?
     assert_not @request.variant.any?(:phone, :tablet)
   end
 
@@ -1287,35 +1443,196 @@ end
 
 class RequestFormData < BaseRequestTest
   test "media_type is from the FORM_DATA_MEDIA_TYPES array" do
-    assert stub_request("CONTENT_TYPE" => "application/x-www-form-urlencoded").form_data?
-    assert stub_request("CONTENT_TYPE" => "multipart/form-data").form_data?
+    assert_predicate stub_request("CONTENT_TYPE" => "application/x-www-form-urlencoded"), :form_data?
+    assert_predicate stub_request("CONTENT_TYPE" => "multipart/form-data"), :form_data?
   end
 
   test "media_type is not from the FORM_DATA_MEDIA_TYPES array" do
-    assert !stub_request("CONTENT_TYPE" => "application/xml").form_data?
-    assert !stub_request("CONTENT_TYPE" => "multipart/related").form_data?
+    assert_not_predicate stub_request("CONTENT_TYPE" => "application/xml"), :form_data?
+    assert_not_predicate stub_request("CONTENT_TYPE" => "multipart/related"), :form_data?
   end
 
   test "no Content-Type header is provided and the request_method is POST" do
     request = stub_request("REQUEST_METHOD" => "POST")
 
-    assert_equal "", request.media_type
+    assert_nil request.media_type
     assert_equal "POST", request.request_method
-    assert !request.form_data?
+    assert_not_predicate request, :form_data?
   end
 end
 
 class EarlyHintsRequestTest < BaseRequestTest
   def setup
     super
-    @env["rack.early_hints"] = lambda { |links| links }
-    @request = stub_request
+    @request = stub_request({ "rack.early_hints" => lambda { |links| links } })
   end
 
   test "when early hints is set in the env link headers are sent" do
-    early_hints = @request.send_early_hints("Link" => "</style.css>; rel=preload; as=style\n</script.js>; rel=preload")
-    expected_hints = { "Link" => "</style.css>; rel=preload; as=style\n</script.js>; rel=preload" }
+    early_hints = @request.send_early_hints("link" => "</style.css>; rel=preload; as=style,</script.js>; rel=preload")
+    expected_hints = { "link" => "</style.css>; rel=preload; as=style,</script.js>; rel=preload" }
 
     assert_equal expected_hints, early_hints
+  end
+end
+
+class RequestInspectTest < BaseRequestTest
+  test "inspect" do
+    request = stub_request(
+      "REQUEST_METHOD" => "POST",
+      "REMOTE_ADDR" => "1.2.3.4",
+      "HTTP_X_FORWARDED_PROTO" => "https",
+      "HTTP_X_FORWARDED_HOST" => "example.com:443",
+      "PATH_INFO" => "/path/",
+      "QUERY_STRING" => "q=1"
+    )
+    assert_match %r(#<ActionDispatch::Request POST "https://example.com/path/\?q=1" for 1.2.3.4>), request.inspect
+  end
+end
+
+class RequestSession < BaseRequestTest
+  def setup
+    super
+    @request = stub_request
+  end
+
+  test "#session" do
+    @request.session
+
+    assert_not_predicate(ActionDispatch::Request::Session.find(@request), :enabled?)
+    assert_instance_of(ActionDispatch::Request::Session::Options, ActionDispatch::Request::Session::Options.find(@request))
+  end
+end
+
+class RequestBearerToken < BaseRequestTest
+  test "bearer_token returns token from Authorization header" do
+    request = stub_request("HTTP_AUTHORIZATION" => "Bearer my-secret-token")
+    assert_equal "my-secret-token", request.bearer_token
+  end
+
+  test "bearer_token returns nil when no Authorization header" do
+    request = stub_request
+    assert_nil request.bearer_token
+  end
+
+  test "bearer_token returns nil when Authorization header is not Bearer" do
+    request = stub_request("HTTP_AUTHORIZATION" => "Basic dXNlcjpwYXNzd29yZA==")
+    assert_nil request.bearer_token
+  end
+
+  test "bearer_token handles empty Authorization header" do
+    request = stub_request("HTTP_AUTHORIZATION" => "")
+    assert_nil request.bearer_token
+  end
+
+  test "bearer_token handles Bearer with no token" do
+    request = stub_request("HTTP_AUTHORIZATION" => "Bearer ")
+    assert_nil request.bearer_token
+  end
+
+  test "bearer_token returns token via X-HTTP_AUTHORIZATION header" do
+    request = stub_request("X-HTTP_AUTHORIZATION" => "Bearer my-secret-token")
+    assert_equal "my-secret-token", request.bearer_token
+  end
+end
+
+class RequestCacheControlDirectives < BaseRequestTest
+  test "lazily initializes cache_control_directives" do
+    request = stub_request
+    assert_not_includes request.instance_variables, :@cache_control_directives
+
+    request.cache_control_directives
+    assert_includes request.instance_variables, :@cache_control_directives
+  end
+
+  test "only_if_cached? is true when only-if-cached is the sole directive" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "only-if-cached")
+    assert_predicate request.cache_control_directives, :only_if_cached?
+  end
+
+  test "only_if_cached? is true when only-if-cached appears among multiple directives" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-age=60, only-if-cached")
+    assert_predicate request.cache_control_directives, :only_if_cached?
+  end
+
+  test "only_if_cached? is false when Cache-Control header is missing" do
+    request = stub_request
+    assert_not_predicate request.cache_control_directives, :only_if_cached?
+  end
+
+  test "no_cache? properly detects the no-cache directive" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "no-cache")
+    assert_predicate request.cache_control_directives, :no_cache?
+  end
+
+  test "no_store? properly detects the no-store directive" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "no-store")
+    assert_predicate request.cache_control_directives, :no_store?
+  end
+
+  test "no_transform? properly detects the no-transform directive" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "no-transform")
+    assert_predicate request.cache_control_directives, :no_transform?
+  end
+
+  test "max_age properly returns the max-age directive value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-age=60")
+    assert_equal 60, request.cache_control_directives.max_age
+  end
+
+  test "max_stale properly returns the max-stale directive value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale=300")
+    assert_equal 300, request.cache_control_directives.max_stale
+  end
+
+  test "max_stale returns true when max-stale is present without a value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale")
+    assert_equal true, request.cache_control_directives.max_stale
+  end
+
+  test "max_stale? returns true when max-stale is present with or without a value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale=300")
+    assert_predicate request.cache_control_directives, :max_stale?
+
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale")
+    assert_predicate request.cache_control_directives, :max_stale?
+  end
+
+  test "max_stale? returns false when max-stale is not present" do
+    request = stub_request
+    assert_not_predicate request.cache_control_directives, :max_stale?
+  end
+
+  test "max_stale_unlimited? returns true only when max-stale is present without a value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale")
+    assert_predicate request.cache_control_directives, :max_stale_unlimited?
+
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-stale=300")
+    assert_not_predicate request.cache_control_directives, :max_stale_unlimited?
+
+    request = stub_request
+    assert_not_predicate request.cache_control_directives, :max_stale_unlimited?
+  end
+
+  test "min_fresh properly returns the min-fresh directive value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "min-fresh=120")
+    assert_equal 120, request.cache_control_directives.min_fresh
+  end
+
+  test "stale_if_error properly returns the stale-if-error directive value" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "stale-if-error=600")
+    assert_equal 600, request.cache_control_directives.stale_if_error
+  end
+
+  test "handles Cache-Control header with whitespace and case insensitivity" do
+    request = stub_request("HTTP_CACHE_CONTROL" => " Max-Age=60 , No-Cache ")
+    assert_equal 60, request.cache_control_directives.max_age
+    assert_predicate request.cache_control_directives, :no_cache?
+  end
+
+  test "ignores unrecognized directives" do
+    request = stub_request("HTTP_CACHE_CONTROL" => "max-age=60, unknown-directive, foo=bar")
+    assert_equal 60, request.cache_control_directives.max_age
+    assert_not_predicate request.cache_control_directives, :no_cache?
+    assert_not_predicate request.cache_control_directives, :no_store?
   end
 end

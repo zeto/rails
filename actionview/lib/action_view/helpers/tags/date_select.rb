@@ -6,6 +6,8 @@ module ActionView
   module Helpers
     module Tags # :nodoc:
       class DateSelect < Base # :nodoc:
+        include SelectRenderer
+
         def initialize(object_name, method_name, template_object, options, html_options)
           @html_options = html_options
 
@@ -13,7 +15,7 @@ module ActionView
         end
 
         def render
-          error_wrapping(datetime_selector(@options, @html_options).send("select_#{select_type}").html_safe)
+          error_wrapping(datetime_selector(@options, @html_options).public_send("select_#{select_type}").html_safe)
         end
 
         class << self
@@ -23,7 +25,6 @@ module ActionView
         end
 
         private
-
           def select_type
             self.class.select_type
           end
@@ -59,7 +60,7 @@ module ActionView
               time = Time.current
 
               [:year, :month, :day, :hour, :min, :sec].each do |key|
-                default[key] ||= time.send(key)
+                default[key] ||= time.public_send(key)
               end
 
               Time.utc(

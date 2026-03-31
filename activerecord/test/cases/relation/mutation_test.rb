@@ -5,7 +5,7 @@ require "models/post"
 
 module ActiveRecord
   class RelationMutationTest < ActiveRecord::TestCase
-    (Relation::MULTI_VALUE_METHODS - [:references, :extending, :order, :unscope, :select]).each do |method|
+    (Relation::MULTI_VALUE_METHODS - [:extending, :order, :unscope, :select, :with]).each do |method|
       test "##{method}!" do
         assert relation.public_send("#{method}!", :foo).equal?(relation)
         assert_equal [:foo], relation.public_send("#{method}_values")
@@ -25,22 +25,15 @@ module ActiveRecord
     test "#order! with symbol prepends the table name" do
       assert relation.order!(:name).equal?(relation)
       node = relation.order_values.first
-      assert node.ascending?
-      assert_equal :name, node.expr.name
+      assert_predicate node, :ascending?
+      assert_equal "name", node.expr.name
       assert_equal "posts", node.expr.relation.name
     end
 
     test "#order! on non-string does not attempt regexp match for references" do
       obj = Object.new
-      assert_not_called(obj, :=~) do
-        assert relation.order!(obj)
-        assert_equal [obj], relation.order_values
-      end
-    end
-
-    test "#references!" do
-      assert relation.references!(:foo).equal?(relation)
-      assert_includes relation.references_values, "foo"
+      assert relation.order!(obj)
+      assert_equal [obj], relation.order_values
     end
 
     test "extending!" do
@@ -59,7 +52,12 @@ module ActiveRecord
       assert_equal [], relation.extending_values
     end
 
-    (Relation::SINGLE_VALUE_METHODS - [:lock, :reordering, :reverse_order, :create_with, :skip_query_cache]).each do |method|
+    test "#limit!" do
+      assert relation.limit!(5).equal?(relation)
+      assert_equal 5, relation.limit_value
+    end
+
+    (Relation::SINGLE_VALUE_METHODS - [:limit, :lock, :reordering, :reverse_order, :create_with, :skip_query_cache, :strict_loading]).each do |method|
       test "##{method}!" do
         assert relation.public_send("#{method}!", :foo).equal?(relation)
         assert_equal :foo, relation.public_send("#{method}_value")
@@ -88,8 +86,8 @@ module ActiveRecord
       assert relation.reorder!(:name).equal?(relation)
       node = relation.order_values.first
 
-      assert node.ascending?
-      assert_equal :name, node.expr.name
+      assert_predicate node, :ascending?
+      assert_equal "name", node.expr.name
       assert_equal "posts", node.expr.relation.name
     end
 
@@ -123,8 +121,8 @@ module ActiveRecord
 
     test "none!" do
       assert relation.none!.equal?(relation)
-      assert_equal [NullRelation], relation.extending_values
-      assert relation.is_a?(NullRelation)
+      assert_predicate relation, :none?
+      assert_predicate relation, :null_relation?
     end
 
     test "distinct!" do
@@ -137,9 +135,21 @@ module ActiveRecord
       assert relation.skip_query_cache_value
     end
 
+    test "skip_preloading!" do
+      relation.skip_preloading!
+      assert relation.skip_preloading_value
+    end
+
+    test "#regroup!" do
+      @relation = relation.group("foo")
+
+      assert relation.regroup!("bar").equal?(relation)
+      assert_equal ["bar"], relation.group_values
+    end
+
     private
       def relation
-        @relation ||= Relation.new(FakeKlass, Post.arel_table, Post.predicate_builder)
+        @relation ||= Relation.new(FakeKlass)
       end
   end
 end

@@ -12,11 +12,11 @@ module ActiveRecord
         attr_reader :schema, :identifier
 
         def initialize(schema, identifier)
-          @schema, @identifier = unquote(schema), unquote(identifier)
+          @schema, @identifier = Utils.unquote_identifier(schema), Utils.unquote_identifier(identifier)
         end
 
         def to_s
-          parts.join SEPARATOR
+          [@schema, @identifier].compact.join(SEPARATOR)
         end
 
         def quoted
@@ -28,28 +28,19 @@ module ActiveRecord
         end
 
         def ==(o)
-          o.class == self.class && o.parts == parts
+          self.class == o.class &&
+            schema == o.schema &&
+            identifier == o.identifier
         end
         alias_method :eql?, :==
 
         def hash
-          parts.hash
+          [
+            Name,
+            @schema,
+            @identifier,
+          ].hash
         end
-
-        protected
-
-          def parts
-            @parts ||= [@schema, @identifier].compact
-          end
-
-        private
-          def unquote(part)
-            if part && part.start_with?('"')
-              part[1..-2]
-            else
-              part
-            end
-          end
       end
 
       module Utils # :nodoc:
@@ -68,12 +59,20 @@ module ActiveRecord
         # * <tt>"schema_name".table_name</tt>
         # * <tt>"schema.name"."table name"</tt>
         def extract_schema_qualified_name(string)
-          schema, table = string.scan(/[^".\s]+|"[^"]*"/)
+          schema, table = string.scan(/[^".]+|"[^"]*"/)
           if table.nil?
             table = schema
             schema = nil
           end
           PostgreSQL::Name.new(schema, table)
+        end
+
+        def unquote_identifier(identifier)
+          if identifier && identifier.start_with?('"')
+            identifier[1..-2]
+          else
+            identifier
+          end
         end
       end
     end

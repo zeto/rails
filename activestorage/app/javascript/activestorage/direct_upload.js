@@ -5,17 +5,27 @@ import { BlobUpload } from "./blob_upload"
 let id = 0
 
 export class DirectUpload {
-  constructor(file, url, delegate) {
+  constructor(file, url, delegate, customHeaders = {}, checksum_algorithm = "md5") {
     this.id = ++id
     this.file = file
     this.url = url
     this.delegate = delegate
+    this.customHeaders = customHeaders
+    this.checksum_algorithm = checksum_algorithm.toLowerCase()
   }
 
   create(callback) {
+    const options = { algorithm: this.checksum_algorithm }
+
     FileChecksum.create(this.file, (error, checksum) => {
-      const blob = new BlobRecord(this.file, checksum, this.url)
+      if (error) {
+        callback(error)
+        return
+      }
+
+      const blob = new BlobRecord(this.file, checksum, this.url, this.customHeaders)
       notify(this.delegate, "directUploadWillCreateBlobWithXHR", blob.xhr)
+
       blob.create(error => {
         if (error) {
           callback(error)
@@ -31,7 +41,7 @@ export class DirectUpload {
           })
         }
       })
-    })
+    }, options)
   }
 }
 

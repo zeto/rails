@@ -1,9 +1,11 @@
 # frozen_string_literal: true
 
-require_relative "core_ext/time/calculations"
+require "active_support/core_ext/time/calculations"
 
 module ActiveSupport
-  # FileUpdateChecker specifies the API used by Rails to watch files
+  # = \File Update Checker
+  #
+  # FileUpdateChecker specifies the API used by \Rails to watch files
   # and control reloading. The API depends on four methods:
   #
   # * +initialize+ which expects two parameters and one block as
@@ -20,7 +22,7 @@ module ActiveSupport
   # After initialization, a call to +execute_if_updated+ must execute
   # the block only if there was really a change in the filesystem.
   #
-  # This class is used by Rails to reload the I18n framework whenever
+  # This class is used by \Rails to reload the I18n framework whenever
   # they are changed upon a new request.
   #
   #   i18n_reloader = ActiveSupport::FileUpdateChecker.new(paths) do
@@ -44,8 +46,11 @@ module ActiveSupport
         raise ArgumentError, "A block is required to initialize a FileUpdateChecker"
       end
 
-      @files = files.freeze
-      @glob  = compile_glob(dirs)
+      gem_paths = Gem.path
+      @files = files.reject { |file| File.expand_path(file).start_with?(*gem_paths) }.freeze
+
+      @globs = compile_glob(dirs)&.reject { |dir| dir.start_with?(*gem_paths) }
+
       @block = block
 
       @watched    = nil
@@ -98,12 +103,11 @@ module ActiveSupport
     end
 
     private
-
       def watched
         @watched || begin
           all = @files.select { |f| File.exist?(f) }
-          all.concat(Dir[@glob]) if @glob
-          all
+          all.concat(Dir[*@globs]) if @globs
+          all.tap(&:uniq!)
         end
       end
 
@@ -119,7 +123,7 @@ module ActiveSupport
       # healthy to consider this edge case because with mtimes in the future
       # reloading is not triggered.
       def max_mtime(paths)
-        time_now = Time.now
+        time_now = Time.at(0, Process.clock_gettime(Process::CLOCK_REALTIME, :nanosecond), :nanosecond)
         max_mtime = nil
 
         # Time comparisons are performed with #compare_without_coercion because
@@ -144,10 +148,9 @@ module ActiveSupport
         hash.freeze # Freeze so changes aren't accidentally pushed
         return if hash.empty?
 
-        globs = hash.map do |key, value|
+        hash.map do |key, value|
           "#{escape(key)}/**/*#{compile_ext(value)}"
         end
-        "{#{globs.join(",")}}"
       end
 
       def escape(key)

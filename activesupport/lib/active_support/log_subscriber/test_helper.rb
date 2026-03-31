@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
-require_relative "../log_subscriber"
-require_relative "../logger"
-require_relative "../notifications"
+require "active_support/log_subscriber"
+require "active_support/logger"
+require "active_support/notifications"
 
 module ActiveSupport
   class LogSubscriber
@@ -27,19 +27,19 @@ module ActiveSupport
     #
     # All you need to do is to ensure that your log subscriber is added to
     # Rails::Subscriber, as in the second line of the code above. The test
-    # helpers are responsible for setting up the queue, subscriptions and
+    # helpers are responsible for setting up the queue and subscriptions, and
     # turning colors in logs off.
     #
     # The messages are available in the @logger instance, which is a logger with
     # limited powers (it actually does not send anything to your output), and
     # you can collect them doing @logger.logged(level), where level is the level
-    # used in logging, like info, debug, warn and so on.
+    # used in logging, like info, debug, warn, and so on.
     module TestHelper
       def setup # :nodoc:
         @logger   = MockLogger.new
         @notifier = ActiveSupport::Notifications::Fanout.new
 
-        ActiveSupport::LogSubscriber.colorize_logging = false
+        ActiveSupport.colorize_logging = false
 
         @old_notifier = ActiveSupport::Notifications.notifier
         set_logger(@logger)
@@ -80,11 +80,11 @@ module ActiveSupport
         end
 
         ActiveSupport::Logger::Severity.constants.each do |severity|
-          class_eval <<-EOT, __FILE__, __LINE__ + 1
+          class_eval <<~RUBY, __FILE__, __LINE__ + 1
             def #{severity.downcase}?
               #{severity} >= @level
             end
-          EOT
+          RUBY
         end
       end
 

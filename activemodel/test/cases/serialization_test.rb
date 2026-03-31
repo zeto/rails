@@ -18,7 +18,7 @@ class SerializationTest < ActiveModel::TestCase
       instance_values.except("address", "friends")
     end
 
-    def method_missing(method_name, *args)
+    def method_missing(method_name, ...)
       if method_name == :bar
         "i_am_bar"
       else
@@ -60,6 +60,11 @@ class SerializationTest < ActiveModel::TestCase
   def test_method_serializable_hash_should_work_with_only_option
     expected = { "name" => "David" }
     assert_equal expected, @user.serializable_hash(only: [:name])
+  end
+
+  def test_method_serializable_hash_should_work_with_only_option_with_order_of_given_keys
+    expected = { "name" => "David", "email" => "david@example.com" }
+    assert_equal expected.keys, @user.serializable_hash(only: [:name, :email]).keys
   end
 
   def test_method_serializable_hash_should_work_with_except_option
@@ -173,5 +178,12 @@ class SerializationTest < ActiveModel::TestCase
                 "friends" => [{ "name" => "Joe", "email" => "joe@example.com", "gender" => "male" },
                            { "name" => "Sue", "email" => "sue@example.com", "gender" => "female" }] }
     assert_equal expected, @user.serializable_hash(include: [{ address: { only: "street" } }, :friends])
+  end
+
+  def test_all_includes_with_options
+    expected = { "email" => "david@example.com", "gender" => "male", "name" => "David",
+                "address" => { "street" => "123 Lane" },
+                "friends" => [{ "name" => "Joe" }, { "name" => "Sue" }] }
+    assert_equal expected, @user.serializable_hash(include: [address: { only: "street" }, friends: { only: "name" }])
   end
 end

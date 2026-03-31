@@ -38,10 +38,17 @@ class DispatcherTest < ActiveSupport::TestCase
   end
 
   private
-
     def dispatch(&block)
-      ActionDispatch::Callbacks.new(block || DummyApp.new).call(
-        "rack.input" => StringIO.new("")
-      )
+      app = block || DummyApp.new
+      env = Rack::MockRequest.env_for("", {})
+      wrap_in_rack_lint(ActionDispatch::Callbacks, app, env)
+    end
+
+    def wrap_in_rack_lint(klass, app, env)
+      Rack::Lint.new(
+        klass.new(
+          Rack::Lint.new(app)
+        )
+      ).call(env)
     end
 end

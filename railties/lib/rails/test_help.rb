@@ -1,51 +1,46 @@
 # frozen_string_literal: true
 
+# :enddoc:
+
 # Make double-sure the RAILS_ENV is not set to production,
 # so fixtures aren't loaded into that environment
 abort("Abort testing: Your Rails environment is running in production mode!") if Rails.env.production?
 
 require "active_support/test_case"
-require "action_controller"
-require "action_controller/test_case"
-require "action_dispatch/testing/integration"
-require_relative "generators/test_case"
-
+require "rails/generators/test_case"
 require "active_support/testing/autorun"
 
+require "rails/testing/maintain_test_schema"
+
 if defined?(ActiveRecord::Base)
-  begin
-    ActiveRecord::Migration.maintain_test_schema!
-  rescue ActiveRecord::PendingMigrationError => e
-    puts e.to_s.strip
-    exit 1
+  require "active_record/testing/query_assertions"
+  ActiveSupport.on_load(:active_support_test_case) do
+    include ActiveRecord::TestDatabases
+    include ActiveRecord::TestFixtures
+    include ActiveRecord::Assertions::QueryAssertions
+
+    self.fixture_paths << "#{Rails.root}/test/fixtures/"
+    self.file_fixture_path = "#{Rails.root}/test/fixtures/files"
   end
 
-  module ActiveSupport
-    class TestCase
-      include ActiveRecord::TestFixtures
-      self.fixture_path = "#{Rails.root}/test/fixtures/"
-      self.file_fixture_path = fixture_path + "files"
-    end
+  ActiveSupport.on_load(:action_dispatch_integration_test) do
+    self.fixture_paths += ActiveSupport::TestCase.fixture_paths
   end
-
-  ActionDispatch::IntegrationTest.fixture_path = ActiveSupport::TestCase.fixture_path
-
-  def create_fixtures(*fixture_set_names, &block)
-    FixtureSet.create_fixtures(ActiveSupport::TestCase.fixture_path, fixture_set_names, {}, &block)
+else
+  ActiveSupport.on_load(:active_support_test_case) do
+    self.file_fixture_path = "#{Rails.root}/test/fixtures/files"
   end
 end
 
-# :enddoc:
-
-class ActionController::TestCase
-  def before_setup # :nodoc:
+ActiveSupport.on_load(:action_controller_test_case) do
+  def before_setup
     @routes = Rails.application.routes
     super
   end
 end
 
-class ActionDispatch::IntegrationTest
-  def before_setup # :nodoc:
+ActiveSupport.on_load(:action_dispatch_integration_test) do
+  def before_setup
     @routes = Rails.application.routes
     super
   end

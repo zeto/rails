@@ -15,7 +15,7 @@ module ApplicationTests
         teardown_app
       end
 
-      test "tmp:clear clear cache, socket and screenshot files" do
+      test "tmp:clear clear cache, socket, screenshot, and storage files" do
         Dir.chdir(app_path) do
           FileUtils.mkdir_p("tmp/cache")
           FileUtils.touch("tmp/cache/cache_file")
@@ -26,17 +26,23 @@ module ApplicationTests
           FileUtils.mkdir_p("tmp/screenshots")
           FileUtils.touch("tmp/screenshots/fail.png")
 
+          FileUtils.mkdir_p("tmp/storage/6h/np")
+          FileUtils.touch("tmp/storage/6h/np/6hnp81jvgt42pcfqtlpoy8qshfb0")
+
           rails "tmp:clear"
 
           assert_not File.exist?("tmp/cache/cache_file")
           assert_not File.exist?("tmp/sockets/socket_file")
           assert_not File.exist?("tmp/screenshots/fail.png")
+          assert_not File.exist?("tmp/storage/6h/np/6hnp81jvgt42pcfqtlpoy8qshfb0")
         end
       end
 
       test "tmp:clear should work if folder missing" do
         FileUtils.remove_dir("#{app_path}/tmp")
-        rails "tmp:clear"
+        assert_nothing_raised do
+          rails "tmp:clear"
+        end
       end
     end
   end

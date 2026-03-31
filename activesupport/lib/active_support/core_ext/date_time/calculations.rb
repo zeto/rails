@@ -75,6 +75,10 @@ class DateTime
   # The +options+ parameter takes a hash with any of these keys: <tt>:years</tt>,
   # <tt>:months</tt>, <tt>:weeks</tt>, <tt>:days</tt>, <tt>:hours</tt>,
   # <tt>:minutes</tt>, <tt>:seconds</tt>.
+  #
+  # Just like Date#advance, increments are applied in order of time units from
+  # largest to smallest. This order can affect the result around the end of a
+  # month.
   def advance(options)
     unless options[:weeks].nil?
       options[:weeks], partial_weeks = options[:weeks].divmod(1)
@@ -110,7 +114,7 @@ class DateTime
   # instance time. Do not use this method in combination with x.months, use
   # months_since instead!
   def since(seconds)
-    self + Rational(seconds.round, 86400)
+    self + Rational(seconds, 86400)
   end
   alias :in :since
 

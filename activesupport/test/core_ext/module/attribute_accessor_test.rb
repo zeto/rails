@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../../abstract_unit"
 require "active_support/core_ext/module/attribute_accessors"
 
 class ModuleAttributeAccessorTest < ActiveSupport::TestCase
@@ -65,18 +65,18 @@ class ModuleAttributeAccessorTest < ActiveSupport::TestCase
     assert_respond_to @module, :foo
     assert_respond_to @module, :foo=
     assert_respond_to @object, :bar
-    assert !@object.respond_to?(:bar=)
+    assert_not_respond_to @object, :bar=
   end
 
   def test_should_not_create_instance_reader
     assert_respond_to @module, :shaq
-    assert !@object.respond_to?(:shaq)
+    assert_not_respond_to @object, :shaq
   end
 
   def test_should_not_create_instance_accessors
     assert_respond_to @module, :camp
-    assert !@object.respond_to?(:camp)
-    assert !@object.respond_to?(:camp=)
+    assert_not_respond_to @object, :camp
+    assert_not_respond_to @object, :camp=
   end
 
   def test_should_raise_name_error_if_attribute_name_is_invalid
@@ -85,28 +85,28 @@ class ModuleAttributeAccessorTest < ActiveSupport::TestCase
         cattr_reader "1nvalid"
       end
     end
-    assert_equal "invalid attribute name: 1nvalid", exception.message
+    assert_match "invalid attribute name: 1nvalid", exception.message
 
     exception = assert_raises NameError do
       Class.new do
         cattr_writer "1nvalid"
       end
     end
-    assert_equal "invalid attribute name: 1nvalid", exception.message
+    assert_match "invalid attribute name: 1nvalid", exception.message
 
     exception = assert_raises NameError do
       Class.new do
         mattr_reader "valid_part\ninvalid_part"
       end
     end
-    assert_equal "invalid attribute name: valid_part\ninvalid_part", exception.message
+    assert_match "invalid attribute name: valid_part\ninvalid_part", exception.message
 
     exception = assert_raises NameError do
       Class.new do
         mattr_writer "valid_part\ninvalid_part"
       end
     end
-    assert_equal "invalid attribute name: valid_part\ninvalid_part", exception.message
+    assert_match "invalid attribute name: valid_part\ninvalid_part", exception.message
   end
 
   def test_should_use_default_value_if_block_passed
@@ -133,5 +133,18 @@ class ModuleAttributeAccessorTest < ActiveSupport::TestCase
 
     assert_equal 1, @module.defn1
     assert_equal 2, @module.defn2
+  end
+
+  def test_declaring_attributes_on_singleton_errors
+    klass = Class.new
+
+    ex = assert_raises TypeError do
+      class << klass
+        mattr_accessor :my_attr
+      end
+    end
+    assert_equal "module attributes should be defined directly on class, not singleton", ex.message
+
+    assert_not_includes Module.class_variables, :@@my_attr
   end
 end

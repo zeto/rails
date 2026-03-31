@@ -8,7 +8,7 @@ class PostgresqlNetworkTest < ActiveRecord::PostgreSQLTestCase
   class PostgresqlNetworkAddress < ActiveRecord::Base; end
 
   setup do
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
     @connection.create_table("postgresql_network_addresses", force: true) do |t|
       t.inet "inet_address", default: "192.168.1.1"
       t.cidr "cidr_address", default: "192.168.1.0/24"
@@ -24,30 +24,30 @@ class PostgresqlNetworkTest < ActiveRecord::PostgreSQLTestCase
     column = PostgresqlNetworkAddress.columns_hash["cidr_address"]
     assert_equal :cidr, column.type
     assert_equal "cidr", column.sql_type
-    assert_not column.array?
+    assert_not_predicate column, :array?
 
     type = PostgresqlNetworkAddress.type_for_attribute("cidr_address")
-    assert_not type.binary?
+    assert_not_predicate type, :binary?
   end
 
   def test_inet_column
     column = PostgresqlNetworkAddress.columns_hash["inet_address"]
     assert_equal :inet, column.type
     assert_equal "inet", column.sql_type
-    assert_not column.array?
+    assert_not_predicate column, :array?
 
     type = PostgresqlNetworkAddress.type_for_attribute("inet_address")
-    assert_not type.binary?
+    assert_not_predicate type, :binary?
   end
 
   def test_macaddr_column
     column = PostgresqlNetworkAddress.columns_hash["mac_address"]
     assert_equal :macaddr, column.type
     assert_equal "macaddr", column.sql_type
-    assert_not column.array?
+    assert_not_predicate column, :array?
 
     type = PostgresqlNetworkAddress.type_for_attribute("mac_address")
-    assert_not type.binary?
+    assert_not_predicate type, :binary?
   end
 
   def test_network_types
@@ -92,5 +92,23 @@ class PostgresqlNetworkTest < ActiveRecord::PostgreSQLTestCase
     assert_match %r{t\.inet\s+"inet_address",\s+default: "192\.168\.1\.1"}, output
     assert_match %r{t\.cidr\s+"cidr_address",\s+default: "192\.168\.1\.0/24"}, output
     assert_match %r{t\.macaddr\s+"mac_address",\s+default: "ff:ff:ff:ff:ff:ff"}, output
+  end
+
+  def test_cidr_change_prefix
+    model = PostgresqlNetworkAddress.create(cidr_address: "192.168.1.0/24")
+    model.cidr_address = "192.168.1.0/24"
+    assert_not_predicate model, :changed?
+
+    model.cidr_address = "192.168.2.0/24"
+    assert_predicate model, :changed?
+
+    model.cidr_address = "192.168.1.0/25"
+    assert_predicate model, :changed?
+  end
+
+  def test_mac_address_change_case_does_not_mark_dirty
+    model = PostgresqlNetworkAddress.create(mac_address: "Ab:Cd:Ef:01:02:03")
+    model.mac_address = model.mac_address.swapcase
+    assert_not_predicate model, :changed?
   end
 end

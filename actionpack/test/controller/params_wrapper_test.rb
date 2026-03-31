@@ -255,6 +255,23 @@ class ParamsWrapperTest < ActionController::TestCase
       assert_equal "", @response.body
     end
   end
+
+  def test_derived_wrapped_keys_from_nested_attributes
+    assert_not_respond_to User, :nested_attributes_options
+    User.define_singleton_method(:nested_attributes_options) do
+      { person: {} }
+    end
+
+    assert_called(User, :attribute_names, times: 2, returns: ["username"]) do
+      with_default_wrapper_options do
+        @request.env["CONTENT_TYPE"] = "application/json"
+        post :parse, params: { "username" => "sikachu", "person_attributes" => { "title" => "Developer" } }
+        assert_parameters("username" => "sikachu", "person_attributes" => { "title" => "Developer" }, "user" => { "username" => "sikachu", "person_attributes" => { "title" => "Developer" } })
+      end
+    end
+  ensure
+    User.singleton_class.undef_method(:nested_attributes_options)
+  end
 end
 
 class NamespacedParamsWrapperTest < ActionController::TestCase
@@ -262,7 +279,7 @@ class NamespacedParamsWrapperTest < ActionController::TestCase
 
   module Admin
     module Users
-      class UsersController < ActionController::Base;
+      class UsersController < ActionController::Base
         class << self
           attr_accessor :last_parameters
         end
@@ -278,6 +295,10 @@ class NamespacedParamsWrapperTest < ActionController::TestCase
   class SampleOne
     def self.attribute_names
       ["username"]
+    end
+
+    def self.attribute_aliases
+      { "nick" => "username" }
     end
   end
 
@@ -308,6 +329,19 @@ class NamespacedParamsWrapperTest < ActionController::TestCase
         @request.env["CONTENT_TYPE"] = "application/json"
         post :parse, params: { "username" => "sikachu", "title" => "Developer" }
         assert_parameters("username" => "sikachu", "title" => "Developer", "user" => { "username" => "sikachu" })
+      end
+    ensure
+      Admin.send :remove_const, :User
+    end
+  end
+
+  def test_namespace_lookup_from_model_alias
+    Admin.const_set(:User, Class.new(SampleOne))
+    begin
+      with_default_wrapper_options do
+        @request.env["CONTENT_TYPE"] = "application/json"
+        post :parse, params: { "nick" => "sikachu", "title" => "Developer" }
+        assert_parameters({ "nick" => "sikachu", "title" => "Developer", "user" => { "nick" => "sikachu" } })
       end
     ensure
       Admin.send :remove_const, :User
@@ -397,7 +431,6 @@ class IrregularInflectionParamsWrapperTest < ActionController::TestCase
   end
 
   private
-
     def with_dup
       original = ActiveSupport::Inflector::Inflections.instance_variable_get(:@__instance__)[:en]
       ActiveSupport::Inflector::Inflections.instance_variable_set(:@__instance__, en: original.dup)

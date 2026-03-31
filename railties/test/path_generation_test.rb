@@ -13,7 +13,7 @@ class PathGenerationTest < ActiveSupport::TestCase
       super()
     end
 
-    class Request < DelegateClass(ActionDispatch::Request)
+    class Request < ActiveSupport::Delegation::DelegateClass(ActionDispatch::Request)
       def initialize(target, url_helpers, block)
         super(target)
         @url_helpers = url_helpers
@@ -66,7 +66,7 @@ class PathGenerationTest < ActiveSupport::TestCase
         super
         app = self
         @routes = TestSet.new ->(c) { app.controller = c }
-        secrets.secret_token = "foo"
+        config.secret_key_base = "foo"
       end
       def app; routes; end
     }

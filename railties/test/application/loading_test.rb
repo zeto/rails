@@ -34,6 +34,22 @@ class LoadingTest < ActiveSupport::TestCase
     assert_equal "omg", p.title
   end
 
+  test "constants without a matching file raise NameError" do
+    app_file "app/models/post.rb", <<-RUBY
+      class Post
+        NON_EXISTING_CONSTANT
+      end
+    RUBY
+
+    boot_app
+
+    e = assert_raise(NameError) { User }
+    assert_match "uninitialized constant #{self.class}::User", e.message
+
+    e = assert_raise(NameError) { Post }
+    assert_match "uninitialized constant Post::NON_EXISTING_CONSTANT", e.message
+  end
+
   test "concerns in app are autoloaded" do
     app_file "app/controllers/concerns/trackable.rb", <<-CONCERN
       module Trackable
@@ -73,7 +89,9 @@ class LoadingTest < ActiveSupport::TestCase
     require "#{rails_root}/config/environment"
     setup_ar!
 
-    User
+    assert_nothing_raised do
+      User
+    end
   end
 
   test "load config/environments/environment before Bootstrap initializers" do
@@ -93,21 +111,30 @@ class LoadingTest < ActiveSupport::TestCase
     assert ::Rails.application.config.loaded
   end
 
-  test "descendants loaded after framework initialization are cleaned on each request without cache classes" do
+  test "raises RuntimeError when config/environments/ENV.rb file does not exist" do
+    msg = <<~MSG.squish
+      Rails environment has been set to non_existent_environment but
+      config/environments/non_existent_environment.rb does not exist.
+    MSG
+
+    assert_raise(RuntimeError, match: msg) { boot_app "non_existent_environment" }
+  end
+
+  test "descendants loaded after framework initialization are cleaned on each request if reloading is enabled" do
     add_to_config <<-RUBY
-      config.cache_classes = false
+      config.enable_reloading = true
       config.reload_classes_only_on_change = false
     RUBY
 
     app_file "app/models/post.rb", <<-MODEL
-      class Post < ActiveRecord::Base
+      class Post < ApplicationRecord
       end
     MODEL
 
     app_file "config/routes.rb", <<-RUBY
       Rails.application.routes.draw do
-        get '/load',   to: lambda { |env| [200, {}, Post.all] }
-        get '/unload', to: lambda { |env| [200, {}, []] }
+        get '/load',   to: lambda { |env| Post.all.to_a; [200, {}, [ActiveRecord::Base.descendants.collect(&:to_s).sort.uniq.to_json]] }
+        get '/unload', to: lambda { |env| [200, {}, [ActiveRecord::Base.descendants.collect(&:to_s).sort.uniq.to_json]] }
       end
     RUBY
 
@@ -117,21 +144,27 @@ class LoadingTest < ActiveSupport::TestCase
     require "#{rails_root}/config/environment"
     setup_ar!
 
-    assert_equal [ActiveStorage::Blob, ActiveStorage::Attachment, ActiveRecord::SchemaMigration, ActiveRecord::InternalMetadata].collect(&:to_s).sort, ActiveRecord::Base.descendants.collect(&:to_s).sort
+    initial = [
+      ActiveStorage::Record, ActiveStorage::Blob, ActiveStorage::Attachment, ApplicationRecord
+    ].collect(&:to_s).sort
+
+    assert_equal initial, ActiveRecord::Base.descendants.collect(&:to_s).sort.uniq
     get "/load"
-    assert_equal [ActiveStorage::Blob, ActiveStorage::Attachment, ActiveRecord::SchemaMigration, ActiveRecord::InternalMetadata, Post].collect(&:to_s).sort, ActiveRecord::Base.descendants.collect(&:to_s).sort
+    assert_equal 200, last_response.status
+    assert_equal ["Post"], JSON.parse(last_response.body) - initial
     get "/unload"
-    assert_equal [ActiveStorage::Blob, ActiveStorage::Attachment, ActiveRecord::SchemaMigration, ActiveRecord::InternalMetadata].collect(&:to_s).sort, ActiveRecord::Base.descendants.collect(&:to_s).sort
+    assert_equal 200, last_response.status
+    assert_equal [], JSON.parse(last_response.body) - initial
   end
 
-  test "initialize cant be called twice" do
+  test "initialize can't be called twice" do
     require "#{app_path}/config/environment"
     assert_raise(RuntimeError) { Rails.application.initialize! }
   end
 
   test "reload constants on development" do
     add_to_config <<-RUBY
-      config.cache_classes = false
+      config.enable_reloading = true
     RUBY
 
     app_file "config/routes.rb", <<-RUBY
@@ -166,12 +199,9 @@ class LoadingTest < ActiveSupport::TestCase
 
   test "does not reload constants on development if custom file watcher always returns false" do
     add_to_config <<-RUBY
-      config.cache_classes = false
-      config.file_watcher = Class.new do
-        def initialize(*); end
+      config.enable_reloading = true
+      config.file_watcher = Class.new(ActiveSupport::FileUpdateChecker) do
         def updated?; false; end
-        def execute; end
-        def execute_if_updated; false; end
       end
     RUBY
 
@@ -207,7 +237,7 @@ class LoadingTest < ActiveSupport::TestCase
 
   test "added files (like db/schema.rb) also trigger reloading" do
     add_to_config <<-RUBY
-      config.cache_classes = false
+      config.enable_reloading = true
     RUBY
 
     app_file "config/routes.rb", <<-RUBY
@@ -239,7 +269,7 @@ class LoadingTest < ActiveSupport::TestCase
 
   test "dependencies reloading is followed by routes reloading" do
     add_to_config <<-RUBY
-      config.cache_classes = false
+      config.enable_reloading = true
     RUBY
 
     app_file "config/routes.rb", <<-RUBY
@@ -270,9 +300,104 @@ class LoadingTest < ActiveSupport::TestCase
     assert_equal "7", last_response.body
   end
 
+
+  test "routes reloading triggers after_routes_loaded" do
+    add_to_config <<-RUBY
+      config.enable_reloading = true
+    RUBY
+
+    app_file "config/routes.rb", <<-RUBY
+      $counter ||= 1
+      $counter  *= 2
+      Rails.application.routes.draw do
+        get '/c', to: lambda { |env| User.name; [200, {"Content-Type" => "text/plain"}, [$counter.to_s]] }
+      end
+    RUBY
+
+    app_file "config/initializers/after_routes_loaded.rb", <<-RUBY
+      Rails.configuration.after_routes_loaded do
+        $counter *= 3
+      end
+    RUBY
+
+    app_file "app/models/user.rb", <<-MODEL
+      class User
+        $counter += 1
+      end
+    MODEL
+
+    require "rack/test"
+    extend Rack::Test::Methods
+
+    require "#{rails_root}/config/environment"
+
+    get "/c"
+    assert_equal "7", last_response.body
+
+    app_file "db/schema.rb", ""
+
+    get "/c"
+    assert_equal "43", last_response.body
+  end
+
+  test "routes are only loaded once on boot" do
+    add_to_config <<-RUBY
+      config.enable_reloading = true
+    RUBY
+
+    app_file "config/routes.rb", <<-RUBY
+      $counter ||= 0
+      $counter += 1
+      Rails.application.routes.draw do
+        get '/c', to: lambda { |env| [200, {"Content-Type" => "text/plain"}, [$counter.to_s]] }
+      end
+    RUBY
+
+    boot_app "development"
+
+    require "rack/test"
+    extend Rack::Test::Methods
+
+    require "#{rails_root}/config/environment"
+
+    get "/c"
+    assert_equal "1", last_response.body
+  end
+
+  test "after_routes_loaded runs once on boot" do
+    add_to_config <<-RUBY
+      config.enable_reloading = true
+    RUBY
+
+    app_file "config/routes.rb", <<-RUBY
+      $counter ||= 0
+      $counter += 1
+      Rails.application.routes.draw do
+        get '/c', to: lambda { |env| [200, {"Content-Type" => "text/plain"}, [$counter.to_s]] }
+      end
+    RUBY
+
+    app_file "config/initializers/after_routes_loaded.rb", <<-RUBY
+      Rails.configuration.after_routes_loaded do
+        $counter *= 3
+      end
+    RUBY
+
+    boot_app "development"
+
+    require "rack/test"
+    extend Rack::Test::Methods
+
+    require "#{rails_root}/config/environment"
+
+    get "/c"
+    assert_equal "3", last_response.body
+  end
+
   test "columns migrations also trigger reloading" do
     add_to_config <<-RUBY
-      config.cache_classes = false
+      config.enable_reloading = true
+      config.active_record.timestamped_migrations = false
     RUBY
 
     app_file "config/routes.rb", <<-RUBY
@@ -352,22 +477,107 @@ class LoadingTest < ActiveSupport::TestCase
   def test_initialize_can_be_called_at_any_time
     require "#{app_path}/config/application"
 
-    assert !Rails.initialized?
-    assert !Rails.application.initialized?
+    assert_not_predicate Rails, :initialized?
+    assert_not_predicate Rails.application, :initialized?
     Rails.initialize!
-    assert Rails.initialized?
-    assert Rails.application.initialized?
+    assert_predicate Rails, :initialized?
+    assert_predicate Rails.application, :initialized?
+  end
+
+  test "frameworks aren't loaded during initialization" do
+    app_file "config/initializers/raise_when_frameworks_load.rb", <<-RUBY
+      %i(action_controller action_mailer active_job active_record action_view).each do |framework|
+        ActiveSupport.on_load(framework) { raise "\#{framework} loaded!" }
+      end
+    RUBY
+
+    assert_nothing_raised do
+      require "#{app_path}/config/environment"
+    end
+  end
+
+  test "active record query cache hooks are installed before first request in production" do
+    app_file "app/controllers/omg_controller.rb", <<-RUBY
+      begin
+        class OmgController < ActionController::Metal
+          ActiveSupport.run_load_hooks(:action_controller, self)
+          def show
+            if ActiveRecord::Base.lease_connection.query_cache_enabled
+              self.response_body = ["Query cache is enabled."]
+            else
+              self.response_body = ["Expected ActiveRecord::Base.lease_connection.query_cache_enabled to be true"]
+            end
+          end
+        end
+      rescue => e
+        puts "Error loading metal: \#{e.class} \#{e.message}"
+      end
+    RUBY
+
+    app_file "config/routes.rb", <<-RUBY
+      Rails.application.routes.draw do
+        get "/:controller(/:action)"
+      end
+    RUBY
+
+    boot_app "production"
+
+    require "rack/test"
+    extend Rack::Test::Methods
+
+    get("/omg/show", {}, "HTTPS" => "on")
+    assert_equal "Query cache is enabled.", last_response.body
+  end
+
+  test "active record query cache hooks are installed before first request in development" do
+    app_file "app/controllers/omg_controller.rb", <<-RUBY
+      begin
+        class OmgController < ActionController::Metal
+          ActiveSupport.run_load_hooks(:action_controller, self)
+          def show
+            if ActiveRecord::Base.lease_connection.query_cache_enabled
+              self.response_body = ["Query cache is enabled."]
+            else
+              self.response_body = ["Expected ActiveRecord::Base.lease_connection.query_cache_enabled to be true"]
+            end
+          end
+        end
+      rescue => e
+        puts "Error loading metal: \#{e.class} \#{e.message}"
+      end
+    RUBY
+
+    app_file "config/routes.rb", <<-RUBY
+      Rails.application.routes.draw do
+        get "/:controller(/:action)"
+      end
+    RUBY
+
+    boot_app "development"
+
+    require "rack/test"
+    extend Rack::Test::Methods
+
+    get "/omg/show"
+    assert_equal "Query cache is enabled.", last_response.body
   end
 
   private
-
     def setup_ar!
-      ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
+      ActiveRecord::Base.establish_connection
       ActiveRecord::Migration.verbose = false
       ActiveRecord::Schema.define(version: 1) do
         create_table :posts do |t|
           t.string :title
         end
       end
+    end
+
+    def boot_app(env = "development")
+      ENV["RAILS_ENV"] = env
+
+      require "#{app_path}/config/environment"
+    ensure
+      ENV.delete "RAILS_ENV"
     end
 end

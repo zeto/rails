@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-require "thread"
 require "monitor"
 
 module ActiveSupport
@@ -200,7 +199,6 @@ module ActiveSupport
       end
 
       private
-
         # Must be called within synchronize
         def busy_for_exclusive?(purpose)
           busy_for_sharing?(purpose) ||
@@ -216,9 +214,9 @@ module ActiveSupport
           @waiting.any? { |t, (p, _)| compatible.include?(p) && @waiting.all? { |t2, (_, c2)| t == t2 || c2.include?(p) } }
         end
 
-        def wait_for(method)
+        def wait_for(method, &block)
           @sleeping[Thread.current] = method
-          @cv.wait_while { yield }
+          @cv.wait_while(&block)
         ensure
           @sleeping.delete Thread.current
         end

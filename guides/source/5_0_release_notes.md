@@ -1,4 +1,4 @@
-**DO NOT READ THIS FILE ON GITHUB, GUIDES ARE PUBLISHED ON http://guides.rubyonrails.org.**
+**DO NOT READ THIS FILE ON GITHUB, GUIDES ARE PUBLISHED ON <https://guides.rubyonrails.org>.**
 
 Ruby on Rails 5.0 Release Notes
 ===============================
@@ -15,7 +15,7 @@ Highlights in Rails 5.0:
 * Ruby 2.2.2+ required
 
 These release notes cover only the major changes. To learn about various bug
-fixes and changes, please refer to the change logs or check out the [list of
+fixes and changes, please refer to the changelogs or check out the [list of
 commits](https://github.com/rails/rails/commits/5-0-stable) in the main Rails
 repository on GitHub.
 
@@ -55,8 +55,8 @@ information.
 ### API Applications
 
 Rails can now be used to create slimmed down API only applications.
-This is useful for creating and serving APIs similar to [Twitter](https://dev.twitter.com) or [GitHub](https://developer.github.com) API,
-that can be used to serve public facing, as well as, for custom applications.
+This is useful for creating and serving APIs similar to [X](https://developer.x.com) or [GitHub](https://developer.github.com) API,
+that can be used to serve public-facing, as well as, for custom applications.
 
 You can generate a new api Rails app using:
 
@@ -73,7 +73,7 @@ This will do three main things:
   `ActionController::Base`. As with middleware, this will leave out any Action
   Controller modules that provide functionalities primarily used by browser
   applications.
-- Configure the generators to skip generating views, helpers and assets when
+- Configure the generators to skip generating views, helpers, and assets when
   you generate a new resource.
 
 The application provides a base for APIs,
@@ -86,7 +86,7 @@ information.
 
 Defines an attribute with a type on a model. It will override the type of existing attributes if needed.
 This allows control over how values are converted to and from SQL when assigned to a model.
-It also changes the behavior of values passed to `ActiveRecord::Base.where`, which lets use our domain objects across much of Active Record,
+It also changes the behavior of values passed to `ActiveRecord::Base.where`, which let's use our domain objects across much of Active Record,
 without having to rely on implementation details or monkey patching.
 
 Some things that you can achieve with this:
@@ -96,17 +96,20 @@ Some things that you can achieve with this:
 - Attributes do not need to be backed by a database column.
 
 ```ruby
-
 # db/schema.rb
 create_table :store_listings, force: true do |t|
   t.decimal :price_in_cents
   t.string :my_string, default: "original default"
 end
+```
 
+```ruby
 # app/models/store_listing.rb
 class StoreListing < ActiveRecord::Base
 end
+```
 
+```ruby
 store_listing = StoreListing.new(price_in_cents: '10.1')
 
 # before
@@ -146,11 +149,11 @@ This gives the objects ability to specify, how to convert values when performing
 
 **Dirty Tracking:**
 
-The type of an attribute is given the opportunity to change how dirty
+The type of an attribute is allowed to change how dirty
 tracking is performed.
 
 See its
-[documentation](http://api.rubyonrails.org/v5.0.1/classes/ActiveRecord/Attributes/ClassMethods.html)
+[documentation](https://api.rubyonrails.org/v5.0.1/classes/ActiveRecord/Attributes/ClassMethods.html)
 for a detailed write up.
 
 
@@ -159,7 +162,7 @@ for a detailed write up.
 A new test runner has been introduced to enhance the capabilities of running tests from Rails.
 To use this test runner simply type `bin/rails test`.
 
-Test Runner is inspired from `RSpec`, `minitest-reporters`, `maxitest` and others.
+Test Runner is inspired by `RSpec`, `minitest-reporters`, `maxitest` and others.
 It includes some of these notable advancements:
 
 - Run a single test using line number of test.
@@ -169,7 +172,7 @@ It includes some of these notable advancements:
 instead of waiting for the suite to complete.
 - Defer test output until the end of a full test run using the `-d` option.
 - Complete exception backtrace output using `-b` option.
-- Integration with `Minitest` to allow options like `-s` for test seed data,
+- Integration with minitest to allow options like `-s` for test seed data,
 `-n` for running specific test by name, `-v` for better verbose output and so forth.
 - Colored test output.
 
@@ -251,7 +254,7 @@ Please refer to the [Changelog][railties] for detailed changes.
     using the environment variable `RAILS_LOG_TO_STDOUT`.
     ([Pull Request](https://github.com/rails/rails/pull/23734))
 
-*   Enable HSTS with IncludeSudomains header for new applications.
+*   Enable HSTS with IncludeSubdomains header for new applications.
     ([Pull Request](https://github.com/rails/rails/pull/23852))
 
 *   The application generator writes a new file `config/spring.rb`, which tells
@@ -346,8 +349,8 @@ Please refer to the [Changelog][action-pack] for detailed changes.
     names instead.
     ([commit](https://github.com/rails/rails/commit/83b767ce))
 
-*   Deprecated accessing mime types via constants (eg. `Mime::HTML`). Use the
-    subscript operator with a symbol instead (eg. `Mime[:html]`).
+*   Deprecated accessing MIME types via constants (e.g. `Mime::HTML`). Use the
+    subscript operator with a symbol instead (e.g. `Mime[:html]`).
     ([Pull Request](https://github.com/rails/rails/pull/21869))
 
 *   Deprecated `redirect_to :back` in favor of `redirect_back`, which accepts a
@@ -394,7 +397,7 @@ Please refer to the [Changelog][action-pack] for detailed changes.
 *   Added the ability to override default form builder for a controller.
     ([Pull Request](https://github.com/rails/rails/pull/19736))
 
-*   Added support for API only apps.
+*   Added support for API-only apps.
     `ActionController::API` is added as a replacement of
     `ActionController::Base` for this kind of applications.
     ([Pull Request](https://github.com/rails/rails/pull/19832))
@@ -778,7 +781,7 @@ Please refer to the [Changelog][active-record] for detailed changes.
     To enable, set `prepared_statements: true` in `config/database.yml`.
     ([Pull Request](https://github.com/rails/rails/pull/23461))
 
-*   Added ability to call `ActionRecord::Relation#update` on relation objects
+*   Added ability to call `ActiveRecord::Relation#update` on relation objects
     which will run validations on callbacks on all objects in the relation.
     ([Pull Request](https://github.com/rails/rails/pull/11898))
 
@@ -997,7 +1000,7 @@ Please refer to the [Changelog][active-support] for detailed changes.
 
 *   New config option
     `config.active_support.halt_callback_chains_on_return_false` to specify
-    whether ActiveRecord, ActiveModel and ActiveModel::Validations callback
+    whether ActiveRecord, ActiveModel, and ActiveModel::Validations callback
     chains can be halted by returning `false` in a 'before' callback.
     ([Pull Request](https://github.com/rails/rails/pull/17227))
 
@@ -1081,7 +1084,7 @@ Credits
 -------
 
 See the
-[full list of contributors to Rails](http://contributors.rubyonrails.org/) for
+[full list of contributors to Rails](https://contributors.rubyonrails.org/) for
 the many people who spent many hours making Rails, the stable and robust
 framework it is. Kudos to all of them.
 

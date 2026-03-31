@@ -3,11 +3,24 @@
 require "test_helper"
 
 class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
+  class ChatChannelError < Exception; end
+
   class Connection < ActionCable::Connection::Base
-    attr_reader :websocket
+    attr_reader :websocket, :exceptions
+
+    rescue_from ChatChannelError, with: :error_handler
+
+    def initialize(*)
+      super
+      @exceptions = []
+    end
 
     def send_async(method, *args)
       send method, *args
+    end
+
+    def error_handler(e)
+      @exceptions << e
     end
   end
 
@@ -21,6 +34,10 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
 
     def speak(data)
       @lines << data
+    end
+
+    def throw_exception(_data)
+      raise ChatChannelError.new("Uh Oh")
     end
   end
 
@@ -45,7 +62,18 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
       setup_connection
 
       @subscriptions.execute_command "command" => "subscribe"
-      assert @subscriptions.identifiers.empty?
+      assert_empty @subscriptions.identifiers
+    end
+  end
+
+  test "subscribe command with Base channel" do
+    run_in_eventmachine do
+      setup_connection
+
+      identifier = ActiveSupport::JSON.encode(id: 1, channel: "ActionCable::Channel::Base")
+      @subscriptions.execute_command "command" => "subscribe", "identifier" => identifier
+
+      assert_empty @subscriptions.identifiers
     end
   end
 
@@ -55,10 +83,12 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
       subscribe_to_chat_channel
 
       channel = subscribe_to_chat_channel
-      channel.expects(:unsubscribe_from_channel)
 
-      @subscriptions.execute_command "command" => "unsubscribe", "identifier" => @chat_identifier
-      assert @subscriptions.identifiers.empty?
+      assert_called(channel, :unsubscribe_from_channel) do
+        @subscriptions.execute_command "command" => "unsubscribe", "identifier" => @chat_identifier
+      end
+
+      assert_empty @subscriptions.identifiers
     end
   end
 
@@ -67,7 +97,7 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
       setup_connection
 
       @subscriptions.execute_command "command" => "unsubscribe"
-      assert @subscriptions.identifiers.empty?
+      assert_empty @subscriptions.identifiers
     end
   end
 
@@ -83,6 +113,19 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
     end
   end
 
+  test "accessing exceptions thrown during command execution" do
+    run_in_eventmachine do
+      setup_connection
+      subscribe_to_chat_channel
+
+      data = { "content" => "Hello World!", "action" => "throw_exception" }
+      @subscriptions.execute_command "command" => "message", "identifier" => @chat_identifier, "data" => ActiveSupport::JSON.encode(data)
+
+      exception = @connection.exceptions.first
+      assert_kind_of ChatChannelError, exception
+    end
+  end
+
   test "unsubscribe from all" do
     run_in_eventmachine do
       setup_connection
@@ -92,10 +135,11 @@ class ActionCable::Connection::SubscriptionsTest < ActionCable::TestCase
       channel2_id = ActiveSupport::JSON.encode(id: 2, channel: "ActionCable::Connection::SubscriptionsTest::ChatChannel")
       channel2 = subscribe_to_chat_channel(channel2_id)
 
-      channel1.expects(:unsubscribe_from_channel)
-      channel2.expects(:unsubscribe_from_channel)
-
-      @subscriptions.unsubscribe_from_all
+      assert_called(channel1, :unsubscribe_from_channel) do
+        assert_called(channel2, :unsubscribe_from_channel) do
+          @subscriptions.unsubscribe_from_all
+        end
+      end
     end
   end
 

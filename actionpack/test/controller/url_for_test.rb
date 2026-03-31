@@ -8,7 +8,7 @@ module AbstractController
       class W
         include ActionDispatch::Routing::RouteSet.new.tap { |r|
           r.draw {
-            ActiveSupport::Deprecation.silence {
+            ActionDispatch.deprecator.silence {
               get ":controller(/:action(/:id(.:format)))"
             }
           }
@@ -77,8 +77,8 @@ module AbstractController
       end
 
       def test_anchor_should_call_to_param
-        assert_equal("/c/a#anchor",
-          W.new.url_for(only_path: true, controller: "c", action: "a", anchor: Struct.new(:to_param).new("anchor"))
+        assert_equal("/c/a/i#anchor",
+          W.new.url_for(only_path: true, controller: "c", action: "a", id: "i", anchor: Struct.new(:to_param).new("anchor"))
         )
       end
 
@@ -172,18 +172,33 @@ module AbstractController
         )
       end
 
+      def test_port_normalization
+        assert_equal(
+          "https://example.com/c",
+          W.new.url_for(host: "https://example.com:443", controller: "c")
+        )
+
+        assert_equal(
+          "https://example.com:444/c",
+          W.new.url_for(host: "https://example.com:444", controller: "c")
+        )
+
+        assert_equal(
+          "http://example.com/c",
+          W.new.url_for(host: "http://example.com:80", controller: "c")
+        )
+
+        assert_equal(
+          "http://example.com:81/c",
+          W.new.url_for(host: "http://example.com:81", controller: "c")
+        )
+      end
+
       def test_default_port
         add_host!
         add_port!
         assert_equal("http://www.basecamphq.com:3000/c/a/i",
           W.new.url_for(controller: "c", action: "a", id: "i")
-        )
-      end
-
-      def test_protocol
-        add_host!
-        assert_equal("https://www.basecamphq.com/c/a/i",
-          W.new.url_for(controller: "c", action: "a", id: "i", protocol: "https")
         )
       end
 
@@ -219,6 +234,22 @@ module AbstractController
         )
         assert_equal("//www.basecamphq.com:3000/c/a/i",
           W.new.url_for(controller: "c", action: "a", id: "i", protocol: false)
+        )
+      end
+
+      def test_user_name_and_password
+        add_host!
+        assert_equal(
+          "http://david:secret@www.basecamphq.com/c/a/i",
+          W.new.url_for(user: "david", password: "secret", controller: "c", action: "a", id: "i")
+        )
+      end
+
+      def test_user_name_and_password_with_escape_codes
+        add_host!
+        assert_equal(
+          "http://openid.aol.com%2Fnextangler:one+two%3F@www.basecamphq.com/c/a/i",
+          W.new.url_for(user: "openid.aol.com/nextangler", password: "one two?", controller: "c", action: "a", id: "i")
         )
       end
 
@@ -268,7 +299,7 @@ module AbstractController
         w = Class.new {
           config = ActionDispatch::Routing::RouteSet::Config.new "/subdir"
           r = ActionDispatch::Routing::RouteSet.new(config)
-          r.draw { ActiveSupport::Deprecation.silence { get ":controller(/:action(/:id(.:format)))" } }
+          r.draw { ActionDispatch.deprecator.silence { get ":controller(/:action(/:id(.:format)))" } }
           include r.url_helpers
         }
         add_host!(w)
@@ -288,13 +319,13 @@ module AbstractController
           kls = Class.new { include set.url_helpers }
 
           controller = kls.new
-          assert controller.respond_to?(:home_url)
+          assert_respond_to controller, :home_url
           assert_equal "http://www.basecamphq.com/home/sweet/home/again",
-            controller.send(:home_url, host: "www.basecamphq.com", user: "again")
+            controller.home_url(host: "www.basecamphq.com", user: "again")
 
-          assert_equal("/home/sweet/home/alabama", controller.send(:home_path, user: "alabama", host: "unused"))
-          assert_equal("http://www.basecamphq.com/home/sweet/home/alabama", controller.send(:home_url, user: "alabama", host: "www.basecamphq.com"))
-          assert_equal("http://www.basecamphq.com/this/is/verbose", controller.send(:no_args_url, host: "www.basecamphq.com"))
+          assert_equal("/home/sweet/home/alabama", controller.home_path(user: "alabama", host: "unused"))
+          assert_equal("http://www.basecamphq.com/home/sweet/home/alabama", controller.home_url(user: "alabama", host: "www.basecamphq.com"))
+          assert_equal("http://www.basecamphq.com/this/is/verbose", controller.no_args_url(host: "www.basecamphq.com"))
         end
       end
 
@@ -308,7 +339,59 @@ module AbstractController
           controller = kls.new
 
           assert_equal "http://www.basecamphq.com/subdir/home/sweet/home/again",
-            controller.send(:home_url, host: "www.basecamphq.com", user: "again", script_name: "/subdir")
+            controller.home_url(host: "www.basecamphq.com", user: "again", script_name: "/subdir")
+        end
+      end
+
+      def test_path_params_with_default_url_options
+        with_routing do |set|
+          set.draw do
+            scope ":account_id" do
+              get "dashboard" => "pages#dashboard", as: :dashboard
+              get "search(/:term)" => "search#search", as: :search
+            end
+            delete "signout" => "sessions#destroy", as: :signout
+          end
+
+          kls = Class.new do
+            include set.url_helpers
+            def default_url_options
+              { path_params: { account_id: "foo" } }
+            end
+          end
+
+          controller = kls.new
+
+          assert_equal("/foo/dashboard", controller.dashboard_path)
+          assert_equal("/bar/dashboard", controller.dashboard_path(account_id: "bar"))
+          assert_equal("/signout", controller.signout_path)
+          assert_equal("/signout?account_id=bar", controller.signout_path(account_id: "bar"))
+          assert_equal("/signout?account_id=bar", controller.signout_path(account_id: "bar", path_params: { account_id: "baz" }))
+          assert_equal("/foo/search/quin", controller.search_path("quin"))
+        end
+      end
+
+      def test_path_params_without_default_url_options
+        with_routing do |set|
+          set.draw do
+            scope ":account_id" do
+              get "dashboard" => "pages#dashboard", as: :dashboard
+              get "search(/:term)" => "search#search", as: :search
+            end
+            delete "signout" => "sessions#destroy", as: :signout
+          end
+
+          kls = Class.new { include set.url_helpers }
+          controller = kls.new
+
+          assert_raise(ActionController::UrlGenerationError) do
+            controller.dashboard_path # missing required keys :account_id
+          end
+
+          assert_equal("/bar/dashboard", controller.dashboard_path(path_params: { account_id: "bar" }))
+          assert_equal("/signout", controller.signout_path(path_params: { account_id: "bar" }))
+          assert_equal("/signout?account_id=bar", controller.signout_path(account_id: "bar", path_params: { account_id: "baz" }))
+          assert_equal("/foo/search/quin", controller.search_path("foo", "quin"))
         end
       end
 
@@ -324,7 +407,7 @@ module AbstractController
           set.draw do
             get "home/sweet/home/:user", to: "home#index", as: :home
 
-            ActiveSupport::Deprecation.silence do
+            ActionDispatch.deprecator.silence do
               get ":controller/:action/:id"
             end
           end
@@ -352,6 +435,30 @@ module AbstractController
         params = extract_params(url)
         assert_equal({ p1: "X1" }.to_query, params[0])
         assert_equal({ p2: "Y2" }.to_query, params[1])
+      end
+
+      def test_params_option
+        url = W.new.url_for(only_path: true, controller: "c", action: "a", params: { domain: "foo", id: "1" })
+        params = extract_params(url)
+        assert_equal("/c/a?domain=foo&id=1", url)
+        assert_equal({ domain: "foo" }.to_query, params[0])
+        assert_equal({ id: "1" }.to_query, params[1])
+      end
+
+      def test_params_option_strong_parameters
+        request_params = ActionController::Parameters.new({ domain: "foo", id: "1", other: "BAD" })
+        url = W.new.url_for(only_path: true, controller: "c", action: "a", params: request_params.permit(:domain, :id))
+        params = extract_params(url)
+        assert_equal("/c/a?domain=foo&id=1", url)
+        assert_equal({ domain: "foo" }.to_query, params[0])
+        assert_equal({ id: "1" }.to_query, params[1])
+      end
+
+      def test_non_hash_params_option
+        url = W.new.url_for(only_path: true, controller: "c", action: "a", params: "p")
+        params = extract_params(url)
+        assert_equal("/c/a?params=p", url)
+        assert_equal({ params: "p" }.to_query, params[0])
       end
 
       def test_hash_parameter
@@ -410,9 +517,9 @@ module AbstractController
 
           controller = kls.new
           params = { action: :index, controller: :posts, format: :xml }
-          assert_equal("http://www.basecamphq.com/posts.xml", controller.send(:url_for, params))
+          assert_equal("http://www.basecamphq.com/posts.xml", controller.url_for(params))
           params[:format] = nil
-          assert_equal("http://www.basecamphq.com/", controller.send(:url_for, params))
+          assert_equal("http://www.basecamphq.com/", controller.url_for(params))
         end
       end
 
@@ -464,7 +571,7 @@ module AbstractController
 
           controller = kls.new
           assert_equal("http://www.basecamphq.com/admin/posts/new?param=value",
-            controller.send(:url_for, [:new, :admin, :post, { param: "value" }])
+            controller.url_for([:new, :admin, :post, { param: "value" }])
           )
         end
       end

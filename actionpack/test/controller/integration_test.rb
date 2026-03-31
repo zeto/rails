@@ -3,6 +3,7 @@
 require "abstract_unit"
 require "controller/fake_controllers"
 require "rails/engine"
+require "launchy"
 
 class SessionTest < ActiveSupport::TestCase
   StubApp = lambda { |env|
@@ -14,11 +15,11 @@ class SessionTest < ActiveSupport::TestCase
   end
 
   def test_https_bang_works_and_sets_truth_by_default
-    assert !@session.https?
+    assert_not_predicate @session, :https?
     @session.https!
-    assert @session.https?
+    assert_predicate @session, :https?
     @session.https! false
-    assert !@session.https?
+    assert_not_predicate @session, :https?
   end
 
   def test_host!
@@ -36,91 +37,91 @@ class SessionTest < ActiveSupport::TestCase
   def test_get
     path = "/index"; params = "blah"; headers = { location: "blah" }
 
-    assert_called_with @session, :process, [:get, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:get, path], params: params, headers: headers do
       @session.get(path, params: params, headers: headers)
     end
   end
 
   def test_get_with_env_and_headers
     path = "/index"; params = "blah"; headers = { location: "blah" }; env = { "HTTP_X_REQUESTED_WITH" => "XMLHttpRequest" }
-    assert_called_with @session, :process, [:get, path, params: params, headers: headers, env: env] do
+    assert_called_with @session, :process, [:get, path], params: params, headers: headers, env: env do
       @session.get(path, params: params, headers: headers, env: env)
     end
   end
 
   def test_post
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:post, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:post, path], params: params, headers: headers do
       @session.post(path, params: params, headers: headers)
     end
   end
 
   def test_patch
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:patch, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:patch, path], params: params, headers: headers do
       @session.patch(path, params: params, headers: headers)
     end
   end
 
   def test_put
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:put, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:put, path], params: params, headers: headers do
       @session.put(path, params: params, headers: headers)
     end
   end
 
   def test_delete
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:delete, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:delete, path], params: params, headers: headers do
       @session.delete(path, params: params, headers: headers)
     end
   end
 
   def test_head
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:head, path, params: params, headers: headers] do
+    assert_called_with @session, :process, [:head, path], params: params, headers: headers do
       @session.head(path, params: params, headers: headers)
     end
   end
 
   def test_xml_http_request_get
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:get, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:get, path], params: params, headers: headers, xhr: true do
       @session.get(path, params: params, headers: headers, xhr: true)
     end
   end
 
   def test_xml_http_request_post
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:post, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:post, path], params: params, headers: headers, xhr: true do
       @session.post(path, params: params, headers: headers, xhr: true)
     end
   end
 
   def test_xml_http_request_patch
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:patch, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:patch, path], params: params, headers: headers, xhr: true do
       @session.patch(path, params: params, headers: headers, xhr: true)
     end
   end
 
   def test_xml_http_request_put
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:put, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:put, path], params: params, headers: headers, xhr: true do
       @session.put(path, params: params, headers: headers, xhr: true)
     end
   end
 
   def test_xml_http_request_delete
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:delete, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:delete, path], params: params, headers: headers, xhr: true do
       @session.delete(path, params: params, headers: headers, xhr: true)
     end
   end
 
   def test_xml_http_request_head
     path = "/index"; params = "blah"; headers = { location: "blah" }
-    assert_called_with @session, :process, [:head, path, params: params, headers: headers, xhr: true] do
+    assert_called_with @session, :process, [:head, path], params: params, headers: headers, xhr: true do
       @session.head(path, params: params, headers: headers, xhr: true)
     end
   end
@@ -135,7 +136,15 @@ class IntegrationTestTest < ActiveSupport::TestCase
     session1 = @test.open_session { |sess| }
     session2 = @test.open_session # implicit session
 
-    assert !session1.equal?(session2)
+    assert_not session1.equal?(session2)
+  end
+
+  def test_child_session_assertions_bubble_up_to_root
+    assertions_before = @test.assertions
+    @test.open_session.assert(true)
+    assertions_after = @test.assertions
+
+    assert_equal 1, assertions_after - assertions_before
   end
 
   # RSpec mixes Matchers (which has a #method_missing) into
@@ -143,8 +152,8 @@ class IntegrationTestTest < ActiveSupport::TestCase
   # try to delegate these methods to the session object.
   def test_does_not_prevent_method_missing_passing_up_to_ancestors
     mixin = Module.new do
-      def method_missing(name, *args)
-        name.to_s == "foo" ? "pass" : super
+      def method_missing(name, ...)
+        name == :foo ? "pass" : super
       end
     end
     @test.class.superclass.include(mixin)
@@ -152,7 +161,27 @@ class IntegrationTestTest < ActiveSupport::TestCase
       assert_equal "pass", @test.foo
     ensure
       # leave other tests as unaffected as possible
-      mixin.__send__(:remove_method, :method_missing)
+      mixin.remove_method :method_missing
+    end
+  end
+end
+
+class RackLintIntegrationTest < ActionDispatch::IntegrationTest
+  test "integration test follows rack SPEC" do
+    with_routing do |set|
+      set.draw do
+        get "/", to: ->(_) { [200, {}, [""]] }
+      end
+
+      get "/"
+
+      assert_equal 200, status
+    end
+  end
+
+  def app
+    @app ||= self.class.build_app do |middleware|
+      middleware.unshift Rack::Lint
     end
   end
 end
@@ -162,9 +191,10 @@ end
 class IntegrationTestUsesCorrectClass < ActionDispatch::IntegrationTest
   def test_integration_methods_called
     reset!
+    headers = { "Origin" => "*" }
 
-    %w( get post head patch put delete ).each do |verb|
-      assert_nothing_raised { __send__(verb, "/") }
+    %w( get post head patch put delete options ).each do |verb|
+      assert_nothing_raised { __send__(verb, "/", headers: headers) }
     end
   end
 end
@@ -179,6 +209,15 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
         format.xml { render xml: "<root></root>", status: 200 }
         format.rss { render xml: "<root></root>", status: 200 }
         format.atom { render xml: "<root></root>", status: 200 }
+      end
+    end
+
+    def get_with_vary_set_x_requested_with
+      respond_to do |format|
+        format.json do
+          response.headers["Vary"] = "X-Requested-With"
+          render json: "JSON OK", status: 200
+        end
       end
     end
 
@@ -211,6 +250,14 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
 
     def redirect
       redirect_to action_url("get")
+    end
+
+    def redirect_307
+      redirect_to action_url("post"), status: 307
+    end
+
+    def redirect_308
+      redirect_to action_url("post"), status: 308
     end
 
     def remove_header
@@ -269,12 +316,14 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
     end
   end
 
+  include CookieAssertions
+
   test "response cookies are added to the cookie jar for the next request" do
     with_test_route_set do
       cookies["cookie_1"] = "sugar"
       cookies["cookie_2"] = "oatmeal"
       get "/cookie_monster"
-      assert_equal "cookie_1=; path=/\ncookie_3=chocolate; path=/", headers["Set-Cookie"]
+      assert_set_cookie_header "cookie_1=; path=/\ncookie_3=chocolate; path=/", headers["Set-Cookie"]
       assert_equal({ "cookie_1" => "", "cookie_2" => "oatmeal", "cookie_3" => "chocolate" }, cookies.to_hash)
     end
   end
@@ -323,17 +372,36 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
       assert_response 302
       assert_response :redirect
       assert_response :found
-      assert_equal "<html><body>You are being <a href=\"http://www.example.com/get\">redirected</a>.</body></html>", response.body
+      assert_equal "", response.body
       assert_kind_of Nokogiri::HTML::Document, html_document
       assert_equal 1, request_count
 
       follow_redirect!
+      assert_equal "http://www.example.com/redirect", request.referer
       assert_response :success
       assert_equal "/get", path
 
       get "/moved"
       assert_response :redirect
       assert_redirected_to "/method"
+    end
+  end
+
+  def test_307_redirect_uses_the_same_http_verb
+    with_test_route_set do
+      post "/redirect_307"
+      assert_equal 307, status
+      follow_redirect!
+      assert_equal "POST", request.method
+    end
+  end
+
+  def test_308_redirect_uses_the_same_http_verb
+    with_test_route_set do
+      post "/redirect_308"
+      assert_equal 308, status
+      follow_redirect!
+      assert_equal "POST", request.method
     end
   end
 
@@ -345,7 +413,17 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
       follow_redirect!
 
       assert_response :ok
-      refute_same previous_html_document, html_document
+      assert_not_same previous_html_document, html_document
+    end
+  end
+
+  def test_redirect_with_arguments
+    with_test_route_set do
+      get "/redirect"
+      follow_redirect! params: { foo: :bar }
+
+      assert_response :ok
+      assert_equal "bar", request.parameters["foo"]
     end
   end
 
@@ -375,7 +453,7 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
     a = open_session
     b = open_session
 
-    refute_same(a.integration_session, b.integration_session)
+    assert_not_same(a.integration_session, b.integration_session)
   end
 
   def test_get_with_query_string
@@ -412,11 +490,12 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
 
       get "/get_with_params", params: { foo: "bar" }
 
-      assert request.env["rack.input"].string.empty?
+      input = request.env["rack.input"]
+      assert(input.nil? || input.read == "")
       assert_equal "foo=bar", request.env["QUERY_STRING"]
       assert_equal "foo=bar", request.query_string
       assert_equal "bar", request.parameters["foo"]
-      assert request.parameters["leaks"].nil?
+      assert_nil request.parameters["leaks"]
     end
   end
 
@@ -512,12 +591,45 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
     with_test_route_set do
       get "/get", headers: { "Accept" => "application/json" }, xhr: true
       assert_equal "application/json", request.accept
-      assert_equal "application/json", response.content_type
+      assert_equal "application/json", response.media_type
 
       get "/get", headers: { "HTTP_ACCEPT" => "application/json" }, xhr: true
       assert_equal "application/json", request.accept
-      assert_equal "application/json", response.content_type
+      assert_equal "application/json", response.media_type
     end
+  end
+
+  def test_setting_vary_header_when_request_is_xhr_with_accept_header
+    with_test_route_set do
+      get "/get", headers: { "Accept" => "application/json" }, xhr: true
+      assert_equal "Accept", response.headers["Vary"]
+    end
+  end
+
+  def test_not_setting_vary_header_when_format_is_provided
+    with_test_route_set do
+      get "/get", params: { format: "json" }
+      assert_nil response.headers["Vary"]
+    end
+  end
+
+  def test_not_setting_vary_header_when_it_has_already_been_set
+    with_test_route_set do
+      get "/get_with_vary_set_x_requested_with", headers: { "Accept" => "application/json" }, xhr: true
+      assert_equal "X-Requested-With", response.headers["Vary"]
+    end
+  end
+
+  def test_not_setting_vary_header_when_ignore_accept_header_is_set
+    original_ignore_accept_header = ActionDispatch::Request.ignore_accept_header
+    ActionDispatch::Request.ignore_accept_header = true
+
+    with_test_route_set do
+      get "/get", headers: { "Accept" => "application/json" }, xhr: true
+      assert_nil response.headers["Vary"]
+    end
+  ensure
+    ActionDispatch::Request.ignore_accept_header = original_ignore_accept_header
   end
 
   private
@@ -539,7 +651,7 @@ class IntegrationProcessTest < ActionDispatch::IntegrationTest
         set.draw do
           get "moved" => redirect("/method")
 
-          ActiveSupport::Deprecation.silence do
+          ActionDispatch.deprecator.silence do
             match ":action", to: controller, via: [:get, :post], as: :action
             get "get/:action", to: controller, as: :get_action
           end
@@ -557,7 +669,7 @@ class MetalIntegrationTest < ActionDispatch::IntegrationTest
 
   class Poller
     def self.call(env)
-      if env["PATH_INFO"] =~ /^\/success/
+      if /^\/success/.match?(env["PATH_INFO"])
         [200, { "Content-Type" => "text/plain", "Content-Length" => "12" }, ["Hello World!"]]
       else
         [404, { "Content-Type" => "text/plain", "Content-Length" => "0" }, []]
@@ -631,6 +743,12 @@ class MetalIntegrationTest < ActionDispatch::IntegrationTest
 end
 
 class ApplicationIntegrationTest < ActionDispatch::IntegrationTest
+  class MetalController < ActionController::Metal
+    def new
+      self.status = 200
+    end
+  end
+
   class TestController < ActionController::Base
     def index
       render plain: "index"
@@ -661,11 +779,14 @@ class ApplicationIntegrationTest < ActionDispatch::IntegrationTest
   routes.draw do
     get "",    to: "application_integration_test/test#index", as: :empty_string
 
+    get "metal", to: "application_integration_test/metal#new", as: :new_metal
+
     get "foo", to: "application_integration_test/test#index", as: :foo
     get "bar", to: "application_integration_test/test#index", as: :bar
 
     mount MountedApp => "/mounted", :as => "mounted"
-    get "fooz" => proc { |env| [ 200, { "X-Cascade" => "pass" }, [ "omg" ] ] }, :anchor => false
+    get "fooz" => proc { |env| [ 200, { ActionDispatch::Constants::X_CASCADE => "pass" }, [ "omg" ] ] },
+      :anchor => false
     get "fooz", to: "application_integration_test/test#index"
   end
 
@@ -698,6 +819,11 @@ class ApplicationIntegrationTest < ActionDispatch::IntegrationTest
 
     get "/bar"
     assert_equal "/bar", bar_path
+  end
+
+  test "route helpers after metal controller access" do
+    get "/metal"
+    assert_equal "/foo?q=solution", foo_path(q: "solution")
   end
 
   test "missing route helper before controller access" do
@@ -750,6 +876,30 @@ class EnvironmentFilterIntegrationTest < ActionDispatch::IntegrationTest
   end
 end
 
+class ControllerWithHeadersMethodIntegrationTest < ActionDispatch::IntegrationTest
+  class TestController < ActionController::Base
+    def index
+      render plain: "ok"
+    end
+
+    def headers
+      {}.freeze
+    end
+  end
+
+  test "doesn't call controller's headers method" do
+    with_routing do |routes|
+      routes.draw do
+        get "/ok" => "controller_with_headers_method_integration_test/test#index"
+      end
+
+      get "/ok"
+
+      assert_response 200
+    end
+  end
+end
+
 class UrlOptionsIntegrationTest < ActionDispatch::IntegrationTest
   class FooController < ActionController::Base
     def index
@@ -798,17 +948,17 @@ class UrlOptionsIntegrationTest < ActionDispatch::IntegrationTest
     end
   end
 
-  test "session uses default url options from routes" do
+  test "session uses default URL options from routes" do
     assert_equal "http://foo.com/foo", foos_url
   end
 
-  test "current host overrides default url options from routes" do
+  test "current host overrides default URL options from routes" do
     get "/foo"
     assert_response :success
     assert_equal "http://www.example.com/foo", foos_url
   end
 
-  test "controller can override default url options from request" do
+  test "controller can override default URL options from request" do
     get "/bar"
     assert_response :success
     assert_equal "http://bar.com/foo", foos_url
@@ -916,7 +1066,7 @@ class IntegrationRequestsWithoutSetup < ActionDispatch::IntegrationTest
   def test_request
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":action" => FooController
         end
       end
@@ -948,6 +1098,12 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
       render plain: "ok"
     end
 
+    def foos_html
+      render inline: <<~ERB
+        <code><%= params.permit(:foo) %></code>
+      ERB
+    end
+
     def foos_json
       render json: params.permit(:foo)
     end
@@ -955,12 +1111,16 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
     def foos_wibble
       render plain: "ok"
     end
+
+    def foos_json_api
+      render plain: "ok"
+    end
   end
 
   def test_standard_json_encoding_works
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           post ":action" => FooController
         end
       end
@@ -973,10 +1133,21 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
     end
   end
 
+  def test_encoding_as_html
+    post_to_foos as: :html do
+      assert_response :success
+      assert_equal "application/x-www-form-urlencoded", request.media_type
+      assert_equal "text/html", request.accepts.first.to_s
+      assert_equal :html, request.format.ref
+      assert_equal({ "foo" => "fighters" }, request.request_parameters)
+      assert_equal({ "foo" => "fighters" }.to_s, response.parsed_body.at("code").text)
+    end
+  end
+
   def test_encoding_as_json
     post_to_foos as: :json do
       assert_response :success
-      assert_equal "application/json", request.content_type
+      assert_equal "application/json", request.media_type
       assert_equal "application/json", request.accepts.first.to_s
       assert_equal :json, request.format.ref
       assert_equal({ "foo" => "fighters" }, request.request_parameters)
@@ -987,7 +1158,7 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
   def test_doesnt_mangle_request_path
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           post ":action" => FooController
         end
       end
@@ -1015,7 +1186,7 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
     post_to_foos as: :wibble do
       assert_response :success
       assert_equal "/foos_wibble", request.path
-      assert_equal "text/wibble", request.content_type
+      assert_equal "text/wibble", request.media_type
       assert_equal "text/wibble", request.accepts.first.to_s
       assert_equal :wibble, request.format.ref
       assert_equal Hash.new, request.request_parameters # Unregistered MIME Type can't be parsed.
@@ -1025,10 +1196,30 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
     Mime::Type.unregister :wibble
   end
 
+  def test_registering_custom_encoder_including_parameters
+    accept_header = 'application/vnd.api+json; profile="https://jsonapi.org/profiles/ethanresnick/cursor-pagination/"; ext="https://jsonapi.org/ext/atomic"'
+    Mime::Type.register accept_header, :json_api
+
+    ActionDispatch::IntegrationTest.register_encoder(:json_api,
+      param_encoder: -> params { params })
+
+    post_to_foos as: :json_api do
+      assert_response :success
+      assert_equal "/foos_json_api", request.path
+      assert_equal "application/vnd.api+json", request.media_type
+      assert_equal accept_header, request.accepts.first.to_s
+      assert_equal :json_api, request.format.ref
+      assert_equal Hash.new, request.request_parameters # Unregistered MIME Type can't be parsed.
+      assert_equal "ok", response.parsed_body
+    end
+  ensure
+    Mime::Type.unregister :json_api
+  end
+
   def test_parsed_body_without_as_option
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":action" => FooController
         end
       end
@@ -1042,7 +1233,7 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
   def test_get_parameters_with_as_option
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":action" => FooController
         end
       end
@@ -1056,7 +1247,7 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
   def test_get_request_with_json_uses_method_override_and_sends_a_post_request
     with_routing do |routes|
       routes.draw do
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":action" => FooController
         end
       end
@@ -1069,11 +1260,25 @@ class IntegrationRequestEncodersTest < ActionDispatch::IntegrationTest
     end
   end
 
+  def test_get_request_with_json_excludes_null_query_string
+    with_routing do |routes|
+      routes.draw do
+        ActionDispatch.deprecator.silence do
+          get ":action" => FooController
+        end
+      end
+
+      get "/foos_json", as: :json
+
+      assert_equal "http://www.example.com/foos_json", request.url
+    end
+  end
+
   private
     def post_to_foos(as:)
       with_routing do |routes|
         routes.draw do
-          ActiveSupport::Deprecation.silence do
+          ActionDispatch.deprecator.silence do
             post ":action" => FooController
           end
         end
@@ -1104,7 +1309,7 @@ class IntegrationFileUploadTest < ActionDispatch::IntegrationTest
     self.class
   end
 
-  def self.fixture_path
+  def self.file_fixture_path
     File.expand_path("../fixtures/multipart", __dir__)
   end
 
@@ -1115,8 +1320,94 @@ class IntegrationFileUploadTest < ActionDispatch::IntegrationTest
   def test_fixture_file_upload
     post "/test_file_upload",
       params: {
-        file: fixture_file_upload("/ruby_on_rails.jpg", "image/jpg")
+        file: fixture_file_upload("/ruby_on_rails.jpg", "image/jpeg")
       }
     assert_equal "45142", @response.body
   end
 end
+
+# rubocop:disable Lint/Debugger
+class PageDumpIntegrationTest < ActionDispatch::IntegrationTest
+  class FooController < ActionController::Base
+    def index
+      render plain: "Hello world"
+    end
+
+    def redirect
+      redirect_to action: :index
+    end
+  end
+
+  def with_root(&block)
+    Rails.stub(:root, Pathname.getwd.join("test"), &block)
+  end
+
+  def setup
+    with_root do
+      remove_dumps
+    end
+  end
+
+  def teardown
+    with_root do
+      remove_dumps
+    end
+  end
+
+  def self.routes
+    @routes ||= ActionDispatch::Routing::RouteSet.new
+  end
+
+  def self.call(env)
+    routes.call(env)
+  end
+
+  def app
+    self.class
+  end
+
+  def dump_path
+    Pathname.new(Dir["#{Rails.root}/tmp/html_dump/#{method_name}*"].sole)
+  end
+
+  def remove_dumps
+    Dir["#{Rails.root}/tmp/html_dump/#{method_name}*"].each(&File.method(:delete))
+  end
+
+  routes.draw do
+    get "/" => "page_dump_integration_test/foo#index"
+    get "/redirect" => "page_dump_integration_test/foo#redirect"
+  end
+
+  test "save_and_open_page saves a copy of the page and call to Launchy" do
+    launchy_called = false
+    get "/"
+    with_root do
+      Launchy.stub(:open, ->(path) { launchy_called = (path == dump_path) }) do
+        save_and_open_page
+      end
+      assert launchy_called
+      assert_equal File.read(dump_path), response.body
+    end
+  end
+
+  test "prints a warning to install launchy if it can't be loaded" do
+    get "/"
+    with_root do
+      Launchy.stub(:open, ->(path) { raise LoadError.new }) do
+        self.stub(:warn, ->(warning) { warning.include?("Please install the launchy gem to open the file automatically.") }) do
+          save_and_open_page
+        end
+      end
+      assert_equal File.read(dump_path), response.body
+    end
+  end
+
+  test "raises when called after a redirect" do
+    with_root do
+      get "/redirect"
+      assert_raise(InvalidResponse) { save_and_open_page }
+    end
+  end
+end
+# rubocop:enable Lint/Debugger

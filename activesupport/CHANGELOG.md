@@ -1,240 +1,174 @@
-*   Deprecate `secrets.secret_token`.
+*   Deprecate `require_dependency`.
 
-    The architecture for secrets had a big upgrade between Rails 3 and Rails 4,
-    when the default changed from using `secret_token` to `secret_key_base`.
+    `require_dependency` is deprecated without replacement and will be removed in Rails 9.
 
-    `secret_token` has been soft deprecated in documentation for four years
-    but is still in place to support apps created before Rails 4.
-    Deprecation warnings have been added to help developers upgrade their
-    applications to `secret_key_base`.
+    - Recommendations for applications:
 
-    *claudiob*, *Kasper Timm Hansen*
+        - If the call is an old one written in the days of the classic
+          autoloader to ensure a certain constant is loaded for constant lookup
+          to work as expected, you can simply remove it.
 
-*   Return an instance of `HashWithIndifferentAccess` from `HashWithIndifferentAccess#transform_keys`.
+        - In order to preload classes when the application boots, which may be
+          necessary for things like STIs or Kafka consumers, please check the
+          autoloading guide for modern approaches.
 
-    *Yuji Yaginuma*
+    - Recommendations for engines that depend on Rails >= 7.0:
 
-*   Add key rotation support to `MessageEncryptor` and `MessageVerifier`
+      Same recommendations as for applications, since the classic autoloader is
+      no longer available starting with Rails 7.0.
 
-    This change introduces a `rotate` method to both the `MessageEncryptor` and
-    `MessageVerifier` classes. This method accepts the same arguments and
-    options as the given classes' constructor. The `encrypt_and_verify` method
-    for `MessageEncryptor` and the `verified` method for `MessageVerifier` also
-    accept an optional keyword argument `:on_rotation` block which is called
-    when a rotated instance is used to decrypt or verify the message.
+    - Recommendations for engines that support Rails < 7.0:
 
-    *Michael J Coyne*
+      Guard the call with a version check just in case the parent application is
+      using the classic autoloader:
 
-*   Deprecate `Module#reachable?` method.
+      ```ruby
+      require_dependency "some_file" if Rails::VERSION::MAJOR < 7
+      ```
 
-    *bogdanvlviv*
+    *Xavier Noria*
 
-*   Add `config/credentials.yml.enc` to store production app secrets.
+*   Add `group` method to `ActiveSupport::ContinuousIntegration` for parallel step execution.
 
-    Allows saving any authentication credentials for third party services
-    directly in repo encrypted with `config/master.key` or `ENV["RAILS_MASTER_KEY"]`.
+    Groups collect steps and run them concurrently using a thread pool, reducing CI times
+    by running independent checks in parallel. Sub-groups run sequentially within a single
+    parallel slot allowing dependent steps to be grouped together.
 
-    This will eventually replace `Rails.application.secrets` and the encrypted
-    secrets introduced in Rails 5.1.
+    ```ruby
+    CI.run do
+      step "Setup", "bin/setup --skip-server"
 
-    *DHH*, *Kasper Timm Hansen*
+      group "Checks", parallel: 2 do
+        step "Style: Ruby", "bin/rubocop"
+        step "Security: Brakeman", "bin/brakeman --quiet"
+        step "Security: Gem audit", "bin/bundler-audit"
 
-*   Add `ActiveSupport::EncryptedFile` and `ActiveSupport::EncryptedConfiguration`.
+        group "Tests" do
+          step "Tests: Rails", "bin/rails test"
+          step "Tests: Seeds", "env RAILS_ENV=test bin/rails db:seed:replant"
+        end
+      end
+    end
+    ```
 
-    Allows for stashing encrypted files or configuration directly in repo by
-    encrypting it with a key.
+    *Donal McBreen*
 
-    Backs the new credentials setup above, but can also be used independently.
+*   Introduce `this_week?`, `this_month?`, and `this_year?` methods to Date/Time
 
-    *DHH*, *Kasper Timm Hansen*
+    Similar to `today?`, `tomorrow?`, and `yesterday?`, these methods are useful to
+    query time instances against the current period.
 
-*   `Module#delegate_missing_to` now raises `DelegationError` if target is nil,
-    similar to `Module#delegate`.
+    ```ruby
+    unless post.created_at.this_week?
+      link_to "See week recap", week_recap_path(date)
+    end
+    ```
 
-    *Anton Khamets*
+    *Matheus Richard*
 
-*   Update `String#camelize` to provide feedback when wrong option is passed
+*   Removed the deprecated `ActiveSupport::Multibyte::Chars` class.
 
-    `String#camelize` was returning nil without any feedback when an
-    invalid option was passed as a parameter.
+    As well as `String#mb_chars`
 
-    Previously:
+    *Jean Boussier*
 
-        'one_two'.camelize(true)
-        # => nil
+*   Changed `ActiveSupport::EventReporter#subscribe` to only provide the event name during filtering.
 
-    Now:
+    Otherwise the event reporter would need to always build the expensive payload even when there is
+    no active subscriber, which is very wasteful.
 
-        'one_two'.camelize(true)
-        # => ArgumentError: Invalid option, use either :upper or :lower.
+    *Jean Boussier*
 
-    *Ricardo Díaz*
+*   Fix inflections to better handle overlapping acronyms.
 
-*   Fix modulo operations involving durations
+    ```ruby
+    ActiveSupport::Inflector.inflections(:en) do |inflect|
+      inflect.acronym "USD"
+      inflect.acronym "USDC"
+    end
 
-    Rails 5.1 introduced `ActiveSupport::Duration::Scalar` as a wrapper
-    around numeric values as a way of ensuring a duration was the outcome of
-    an expression. However, the implementation was missing support for modulo
-    operations. This support has now been added and should result in a duration
-    being returned from expressions involving modulo operations.
+    "USDC".underscore # => "usdc"
+    ```
 
-    Prior to Rails 5.1:
+    *Said Kaldybaev*
 
-        5.minutes % 2.minutes
-        # => 60
+*   Add `ActiveSupport::CombinedConfiguration` to offer interchangeable access to configuration provided by
+    either ENV or encrypted credentials. Used by Rails to first look at ENV, then look in encrypted credentials,
+    but can be configured separately with any number of API-compatible backends in a first-look order.
 
-    Now:
+    The object is inspect safe and will only show keys, not values.
 
-        5.minutes % 2.minutes
-        # => 1 minute
+    *DHH*, *Emmanuel Hayford*
 
-    Fixes #29603 and #29743.
+*   Add `ActiveSupport::EnvConfiguration` to provide access to ENV variables in a way that's compatible with
+    `ActiveSupport::EncryptedConfiguration` and therefore can be used by `ActiveSupport::CombinedConfiguration`.
 
-    *Sayan Chakraborty*, *Andrew White*
+    The object is inspect safe and will only show keys, not values.
 
-*   Fix division where a duration is the denominator
+    Examples:
 
-    PR #29163 introduced a change in behavior when a duration was the denominator
-    in a calculation - this was incorrect as dividing by a duration should always
-    return a `Numeric`. The behavior of previous versions of Rails has been restored.
+    ```ruby
+    conf = ActiveSupport::EnvConfiguration.new
+    conf.require(:db_host) # ENV.fetch("DB_HOST")
+    conf.require(:aws, :access_key_id) # ENV.fetch("AWS__ACCESS_KEY_ID")
+    conf.option(:cache_host) # ENV["CACHE_HOST"]
+    conf.option(:cache_host, default: "cache-host-1") # ENV["CACHE_HOST"] || "cache-host-1"
+    conf.option(:cache_host, default: -> { "cache-host-1" }) # ENV["CACHE_HOST"] || "cache-host-1"
+    ```
 
-    Fixes #29592.
+    *DHH*, *Emmanuel Hayford*
 
-    *Andrew White*
+*   Make flaky parallel tests easier to diagnose by deterministically assigning
+    tests to workers.
 
-*   Add purpose and expiry support to `ActiveSupport::MessageVerifier` &
-   `ActiveSupport::MessageEncryptor`.
+    Rails assigns tests to workers in round-robin order so the same `--seed`
+    and worker count will result in the same sequence of tests running on each
+    worker (whether processes or threads) increasing the odds of reproducing
+    test failures caused by test interdependence.
 
-    For instance, to ensure a message is only usable for one intended purpose:
-
-        token = @verifier.generate("x", purpose: :shipping)
-
-        @verifier.verified(token, purpose: :shipping) # => "x"
-        @verifier.verified(token)                     # => nil
-
-    Or make it expire after a set time:
-
-        @verifier.generate("x", expires_in: 1.month)
-        @verifier.generate("y", expires_at: Time.now.end_of_year)
-
-    Showcased with `ActiveSupport::MessageVerifier`, but works the same for
-    `ActiveSupport::MessageEncryptor`'s `encrypt_and_sign` and `decrypt_and_verify`.
-
-    Pull requests: #29599, #29854
-
-    *Assain Jaleel*
-
-*   Make the order of `Hash#reverse_merge!` consistent with `HashWithIndifferentAccess`.
-
-    *Erol Fornoles*
-
-*   Add `freeze_time` helper which freezes time to `Time.now` in tests.
-
-    *Prathamesh Sonpatki*
-
-*   Default `ActiveSupport::MessageEncryptor` to use AES 256 GCM encryption.
-
-    On for new Rails 5.2 apps. Upgrading apps can find the config as a new
-    framework default.
-
-    *Assain Jaleel*
-
-*   Cache: `write_multi`
-
-        Rails.cache.write_multi foo: 'bar', baz: 'qux'
-
-    Plus faster fetch_multi with stores that implement `write_multi_entries`.
-    Keys that aren't found may be written to the cache store in one shot
-    instead of separate writes.
-
-    The default implementation simply calls `write_entry` for each entry.
-    Stores may override if they're capable of one-shot bulk writes, like
-    Redis `MSET`.
+    This can make test runtime slower and spikier when one worker gets most of
+    the slow tests. Enable `work_stealing: true` to allow idle workers to steal
+    tests from busy workers in deterministic order, smoothing out runtime at the
+    cost of less reproducible flaky-test failures.
 
     *Jeremy Daer*
 
-*   Add default option to module and class attribute accessors.
+*   Make `ActiveSupport::EventReporter#debug_mode?` true by default to emit debug events
+    outside of Rails application contexts.
 
-        mattr_accessor :settings, default: {}
+    *Gannon McGibbon*
 
-    Works for `mattr_reader`, `mattr_writer`, `cattr_accessor`, `cattr_reader`,
-    and `cattr_writer` as well.
+*   Add `SecureRandom.base32` for generating case-insensitive keys that are unambiguous to humans.
 
-    *Genadi Samokovarov*
+    *Stanko Krtalic Rusendic & Miha Rekar*
 
-*   Add `Date#prev_occurring` and `Date#next_occurring` to return specified next/previous occurring day of week.
+*   Add a fast failure mode to `ActiveSupport::ContinuousIntegration` that stops the rest of
+    the run after a step fails. Invoke by running `bin/ci --fail-fast` or `bin/ci -f`.
 
-    *Shota Iguchi*
+    *Dennis Paagman*
 
-*   Add default option to `class_attribute`.
+*   Implement LocalCache strategy on `ActiveSupport::Cache::MemoryStore`. The memory store
+    needs to respond to the same interface as other cache stores (e.g. `ActiveSupport::NullStore`).
 
-    Before:
+    *Mikey Gough*
 
-        class_attribute :settings
-        self.settings = {}
+*   Add a detailed failure summary to `ActiveSupport::ContinuousIntegration`.
 
-    Now:
+    *Mike Dalessio*
 
-        class_attribute :settings, default: {}
+*   Introduce `ActiveSupport::EventReporter::LogSubscriber` structured event logging.
 
-    *DHH*
+    ```ruby
+    class MyLogSubscriber < ActiveSupport::EventReporter::LogSubscriber
+      self.namespace = "test"
 
-*   `#singularize` and `#pluralize` now respect uncountables for the specified locale.
+      def something(event)
+        info { "Event #{event[:name]} emitted." }
+      end
+    end
+    ```
 
-    *Eilis Hamilton*
-
-*   Add `ActiveSupport::CurrentAttributes` to provide a thread-isolated attributes singleton.
-    Primary use case is keeping all the per-request attributes easily available to the whole system.
-
-    *DHH*
-
-*   Fix implicit coercion calculations with scalars and durations
-
-    Previously, calculations where the scalar is first would be converted to a duration
-    of seconds, but this causes issues with dates being converted to times, e.g:
-
-        Time.zone = "Beijing"           # => Asia/Shanghai
-        date = Date.civil(2017, 5, 20)  # => Mon, 20 May 2017
-        2 * 1.day                       # => 172800 seconds
-        date + 2 * 1.day                # => Mon, 22 May 2017 00:00:00 CST +08:00
-
-    Now, the `ActiveSupport::Duration::Scalar` calculation methods will try to maintain
-    the part structure of the duration where possible, e.g:
-
-        Time.zone = "Beijing"           # => Asia/Shanghai
-        date = Date.civil(2017, 5, 20)  # => Mon, 20 May 2017
-        2 * 1.day                       # => 2 days
-        date + 2 * 1.day                # => Mon, 22 May 2017
-
-    Fixes #29160, #28970.
-
-    *Andrew White*
-
-*   Add support for versioned cache entries. This enables the cache stores to recycle cache keys, greatly saving
-    on storage in cases with frequent churn. Works together with the separation of `#cache_key` and `#cache_version`
-    in Active Record and its use in Action Pack's fragment caching.
-
-    *DHH*
-
-*   Pass gem name and deprecation horizon to deprecation notifications.
-
-    *Willem van Bergen*
-
-*   Add support for `:offset` and `:zone` to `ActiveSupport::TimeWithZone#change`
-
-    *Andrew White*
-
-*   Add support for `:offset` to `Time#change`
-
-    Fixes #28723.
-
-    *Andrew White*
-
-*   Add `fetch_values` for `HashWithIndifferentAccess`
-
-    The method was originally added to `Hash` in Ruby 2.3.0.
-
-    *Josh Pencheon*
+    *Gannon McGibbon*
 
 
-Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/activesupport/CHANGELOG.md) for previous changes.
+Please check [8-1-stable](https://github.com/rails/rails/blob/8-1-stable/activesupport/CHANGELOG.md) for previous changes.

@@ -9,35 +9,35 @@ class TextHelperTest < ActionView::TestCase
     super
     # This simulates the fact that instance variables are reset every time
     # a view is rendered.  The cycle helper depends on this behavior.
-    @_cycles = nil if (defined? @_cycles)
+    @_cycles = nil if defined?(@_cycles)
   end
 
   def test_concat
-    self.output_buffer = "foo".dup
+    self.output_buffer = +"foo"
     assert_equal "foobar", concat("bar")
     assert_equal "foobar", output_buffer
   end
 
   def test_simple_format_should_be_html_safe
-    assert simple_format("<b> test with html tags </b>").html_safe?
+    assert_predicate simple_format("<b> test with HTML tags </b>"), :html_safe?
   end
 
   def test_simple_format_included_in_isolation
     helper_klass = Class.new { include ActionView::Helpers::TextHelper }
-    assert helper_klass.new.simple_format("<b> test with html tags </b>").html_safe?
+    assert_predicate helper_klass.new.simple_format("<b> test with HTML tags </b>"), :html_safe?
   end
 
   def test_simple_format
     assert_equal "<p></p>", simple_format(nil)
 
-    assert_equal "<p>crazy\n<br /> cross\n<br /> platform linebreaks</p>", simple_format("crazy\r\n cross\r platform linebreaks")
+    assert_equal "<p>ridiculous\n<br /> cross\n<br /> platform linebreaks</p>", simple_format("ridiculous\r\n cross\r platform linebreaks")
     assert_equal "<p>A paragraph</p>\n\n<p>and another one!</p>", simple_format("A paragraph\n\nand another one!")
     assert_equal "<p>A paragraph\n<br /> With a newline</p>", simple_format("A paragraph\n With a newline")
 
-    text = "A\nB\nC\nD".freeze
+    text = "A\nB\nC\nD"
     assert_equal "<p>A\n<br />B\n<br />C\n<br />D</p>", simple_format(text)
 
-    text = "A\r\n  \nB\n\n\r\n\t\nC\nD".freeze
+    text = "A\r\n  \nB\n\n\r\n\t\nC\nD"
     assert_equal "<p>A\n<br />  \n<br />B</p>\n\n<p>\t\n<br />C\n<br />D</p>", simple_format(text)
 
     assert_equal '<p class="test">This is a classy test</p>', simple_format("This is a classy test", class: "test")
@@ -53,12 +53,22 @@ class TextHelperTest < ActionView::TestCase
       simple_format("<b> test with unsafe string </b><script>code!</script>", {}, { sanitize: true })
   end
 
+  def test_simple_format_should_sanitize_input_when_sanitize_options_is_specified
+    assert_equal "<p><a target=\"_blank\" href=\"http://example.com\">Continue</a></p>",
+      simple_format("<a target=\"_blank\" href=\"http://example.com\">Continue</a>", {}, { sanitize_options: { attributes: %w[target href] } })
+  end
+
+  def test_simple_format_should_sanitize_input_when_sanitize_options_is_not_specified
+    assert_equal "<p><a href=\"http://example.com\">Continue</a></p>", simple_format("<a target=\"_blank\" href=\"http://example.com\">Continue</a>")
+  end
+
   def test_simple_format_should_not_sanitize_input_when_sanitize_option_is_false
     assert_equal "<p><b> test with unsafe string </b><script>code!</script></p>", simple_format("<b> test with unsafe string </b><script>code!</script>", {}, { sanitize: false })
   end
 
   def test_simple_format_with_custom_wrapper
     assert_equal "<div></div>", simple_format(nil, {}, { wrapper_tag: "div" })
+    assert_equal "<p></p>", simple_format(nil, {}, { wrapper_tag: nil })
   end
 
   def test_simple_format_with_custom_wrapper_and_multi_line_breaks
@@ -106,8 +116,8 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_truncate_multibyte
-    assert_equal "\354\225\204\353\246\254\353\236\221 \354\225\204\353\246\254 ...".dup.force_encoding(Encoding::UTF_8),
-      truncate("\354\225\204\353\246\254\353\236\221 \354\225\204\353\246\254 \354\225\204\353\235\274\353\246\254\354\230\244".dup.force_encoding(Encoding::UTF_8), length: 10)
+    assert_equal (+"\354\225\204\353\246\254\353\236\221 \354\225\204\353\246\254 ...").force_encoding(Encoding::UTF_8),
+      truncate((+"\354\225\204\353\246\254\353\236\221 \354\225\204\353\246\254 \354\225\204\353\235\274\353\246\254\354\230\244").force_encoding(Encoding::UTF_8), length: 10)
   end
 
   def test_truncate_does_not_modify_the_options_hash
@@ -123,7 +133,7 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_truncate_should_be_html_safe
-    assert truncate("Hello World!", length: 12).html_safe?
+    assert_predicate truncate("Hello World!", length: 12), :html_safe?
   end
 
   def test_truncate_should_escape_the_input
@@ -136,12 +146,12 @@ class TextHelperTest < ActionView::TestCase
 
   def test_truncate_with_escape_false_should_be_html_safe
     truncated = truncate("Hello <script>code!</script>World!!", length: 12, escape: false)
-    assert truncated.html_safe?
+    assert_predicate truncated, :html_safe?
   end
 
   def test_truncate_with_block_should_be_html_safe
     truncated = truncate("Here's a long test and I need a continue to read link", length: 27) { link_to "Continue", "#" }
-    assert truncated.html_safe?
+    assert_predicate truncated, :html_safe?
   end
 
   def test_truncate_with_block_should_escape_the_input
@@ -156,7 +166,7 @@ class TextHelperTest < ActionView::TestCase
 
   def test_truncate_with_block_with_escape_false_should_be_html_safe
     truncated = truncate("<script>code!</script>Here's a long test and I need a continue to read link", length: 27, escape: false) { link_to "Continue", "#" }
-    assert truncated.html_safe?
+    assert_predicate truncated, :html_safe?
   end
 
   def test_truncate_with_block_should_escape_the_block
@@ -165,7 +175,7 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_highlight_should_be_html_safe
-    assert highlight("This is a beautiful morning", "beautiful").html_safe?
+    assert_predicate highlight("This is a beautiful morning", "beautiful"), :html_safe?
   end
 
   def test_highlight
@@ -297,7 +307,7 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_excerpt_should_not_be_html_safe
-    assert !excerpt("This is a beautiful! morning", "beautiful", radius: 5).html_safe?
+    assert_not_predicate excerpt("This is a beautiful! morning", "beautiful", radius: 5), :html_safe?
   end
 
   def test_excerpt_in_borderline_cases
@@ -327,7 +337,7 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_excerpt_with_utf8
-    assert_equal("...\357\254\203ciency could not be...".dup.force_encoding(Encoding::UTF_8), excerpt("That's why e\357\254\203ciency could not be helped".dup.force_encoding(Encoding::UTF_8), "could", radius: 8))
+    assert_equal((+"...\357\254\203ciency could not be...").force_encoding(Encoding::UTF_8), excerpt((+"That's why e\357\254\203ciency could not be helped").force_encoding(Encoding::UTF_8), "could", radius: 8))
   end
 
   def test_excerpt_does_not_modify_the_options_hash
@@ -349,27 +359,46 @@ class TextHelperTest < ActionView::TestCase
     options = { separator: "\n", radius: 1 }
     assert_equal("...very\nvery long\nstring", excerpt("my very\nvery\nvery long\nstring", "long", options))
 
+    options = { separator: "_" }
+    assert_equal("foo", excerpt("foo", "foo", options))
+
     assert_equal excerpt("This is a beautiful morning", "a"),
                  excerpt("This is a beautiful morning", "a", separator: nil)
   end
 
-  def test_word_wrap
-    assert_equal("my very very\nvery long\nstring", word_wrap("my very very very long string", line_width: 15))
+  test "word_wrap" do
+    input = "123 1234 12 12 123 1 1 1 123"
+    assert_equal "123\n1234\n12\n12\n123\n1 1\n1\n123", word_wrap(input, line_width: 3)
+    assert_equal "123-+1234-+12-+12-+123-+1 1-+1-+123", word_wrap(input, line_width: 3, break_sequence: "-+")
   end
 
-  def test_word_wrap_with_extra_newlines
-    assert_equal("my very very\nvery long\nstring\n\nwith another\nline", word_wrap("my very very very long string\n\nwith another line", line_width: 15))
+  test "word_wrap with newlines" do
+    input = "1\n1 1 1\n1"
+    assert_equal "1\n1 1\n1\n1", word_wrap(input, line_width: 3)
+    assert_equal "1-+1 1-+1-+1", word_wrap(input, line_width: 3, break_sequence: "-+")
   end
 
-  def test_word_wrap_does_not_modify_the_options_hash
-    options = { line_width: 15 }
-    passed_options = options.dup
-    word_wrap("some text", passed_options)
-    assert_equal options, passed_options
+  test "word_wrap with multiple consecutive newlines" do
+    input = "1\n\n\n1 1 1\n\n\n1"
+    assert_equal "1\n\n\n1 1\n1\n\n\n1", word_wrap(input, line_width: 3)
+    assert_equal "1-+-+-+1 1-+1-+-+-+1", word_wrap(input, line_width: 3, break_sequence: "-+")
   end
 
-  def test_word_wrap_with_custom_break_sequence
-    assert_equal("1234567890\r\n1234567890\r\n1234567890", word_wrap("1234567890 " * 3, line_width: 2, break_sequence: "\r\n"))
+  test "word_wrap with trailing newlines" do
+    input = "1\n1 1 1\n1\n\n\n"
+    assert_equal "1\n1 1\n1\n1", word_wrap(input, line_width: 3)
+    assert_equal "1-+1 1-+1-+1", word_wrap(input, line_width: 3, break_sequence: "-+")
+  end
+
+  test "word_wrap with leading spaces" do
+    input = "  1 1\n  1 1\n"
+    assert_equal "  1\n1\n  1\n1", word_wrap(input, line_width: 3)
+    assert_equal "  1-+1-+  1-+1", word_wrap(input, line_width: 3, break_sequence: "-+")
+  end
+
+  test "word_wrap when no wrapping is necessary" do
+    assert_equal "1", word_wrap("1", line_width: 3)
+    assert_equal "", word_wrap("", line_width: 3)
   end
 
   def test_pluralization
@@ -512,7 +541,9 @@ class TextHelperTest < ActionView::TestCase
   end
 
   def test_reset_unknown_cycle
-    reset_cycle("colors")
+    assert_nothing_raised do
+      reset_cycle("colors")
+    end
   end
 
   def test_reset_named_cycle

@@ -1,24 +1,66 @@
 # frozen_string_literal: true
 
-require "active_support/per_thread_registry"
-
 module ActiveRecord
   # This is a thread locals registry for Active Record. For example:
   #
-  #   ActiveRecord::RuntimeRegistry.connection_handler
+  #   ActiveRecord::RuntimeRegistry.stats.sql_runtime
   #
-  # returns the connection handler local to the current thread.
-  #
-  # See the documentation of ActiveSupport::PerThreadRegistry
-  # for further details.
-  class RuntimeRegistry # :nodoc:
-    extend ActiveSupport::PerThreadRegistry
+  # returns the connection handler local to the current unit of execution (either thread of fiber).
+  module RuntimeRegistry # :nodoc:
+    class Stats
+      attr_accessor :sql_runtime, :async_sql_runtime, :queries_count, :cached_queries_count
 
-    attr_accessor :connection_handler, :sql_runtime
+      def initialize
+        @sql_runtime = 0.0
+        @async_sql_runtime = 0.0
+        @queries_count = 0
+        @cached_queries_count = 0
+      end
 
-    [:connection_handler, :sql_runtime].each do |val|
-      class_eval %{ def self.#{val}; instance.#{val}; end }, __FILE__, __LINE__
-      class_eval %{ def self.#{val}=(x); instance.#{val}=x; end }, __FILE__, __LINE__
+      def reset_runtimes
+        sql_runtime_was = @sql_runtime
+        @sql_runtime = 0.0
+        @async_sql_runtime = 0.0
+        sql_runtime_was
+      end
+
+      public alias_method :reset, :initialize
+    end
+
+    extend self
+
+    def call(name, start, finish, id, payload)
+      record(
+        payload[:name],
+        (finish - start) * 1_000.0,
+        cached: payload[:cached],
+        async: payload[:async],
+        lock_wait: payload[:lock_wait],
+      )
+    end
+
+    def record(query_name, runtime, cached: false, async: false, lock_wait: nil)
+      stats = self.stats
+
+      unless query_name == "TRANSACTION" || query_name == "SCHEMA"
+        stats.queries_count += 1
+        stats.cached_queries_count += 1 if cached
+      end
+
+      if async
+        stats.async_sql_runtime += (runtime - lock_wait)
+      end
+      stats.sql_runtime += runtime
+    end
+
+    def stats
+      ActiveSupport::IsolatedExecutionState[:active_record_runtime] ||= Stats.new
+    end
+
+    def reset
+      stats.reset
     end
   end
 end
+
+ActiveSupport::Notifications.monotonic_subscribe("sql.active_record", ActiveRecord::RuntimeRegistry)

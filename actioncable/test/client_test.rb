@@ -8,27 +8,17 @@ require "json"
 
 require "active_support/hash_with_indifferent_access"
 
-####
-# 😷 Warning suppression 😷
-WebSocket::Frame::Handler::Handler03.prepend Module.new {
-  def initialize(*)
-    @application_data_buffer = nil
-    super
-  end
-}
-
-WebSocket::Frame::Data.prepend Module.new {
-  def initialize(*)
-    @masking_key = nil
-    super
-  end
-}
-#
-####
-
 class ClientTest < ActionCable::TestCase
   WAIT_WHEN_EXPECTING_EVENT = 2
   WAIT_WHEN_NOT_EXPECTING_EVENT = 0.5
+
+  class Connection < ActionCable::Connection::Base
+    identified_by :id
+
+    def connect
+      self.id = request.params["id"] || SecureRandom.hex(4)
+    end
+  end
 
   class EchoChannel < ActionCable::Channel::Base
     def subscribed
@@ -40,16 +30,16 @@ class ClientTest < ActionCable::TestCase
     end
 
     def ding(data)
-      transmit(dong: data["message"])
+      transmit({ dong: data["message"] })
     end
 
     def delay(data)
       sleep 1
-      transmit(dong: data["message"])
+      transmit({ dong: data["message"] })
     end
 
     def bulk(data)
-      ActionCable.server.broadcast "global", wide: data["message"]
+      ActionCable.server.broadcast "global", { wide: data["message"] }
     end
   end
 
@@ -59,16 +49,24 @@ class ClientTest < ActionCable::TestCase
     server.config.logger = Logger.new(StringIO.new).tap { |l| l.level = Logger::UNKNOWN }
 
     server.config.cable = ActiveSupport::HashWithIndifferentAccess.new(adapter: "async")
+    server.config.connection_class = -> { ClientTest::Connection }
 
     # and now the "real" setup for our test:
     server.config.disable_request_forgery_protection = true
   end
 
   def with_puma_server(rack_app = ActionCable.server, port = 3099)
-    server = ::Puma::Server.new(rack_app, ::Puma::Events.strings)
+    original_rack_env = ENV["RACK_ENV"]
+
+    opts = { min_threads: 1, max_threads: 4 }
+    server = if Puma::Const::PUMA_VERSION >= "6"
+      opts[:log_writer] = ::Puma::LogWriter.strings
+      ::Puma::Server.new(rack_app, nil, opts)
+    else
+      # Puma >= 5.0.3
+      ::Puma::Server.new(rack_app, ::Puma::Events.strings, opts)
+    end
     server.add_tcp_listener "127.0.0.1", port
-    server.min_threads = 1
-    server.max_threads = 4
 
     thread = server.run
 
@@ -91,18 +89,20 @@ class ClientTest < ActionCable::TestCase
 
       rescue RuntimeError => ex
         # Work around https://bugs.ruby-lang.org/issues/13239
-        raise unless ex.message =~ /can't modify frozen IOError/
+        raise unless ex.message.match?(/can't modify frozen IOError/)
 
         # Handle this as if it were the IOError: do the same as above.
         server.binder.close
       end
+
+      ENV["RACK_ENV"] = original_rack_env
     end
   end
 
   class SyncClient
     attr_reader :pings
 
-    def initialize(port)
+    def initialize(port, path = "/")
       messages = @messages = Queue.new
       closed = @closed = Concurrent::Event.new
       has_messages = @has_messages = Concurrent::Semaphore.new(0)
@@ -110,7 +110,7 @@ class ClientTest < ActionCable::TestCase
 
       open = Concurrent::Promise.new
 
-      @ws = WebSocket::Client::Simple.connect("ws://127.0.0.1:#{port}/") do |ws|
+      @ws = WebSocket::Client::Simple.connect("ws://127.0.0.1:#{port}#{path}") do |ws|
         ws.on(:error) do |event|
           event = RuntimeError.new(event.message) unless event.is_a?(Exception)
 
@@ -140,7 +140,7 @@ class ClientTest < ActionCable::TestCase
           end
         end
 
-        ws.on(:close) do |event|
+        ws.on(:close) do |_|
           closed.set
         end
       end
@@ -196,12 +196,12 @@ class ClientTest < ActionCable::TestCase
     end
   end
 
-  def websocket_client(port)
-    SyncClient.new(port)
+  def websocket_client(*args)
+    SyncClient.new(*args)
   end
 
   def concurrently(enum)
-    enum.map { |*x| Concurrent::Future.execute { yield(*x) } }.map(&:value!)
+    enum.map { |*x| Concurrent::Promises.future { yield(*x) } }.map(&:value!)
   end
 
   def test_single_client
@@ -284,17 +284,51 @@ class ClientTest < ActionCable::TestCase
       c.send_message command: "subscribe", identifier: identifier
       assert_equal({ "identifier" => "{\"channel\":\"ClientTest::EchoChannel\"}", "type" => "confirm_subscription" }, c.read_message)
       assert_equal(1, app.connections.count)
-      assert(app.remote_connections.where(identifier: identifier))
 
       subscriptions = app.connections.first.subscriptions.send(:subscriptions)
       assert_not_equal 0, subscriptions.size, "Missing EchoChannel subscription"
       channel = subscriptions.first[1]
-      channel.expects(:unsubscribed)
-      c.close
-      sleep 0.1 # Data takes a moment to process
+      assert_called(channel, :unsubscribed) do
+        c.close
+        sleep 0.1 # Data takes a moment to process
+      end
 
       # All data is removed: No more connection or subscription information!
       assert_equal(0, app.connections.count)
+    end
+  end
+
+  def test_remote_disconnect_client
+    with_puma_server do |port|
+      app = ActionCable.server
+
+      c = websocket_client(port, "/?id=1")
+      assert_equal({ "type" => "welcome" }, c.read_message)
+
+      sleep 0.1 # make sure connections is registered
+      app.remote_connections.where(id: "1").disconnect
+
+      assert_equal({ "type" => "disconnect", "reason" => "remote", "reconnect" => true }, c.read_message)
+
+      c.wait_for_close
+      assert_predicate(c, :closed?)
+    end
+  end
+
+  def test_remote_disconnect_client_with_reconnect
+    with_puma_server do |port|
+      app = ActionCable.server
+
+      c = websocket_client(port, "/?id=2")
+      assert_equal({ "type" => "welcome" }, c.read_message)
+
+      sleep 0.1 # make sure connections is registered
+      app.remote_connections.where(id: "2").disconnect(reconnect: false)
+
+      assert_equal({ "type" => "disconnect", "reason" => "remote", "reconnect" => false }, c.read_message)
+
+      c.wait_for_close
+      assert_predicate(c, :closed?)
     end
   end
 
@@ -307,7 +341,7 @@ class ClientTest < ActionCable::TestCase
 
       ActionCable.server.restart
       c.wait_for_close
-      assert c.closed?
+      assert_predicate c, :closed?
     end
   end
 end

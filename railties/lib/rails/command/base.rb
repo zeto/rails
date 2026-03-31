@@ -3,10 +3,9 @@
 require "thor"
 require "erb"
 
-require "active_support/core_ext/string/filters"
 require "active_support/core_ext/string/inflections"
 
-require_relative "actions"
+require "rails/command/actions"
 
 module Rails
   module Command
@@ -16,8 +15,14 @@ module Rails
 
       include Actions
 
+      class_attribute :bin, instance_accessor: false, default: "bin/rails"
+
       class << self
-        # Returns true when the app is a Rails engine.
+        def exit_on_failure? # :nodoc:
+          false
+        end
+
+        # Returns true when the app is a \Rails engine.
         def engine?
           defined?(ENGINE_ROOT)
         end
@@ -28,7 +33,7 @@ module Rails
           if usage
             super
           else
-            @desc ||= ERB.new(File.read(usage_path)).result(binding) if usage_path
+            class_usage
           end
         end
 
@@ -49,43 +54,56 @@ module Rails
           Rails::Command.hidden_commands << self
         end
 
-        def inherited(base) #:nodoc:
+        def inherited(base) # :nodoc:
           super
 
-          if base.name && base.name !~ /Base$/
+          if base.name && !base.name.end_with?("Base")
             Rails::Command.subclasses << base
           end
         end
 
         def perform(command, args, config) # :nodoc:
           if Rails::Command::HELP_MAPPINGS.include?(args.first)
-            command, args = "help", []
+            command, args = "help", [command]
+            args.clear if instance_method(:help).arity.zero?
           end
 
           dispatch(command, args.dup, nil, config)
         end
 
         def printing_commands
-          namespaced_commands
+          commands.filter_map do |name, command|
+            [namespaced_name(name), command.description] unless command.hidden?
+          end
         end
 
-        def executable
-          "bin/rails #{command_name}"
+        def executable(command_name = self.command_name)
+          "#{bin} #{namespaced_name(command_name)}"
         end
 
-        # Use Rails' default banner.
-        def banner(*)
-          "#{executable} #{arguments.map(&:usage).join(' ')} [options]".squish
+        def banner(command = nil, *)
+          if command
+            # Similar to Thor's banner, but show the namespace (minus the
+            # "rails:" prefix), and show the command's declared bin instead of
+            # the command runner.
+            command.formatted_usage(self).gsub(/^#{namespace}:(\w+)/) { executable($1) }
+          else
+            executable
+          end
+        end
+
+        # Override Thor's class-level help to also show the USAGE.
+        def help(shell, *) # :nodoc:
+          super
+          shell.say class_usage if class_usage
         end
 
         # Sets the base_name taking into account the current class namespace.
         #
         #   Rails::Command::TestCommand.base_name # => 'rails'
         def base_name
-          @base_name ||= begin
-            if base = name.to_s.split("::").first
-              base.underscore
-            end
+          @base_name ||= if base = name.to_s.split("::").first
+            base.underscore
           end
         end
 
@@ -93,20 +111,22 @@ module Rails
         #
         #   Rails::Command::TestCommand.command_name # => 'test'
         def command_name
-          @command_name ||= begin
-            if command = name.to_s.split("::").last
-              command.chomp!("Command")
-              command.underscore
-            end
+          @command_name ||= if command = name.to_s.split("::").last
+            command.chomp!("Command")
+            command.underscore
+          end
+        end
+
+        def class_usage # :nodoc:
+          if usage_path
+            @class_usage ||= ERB.new(File.read(usage_path), trim_mode: "-").result(binding)
           end
         end
 
         # Path to lookup a USAGE description in a file.
         def usage_path
-          if default_command_root
-            path = File.join(default_command_root, "USAGE")
-            path if File.exist?(path)
-          end
+          @usage_path = resolve_path("USAGE") unless defined?(@usage_path)
+          @usage_path
         end
 
         # Default file root to place extra files a command might need, placed
@@ -115,8 +135,8 @@ module Rails
         # For a Rails::Command::TestCommand placed in <tt>rails/command/test_command.rb</tt>
         # would return <tt>rails/test</tt>.
         def default_command_root
-          path = File.expand_path(File.join("../commands", command_root_namespace), __dir__)
-          path if File.exist?(path)
+          @default_command_root = resolve_path(".") unless defined?(@default_command_root)
+          @default_command_root
         end
 
         private
@@ -127,29 +147,35 @@ module Rails
             else
               # Prevent exception about command without usage.
               # Some commands define their documentation differently.
-              @usage ||= ""
+              @usage ||= meth
               @desc  ||= ""
 
               super
             end
           end
 
-          def command_root_namespace
-            (namespace.split(":") - %w( rails )).first
+          def namespaced_name(name)
+            *prefix, basename = namespace.delete_prefix("rails:").split(":")
+            prefix.concat([basename, name.to_s].uniq).join(":")
           end
 
-          def namespaced_commands
-            commands.keys.map do |key|
-              key == command_root_namespace ? key : "#{command_root_namespace}:#{key}"
-            end
+          def resolve_path(path)
+            path = File.join("../commands", *namespace.delete_prefix("rails:").split(":"), path)
+            path = File.expand_path(path, __dir__)
+            path if File.exist?(path)
           end
       end
 
-      def help
-        if command_name = self.class.command_name
-          self.class.command_help(shell, command_name)
-        else
+      no_commands do
+        delegate :executable, to: :class
+        attr_reader :current_subcommand
+
+        def invoke_command(command, *) # :nodoc:
+          @current_subcommand ||= nil
+          original_subcommand, @current_subcommand = @current_subcommand, command.name
           super
+        ensure
+          @current_subcommand = original_subcommand
         end
       end
     end

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
-module ActionController #:nodoc:
+# :markup: markdown
+
+module ActionController # :nodoc:
   module Cookies
     extend ActiveSupport::Concern
 
@@ -9,7 +11,9 @@ module ActionController #:nodoc:
     end
 
     private
-      def cookies
+      # The cookies for the current request. See ActionDispatch::Cookies for more
+      # information.
+      def cookies # :doc:
         request.cookie_jar
       end
   end

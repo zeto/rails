@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
+require_relative "../../tools/strict_warnings"
+
 $:.unshift File.expand_path("lib", __dir__)
-$:.unshift File.expand_path("fixtures/helpers", __dir__)
-$:.unshift File.expand_path("fixtures/alternate_helpers", __dir__)
 
 require "active_support/core_ext/kernel/reporting"
 
@@ -13,18 +13,7 @@ silence_warnings do
   Encoding.default_external = Encoding::UTF_8
 end
 
-require "drb"
-begin
-  require "drb/unix"
-rescue LoadError
-  puts "'drb/unix' is not available"
-end
-
-if ENV["TRAVIS"]
-  PROCESS_COUNT = 0
-else
-  PROCESS_COUNT = (ENV["N"] || 4).to_i
-end
+PROCESS_COUNT = (ENV["MT_CPU"] || 4).to_i
 
 require "active_support/testing/autorun"
 require "abstract_controller"
@@ -35,8 +24,11 @@ require "action_view/testing/resolvers"
 require "action_dispatch"
 require "active_support/dependencies"
 require "active_model"
+require "zeitwerk"
 
-require "pp" # require 'pp' early to prevent hidden_methods from not picking up the pretty-print methods until too late
+require_relative "support/rack_parsing_override"
+
+ActiveSupport::Cache.format_version = 7.1
 
 module Rails
   class << self
@@ -44,16 +36,31 @@ module Rails
       @_env ||= ActiveSupport::StringInquirer.new(ENV["RAILS_ENV"] || ENV["RACK_ENV"] || "test")
     end
 
-    def root; end;
+    def application; end
+
+    def root; end
   end
 end
 
-ActiveSupport::Dependencies.hook!
+module ActionPackTestSuiteUtils
+  def self.require_helpers(helpers_dirs)
+    Array(helpers_dirs).each do |helpers_dir|
+      Dir.glob("#{helpers_dir}/**/*_helper.rb") do |helper_file|
+        require helper_file
+      end
+    end
+  end
+end
+
+ActionPackTestSuiteUtils.require_helpers("#{__dir__}/fixtures/helpers")
+ActionPackTestSuiteUtils.require_helpers("#{__dir__}/fixtures/alternate_helpers")
 
 Thread.abort_on_exception = true
 
 # Show backtraces for deprecated behavior for quicker cleanup.
-ActiveSupport::Deprecation.debug = true
+ActionController.deprecator.behavior = :raise
+ActionDispatch.deprecator.behavior = :raise
+ActionView.deprecator.behavior = :raise
 
 # Disable available locale checks to avoid warnings running the test suite.
 I18n.enforce_available_locales = false
@@ -63,7 +70,7 @@ FIXTURE_LOAD_PATH = File.join(__dir__, "fixtures")
 SharedTestRoutes = ActionDispatch::Routing::RouteSet.new
 
 SharedTestRoutes.draw do
-  ActiveSupport::Deprecation.silence do
+  ActionDispatch.deprecator.silence do
     get ":controller(/:action)"
   end
 end
@@ -71,7 +78,10 @@ end
 module ActionDispatch
   module SharedRoutes
     def before_setup
-      @routes = SharedTestRoutes
+      @routes = Routing::RouteSet.new
+      ActionDispatch.deprecator.silence do
+        @routes.draw { get ":controller(/:action)" }
+      end
       super
     end
   end
@@ -80,21 +90,29 @@ end
 module ActiveSupport
   class TestCase
     if RUBY_ENGINE == "ruby" && PROCESS_COUNT > 0
-      parallelize_me!
+      parallelize(workers: PROCESS_COUNT)
     end
   end
 end
 
 class RoutedRackApp
+  class Config < Struct.new(:middleware)
+  end
+
   attr_reader :routes
 
   def initialize(routes, &blk)
     @routes = routes
-    @stack = ActionDispatch::MiddlewareStack.new(&blk).build(@routes)
+    @stack = ActionDispatch::MiddlewareStack.new(&blk)
+    @app = @stack.build(@routes)
   end
 
   def call(env)
-    @stack.call(env)
+    @app.call(env)
+  end
+
+  def config
+    Config.new(@stack)
   end
 end
 
@@ -103,6 +121,7 @@ class ActionDispatch::IntegrationTest < ActiveSupport::TestCase
     RoutedRackApp.new(routes || ActionDispatch::Routing::RouteSet.new) do |middleware|
       middleware.use ActionDispatch::ShowExceptions, ActionDispatch::PublicExceptions.new("#{FIXTURE_LOAD_PATH}/public")
       middleware.use ActionDispatch::DebugExceptions
+      middleware.use ActionDispatch::ActionableExceptions
       middleware.use ActionDispatch::Callbacks
       middleware.use ActionDispatch::Cookies
       middleware.use ActionDispatch::Flash
@@ -115,7 +134,7 @@ class ActionDispatch::IntegrationTest < ActiveSupport::TestCase
   self.app = build_app
 
   app.routes.draw do
-    ActiveSupport::Deprecation.silence do
+    ActionDispatch.deprecator.silence do
       get ":controller(/:action)"
     end
   end
@@ -144,31 +163,14 @@ class ActionDispatch::IntegrationTest < ActiveSupport::TestCase
     yield DeadEndRoutes.new(config)
   end
 
-  def with_routing(&block)
-    temporary_routes = ActionDispatch::Routing::RouteSet.new
-    old_app, self.class.app = self.class.app, self.class.build_app(temporary_routes)
-    old_routes = SharedTestRoutes
-    silence_warnings { Object.const_set(:SharedTestRoutes, temporary_routes) }
-
-    yield temporary_routes
-  ensure
-    self.class.app = old_app
-    remove!
-    silence_warnings { Object.const_set(:SharedTestRoutes, old_routes) }
-  end
-
   def with_autoload_path(path)
     path = File.join(__dir__, "fixtures", path)
-    if ActiveSupport::Dependencies.autoload_paths.include?(path)
+    Zeitwerk.with_loader do |loader|
+      loader.push_dir(path)
+      loader.setup
       yield
-    else
-      begin
-        ActiveSupport::Dependencies.autoload_paths << path
-        yield
-      ensure
-        ActiveSupport::Dependencies.autoload_paths.reject! { |p| p == path }
-        ActiveSupport::Dependencies.clear
-      end
+    ensure
+      loader.unload
     end
   end
 end
@@ -177,15 +179,15 @@ end
 class Rack::TestCase < ActionDispatch::IntegrationTest
   def self.testing(klass = nil)
     if klass
-      @testing = "/#{klass.name.underscore}".sub(/_controller$/, "")
+      @testing = "/#{klass.name.underscore}".delete_suffix("_controller")
     else
       @testing
     end
   end
 
-  def get(thing, *args)
+  def get(thing, *args, **options)
     if thing.is_a?(Symbol)
-      super("#{self.class.testing}/#{thing}", *args)
+      super("#{self.class.testing}/#{thing}", *args, **options)
     else
       super
     end
@@ -232,6 +234,7 @@ module ActionController
       routes = ActionDispatch::Routing::RouteSet.new
       routes.draw(&block)
       include routes.url_helpers
+      routes
     end
   end
 
@@ -312,7 +315,7 @@ module RoutingTestHelpers
   end
 
   class TestSet < ActionDispatch::Routing::RouteSet
-    class Request < DelegateClass(ActionDispatch::Request)
+    class Request < ActiveSupport::Delegation::DelegateClass(ActionDispatch::Request)
       def initialize(target, helpers, block, strict)
         super(target)
         @helpers = helpers
@@ -340,7 +343,6 @@ module RoutingTestHelpers
     end
 
     private
-
       def make_request(env)
         Request.new super, url_helpers, @block, strict
       end
@@ -358,98 +360,160 @@ class ImagesController < ResourcesController; end
 
 require "active_support/testing/method_call_assertions"
 
-class ForkingExecutor
-  class Server
-    include DRb::DRbUndumped
-
-    def initialize
-      @queue = Queue.new
-    end
-
-    def record(reporter, result)
-      reporter.record result
-    end
-
-    def <<(o)
-      o[2] = DRbObject.new(o[2]) if o
-      @queue << o
-    end
-    def pop; @queue.pop; end
-  end
-
-  def initialize(size)
-    @size  = size
-    @queue = Server.new
-    file   = File.join Dir.tmpdir, Dir::Tmpname.make_tmpname("rails-tests", "fd")
-    @url   = "drbunix://#{file}"
-    @pool  = nil
-    DRb.start_service @url, @queue
-  end
-
-  def <<(work); @queue << work; end
-
-  def shutdown
-    pool = @size.times.map {
-      fork {
-        DRb.stop_service
-        queue = DRbObject.new_with_uri @url
-        while job = queue.pop
-          klass    = job[0]
-          method   = job[1]
-          reporter = job[2]
-          result = Minitest.run_one_method klass, method
-          if result.error?
-            translate_exceptions result
-          end
-          queue.record reporter, result
-        end
-      }
-    }
-    @size.times { @queue << nil }
-    pool.each { |pid| Process.waitpid pid }
-  end
-
-  private
-    def translate_exceptions(result)
-      result.failures.map! { |e|
-        begin
-          Marshal.dump e
-          e
-        rescue TypeError
-          ex = Exception.new e.message
-          ex.set_backtrace e.backtrace
-          Minitest::UnexpectedError.new ex
-        end
-      }
-    end
-end
-
-if RUBY_ENGINE == "ruby" && PROCESS_COUNT > 0
-  # Use N processes (N defaults to 4)
-  Minitest.parallel_executor = ForkingExecutor.new(PROCESS_COUNT)
-end
-
 class ActiveSupport::TestCase
   include ActiveSupport::Testing::MethodCallAssertions
+end
 
-  # Skips the current run on Rubinius using Minitest::Assertions#skip
-  private def rubinius_skip(message = "")
-    skip message if RUBY_ENGINE == "rbx"
+module CookieAssertions
+  def parse_set_cookie_attributes(fields, attributes = {})
+    if fields.is_a?(String)
+      fields = fields.split(";").map(&:strip)
+    end
+
+    fields.each do |field|
+      key, value = field.split("=", 2)
+
+      # Normalize the key to lowercase:
+      key.downcase!
+
+      if value
+        value.downcase!
+        attributes[key] = value
+      else
+        attributes[key] = true
+      end
+    end
+
+    attributes
   end
-  # Skips the current run on JRuby using Minitest::Assertions#skip
-  private def jruby_skip(message = "")
-    skip message if defined?(JRUBY_VERSION)
+
+  # Parse the set-cookie header and return a hash of cookie names and values.
+  #
+  # Example:
+  #   set_cookies = headers["set-cookie"]
+  #   parse_set_cookies_headers(set_cookies)
+  def parse_set_cookies_headers(set_cookies)
+    if set_cookies.is_a?(String)
+      set_cookies = set_cookies.split("\n")
+    end
+
+    cookies = {}
+
+    set_cookies&.each do |cookie_string|
+      attributes = {}
+
+      fields = cookie_string.split(";").map(&:strip)
+
+      # The first one is the cookie name:
+      name, value = fields.shift.split("=", 2)
+
+      attributes[:value] = value
+
+      cookies[name] = parse_set_cookie_attributes(fields, attributes)
+    end
+
+    cookies
+  end
+
+  def assert_set_cookie_attributes(name, attributes, header = @response.headers["Set-Cookie"])
+    cookies = parse_set_cookies_headers(header)
+    attributes = parse_set_cookie_attributes(attributes) if attributes.is_a?(String)
+
+    assert cookies.key?(name), "No cookie found with the name '#{name}', found cookies: #{cookies.keys.join(', ')}"
+    cookie = cookies[name]
+
+    attributes.each do |key, value|
+      assert cookie.key?(key), "No attribute '#{key}' found for cookie '#{name}'"
+      assert_equal value, cookie[key]
+    end
+  end
+
+  def assert_not_set_cookie_attributes(name, attributes, header = @response.headers["Set-Cookie"])
+    cookies = parse_set_cookies_headers(header)
+    attributes = parse_set_cookie_attributes(attributes) if attributes.is_a?(String)
+
+    assert cookies.key?(name), "No cookie found with the name '#{name}'"
+    cookie = cookies[name]
+
+    attributes.each do |key, value|
+      if value == true
+        assert_nil cookie[key]
+      else
+        assert_not_equal value, cookie[key]
+      end
+    end
+  end
+
+  def assert_set_cookie_header(expected, header = @response.headers["Set-Cookie"])
+    # In Rack v2, this is newline delimited. In Rack v3, this is an array.
+    # Normalize the comparison so that we can assert equality in both cases.
+
+    if header.is_a?(String)
+      header = header.split("\n").sort
+    end
+
+    if expected.is_a?(String)
+      expected = expected.split("\n").sort
+    end
+
+    # While not strictly speaking correct, this is probably good enough for now:
+    header = parse_set_cookies_headers(header)
+    expected = parse_set_cookies_headers(expected)
+
+    expected.each do |key, value|
+      assert_equal value, header[key]
+    end
+  end
+
+  def assert_not_set_cookie_header(expected, header = @response.headers["Set-Cookie"])
+    if header.is_a?(String)
+      header = header.split("\n").sort
+    end
+
+    if expected.is_a?(String)
+      expected = expected.split("\n").sort
+    end
+
+    # While not strictly speaking correct, this is probably good enough for now:
+    header = parse_set_cookies_headers(header)
+
+    expected.each do |name|
+      assert_not_includes(header, name)
+    end
   end
 end
 
-class DrivenByRackTest < ActionDispatch::SystemTestCase
-  driven_by :rack_test
+module HeadersAssertions
+  def normalize_headers(headers)
+    headers.transform_keys(&:downcase)
+  end
+
+  def assert_headers(expected, actual = @response.headers)
+    actual = normalize_headers(actual)
+    expected.each do |key, value|
+      assert_equal value, actual[key]
+    end
+  end
+
+  def assert_header(key, value, actual = @response.headers)
+    actual = normalize_headers(actual)
+    assert_equal value, actual[key]
+  end
+
+  def assert_not_header(key, actual = @response.headers)
+    actual = normalize_headers(actual)
+    assert_not_includes(actual, key)
+  end
+
+  # This works for most headers, but not all, e.g. `set-cookie`.
+  def normalized_join_header(header)
+    header.is_a?(Array) ? header.join(",") : header
+  end
+
+  def assert_header_value(expected, header)
+    header = normalized_join_header(header)
+    assert_equal header, expected
+  end
 end
 
-class DrivenBySeleniumWithChrome < ActionDispatch::SystemTestCase
-  driven_by :selenium, using: :chrome
-end
-
-class DrivenBySeleniumWithHeadlessChrome < ActionDispatch::SystemTestCase
-  driven_by :selenium, using: :headless_chrome
-end
+require_relative "../../tools/test_common"

@@ -1,9 +1,13 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 require "websocket/driver"
 
 module ActionCable
   module Connection
+    # # Action Cable Connection WebSocket
+    #
     # Wrap the real socket to minimize the externally-presented API
     class WebSocket # :nodoc:
       def initialize(env, event_target, event_loop, protocols: ActionCable::INTERNAL[:protocols])
@@ -15,28 +19,26 @@ module ActionCable
       end
 
       def alive?
-        websocket && websocket.alive?
+        websocket&.alive?
       end
 
-      def transmit(data)
-        websocket.transmit data
+      def transmit(...)
+        websocket&.transmit(...)
       end
 
-      def close
-        websocket.close
+      def close(...)
+        websocket&.close(...)
       end
 
       def protocol
-        websocket.protocol
+        websocket&.protocol
       end
 
       def rack_response
-        websocket.rack_response
+        websocket&.rack_response
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
+      private
         attr_reader :websocket
     end
   end

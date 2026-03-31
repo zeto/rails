@@ -2,7 +2,7 @@
 
 require "date"
 
-class DateTime #:nodoc:
+class DateTime # :nodoc:
   # No DateTime is ever blank:
   #
   #   DateTime.now.blank? # => false
@@ -10,5 +10,9 @@ class DateTime #:nodoc:
   # @return [false]
   def blank?
     false
+  end
+
+  def present?
+    true
   end
 end

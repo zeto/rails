@@ -62,10 +62,14 @@ module Weblog
 end
 
 class PolymorphicRoutesTest < ActionController::TestCase
-  include SharedTestRoutes.url_helpers
+  Routes = ActionDispatch::Routing::RouteSet.new
+  Routes.draw { }
+  include Routes.url_helpers
+
   default_url_options[:host] = "example.com"
 
   def setup
+    super
     @project = Project.new
     @task = Task.new
     @step = Step.new
@@ -81,7 +85,7 @@ class PolymorphicRoutesTest < ActionController::TestCase
   def assert_url(url, args)
     host = self.class.default_url_options[:host]
 
-    assert_equal url.sub(/http:\/\/#{host}/, ""), polymorphic_path(args)
+    assert_equal url.delete_prefix("http://#{host}"), polymorphic_path(args)
     assert_equal url, polymorphic_url(args)
     assert_equal url, url_for(args)
   end
@@ -209,7 +213,7 @@ class PolymorphicRoutesTest < ActionController::TestCase
         @series.save
         polymorphic_url([nil, @series])
       end
-      assert_match(/undefined method `series_url'/, exception.message)
+      assert_match(/undefined method [`']series_url'/, exception.message)
     end
   end
 
@@ -460,12 +464,6 @@ class PolymorphicRoutesTest < ActionController::TestCase
     end
   end
 
-  def test_with_array_containing_single_string_name
-    with_test_routes do
-      assert_url "http://example.com/projects", ["projects"]
-    end
-  end
-
   def test_with_array_containing_symbols
     with_test_routes do
       assert_url "http://example.com/series/new", [:new, :series]
@@ -620,6 +618,22 @@ class PolymorphicRoutesTest < ActionController::TestCase
     end
   end
 
+  def test_string_route_arguments
+    with_admin_test_routes do
+      error = assert_raises(ArgumentError) do
+        polymorphic_url(["admin", @project])
+      end
+
+      assert_equal("Please use symbols for polymorphic route arguments.", error.message)
+
+      error = assert_raises(ArgumentError) do
+        polymorphic_url([@project, "bid"])
+      end
+
+      assert_equal("Please use symbols for polymorphic route arguments.", error.message)
+    end
+  end
+
   def with_namespaced_routes(name)
     with_routing do |set|
       set.draw do
@@ -729,7 +743,7 @@ class PolymorphicPathRoutesTest < PolymorphicRoutesTest
   def assert_url(url, args)
     host = self.class.default_url_options[:host]
 
-    assert_equal url.sub(/http:\/\/#{host}/, ""), url_for(args)
+    assert_equal url.delete_prefix("http://#{host}"), url_for(args)
   end
 end
 
@@ -763,9 +777,11 @@ class DirectRoutesTest < ActionView::TestCase
   include Routes.url_helpers
 
   def setup
+    super
     @category = Category.new("1")
     @collection = Collection.new("2")
     @product = Product.new("3")
+    @controller.singleton_class.include Routes.url_helpers
   end
 
   def test_direct_routes

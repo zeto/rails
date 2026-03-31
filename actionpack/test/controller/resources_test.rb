@@ -1,9 +1,7 @@
 # frozen_string_literal: true
 
 require "abstract_unit"
-require "active_support/core_ext/object/try"
 require "active_support/core_ext/object/with_options"
-require "active_support/core_ext/array/extract_options"
 
 class AdminController < ResourcesController; end
 class MessagesController < ResourcesController; end
@@ -18,6 +16,10 @@ module Backoffice
     class ProductsController < ResourcesController; end
     class ImagesController < ResourcesController; end
   end
+end
+
+module Products
+  class ImagesController < ResourcesController; end
 end
 
 class ResourcesTest < ActionController::TestCase
@@ -36,7 +38,6 @@ class ResourcesTest < ActionController::TestCase
         collection: collection_methods,
         member: member_methods,
         path_names: path_names do
-
       assert_restful_routes_for :messages,
           collection: collection_methods,
           member: member_methods,
@@ -58,7 +59,6 @@ class ResourcesTest < ActionController::TestCase
           collection: collection_methods,
           member: member_methods,
           path_names: path_names do |options|
-
         collection_methods.each_key do |action|
           assert_named_route "/messages/#{path_names[action] || action}", "#{action}_messages_path", action: action
         end
@@ -66,7 +66,6 @@ class ResourcesTest < ActionController::TestCase
         member_methods.each_key do |action|
           assert_named_route "/messages/1/#{path_names[action] || action}", "#{action}_message_path", action: action, id: "1"
         end
-
       end
     end
   end
@@ -81,7 +80,7 @@ class ResourcesTest < ActionController::TestCase
   def test_multiple_resources_with_options
     expected_options = { controller: "threads", action: "index" }
 
-    with_restful_routing :messages, :comments, expected_options.slice(:controller) do
+    with_restful_routing :messages, :comments, controller: "threads" do
       assert_recognizes(expected_options, path: "comments")
       assert_recognizes(expected_options, path: "messages")
     end
@@ -307,7 +306,7 @@ class ResourcesTest < ActionController::TestCase
         set.draw do
           resources :messages do
             member do
-              match :mark  , via: method
+              match :mark, via: method
               match :unmark, via: method
             end
           end
@@ -511,6 +510,23 @@ class ResourcesTest < ActionController::TestCase
         namespace: "backoffice/admin/",
         name_prefix: "backoffice_admin_product_",
         path_prefix: "backoffice/admin/products/1/",
+        shallow: true,
+        options: { product_id: "1" }
+    end
+  end
+
+  def test_shallow_with_module
+    with_routing do |set|
+      set.draw do
+        resources :products do
+          resources :images, module: :products, shallow: true
+        end
+      end
+
+      assert_simply_restful_for :images,
+        controller: "products/images",
+        name_prefix: "product_",
+        path_prefix: "products/1/",
         shallow: true,
         options: { product_id: "1" }
     end
@@ -786,11 +802,11 @@ class ResourcesTest < ActionController::TestCase
     with_routing do |set|
       set.draw do
         resources :products do
-           resources :product_reviews, path: "reviews", controller: "messages"
-         end
+          resources :product_reviews, path: "reviews", controller: "messages"
+        end
         resources :tutors do
-           resources :tutor_reviews, path: "reviews", controller: "comments"
-         end
+          resources :tutor_reviews, path: "reviews", controller: "comments"
+        end
       end
 
       assert_simply_restful_for :product_reviews, controller: "messages", as: "reviews", name_prefix: "product_", path_prefix: "products/1/", options: { product_id: "1" }
@@ -821,6 +837,17 @@ class ResourcesTest < ActionController::TestCase
     end
   end
 
+  def test_resource_has_only_show_action_with_string_value
+    with_routing do |set|
+      set.draw do
+        resources :products, only: "show"
+      end
+
+      assert_resource_allowed_routes("products", {}, { id: "1" }, :show, [:index, :new, :create, :edit, :update, :destroy])
+      assert_resource_allowed_routes("products", { format: "xml" }, { id: "1" }, :show, [:index, :new, :create, :edit, :update, :destroy])
+    end
+  end
+
   def test_singleton_resource_has_only_show_action
     with_routing do |set|
       set.draw do
@@ -829,6 +856,17 @@ class ResourcesTest < ActionController::TestCase
 
       assert_singleton_resource_allowed_routes("accounts", {},                    :show, [:index, :new, :create, :edit, :update, :destroy])
       assert_singleton_resource_allowed_routes("accounts", { format: "xml" },  :show, [:index, :new, :create, :edit, :update, :destroy])
+    end
+  end
+
+  def test_singleton_resource_has_only_show_action_with_string_value
+    with_routing do |set|
+      set.draw do
+        resource :account, only: "show"
+      end
+
+      assert_singleton_resource_allowed_routes("accounts", {}, :show, [:index, :new, :create, :edit, :update, :destroy])
+      assert_singleton_resource_allowed_routes("accounts", { format: "xml" }, :show, [:index, :new, :create, :edit, :update, :destroy])
     end
   end
 
@@ -851,6 +889,28 @@ class ResourcesTest < ActionController::TestCase
 
       assert_singleton_resource_allowed_routes("accounts", {},                    [:new, :create, :show, :edit, :update], :destroy)
       assert_singleton_resource_allowed_routes("accounts", { format: "xml" },  [:new, :create, :show, :edit, :update], :destroy)
+    end
+  end
+
+  def test_resource_has_show_action_but_does_not_have_destroy_action
+    with_routing do |set|
+      set.draw do
+        resources :products, only: [:show, :destroy], except: :destroy
+      end
+
+      assert_resource_allowed_routes("products", {},                    { id: "1" }, :show, [:index, :new, :create, :edit, :update, :destroy])
+      assert_resource_allowed_routes("products", { format: "xml" },  { id: "1" }, :show, [:index, :new, :create, :edit, :update, :destroy])
+    end
+  end
+
+  def test_singleton_resource_has_show_action_but_does_not_have_destroy_action
+    with_routing do |set|
+      set.draw do
+        resource :account, only: [:show, :destroy], except: :destroy
+      end
+
+      assert_singleton_resource_allowed_routes("accounts", {},                    :show, [:new, :create, :edit, :update, :destroy])
+      assert_singleton_resource_allowed_routes("accounts", { format: "xml" },  :show, [:new, :create, :edit, :update, :destroy])
     end
   end
 
@@ -1091,22 +1151,65 @@ class ResourcesTest < ActionController::TestCase
     end
   end
 
+  def test_invalid_only_option_for_resources
+    expected_message = "Route `resources :products` - :only and :except must include only [:index, :create, :new, :show, :update, :destroy, :edit], but also included [:foo, :bar]"
+    assert_raise(ArgumentError, match: expected_message) do
+      with_routing do |set|
+        set.draw do
+          resources :products, only: [:foo, "bar"]
+        end
+      end
+    end
+  end
+
+  def test_invalid_only_option_for_singleton_resource
+    expected_message = "Route `resource :products` - :only and :except must include only [:show, :create, :update, :destroy, :new, :edit], but also included [:foo, :bar]"
+    assert_raise(ArgumentError, match: expected_message) do
+      with_routing do |set|
+        set.draw do
+          resource :products, only: [:foo, "bar"]
+        end
+      end
+    end
+  end
+
+  def test_invalid_except_option_for_resources
+    expected_message = "Route `resources :products` - :only and :except must include only [:index, :create, :new, :show, :update, :destroy, :edit], but also included [:foo]"
+
+    assert_raise(ArgumentError, match: expected_message) do
+      with_routing do |set|
+        set.draw do
+          resources :products, except: :foo
+        end
+      end
+    end
+  end
+
+  def test_invalid_except_option_for_singleton_resource
+    expected_message = "Route `resource :products` - :only and :except must include only [:show, :create, :update, :destroy, :new, :edit], but also included [:foo]"
+    assert_raise(ArgumentError, match: expected_message) do
+      with_routing do |set|
+        set.draw do
+          resource :products, except: :foo
+        end
+      end
+    end
+  end
+
   private
-    def with_restful_routing(*args)
-      options = args.extract_options!
+    def with_restful_routing(*args, **options)
       collection_methods = options.delete(:collection)
       member_methods = options.delete(:member)
       path_prefix = options.delete(:path_prefix)
-      args.push(options)
 
       with_routing do |set|
         set.draw do
           scope(path_prefix || "") do
-            resources(*args) do
+            resources(*args, **options) do
               if collection_methods
                 collection do
                   collection_methods.each do |name, method|
-                    send(method, name)
+                    public_send(method, name)
                   end
                 end
               end
@@ -1114,7 +1217,7 @@ class ResourcesTest < ActionController::TestCase
               if member_methods
                 member do
                   member_methods.each do |name, method|
-                    send(method, name)
+                    public_send(method, name)
                   end
                 end
               end
@@ -1200,7 +1303,11 @@ class ResourcesTest < ActionController::TestCase
       assert_recognizes(options[:shallow_options].merge(action: "update",  id: "1", format: "xml"), path: "#{member_path}.xml",       method: :put)
       assert_recognizes(options[:shallow_options].merge(action: "destroy", id: "1", format: "xml"), path: "#{member_path}.xml",       method: :delete)
 
-      yield route_options if block_given?
+      if block_given?
+        _assert_nothing_raised_or_warn("assert_restful_routes_for") do
+          yield route_options
+        end
+      end
     end
 
     # test named routes like foo_path and foos_path map to the correct options.
@@ -1230,7 +1337,7 @@ class ResourcesTest < ActionController::TestCase
       shallow_path = "/#{options[:shallow] ? options[:namespace] : options[:path_prefix]}#{path}"
       full_path = "/#{options[:path_prefix]}#{path}"
       name_prefix = options[:name_prefix]
-      shallow_prefix = options[:shallow] ? options[:namespace].try(:gsub, /\//, "_") : options[:name_prefix]
+      shallow_prefix = options[:shallow] ? options[:namespace]&.gsub(/\//, "_") : options[:name_prefix]
 
       new_action  = "new"
       edit_action = "edit"
@@ -1249,7 +1356,11 @@ class ResourcesTest < ActionController::TestCase
       assert_named_route "#{shallow_path}/1/#{edit_action}", "edit_#{shallow_prefix}#{singular_name}_path", options[:shallow_options].merge(id: "1")
       assert_named_route "#{shallow_path}/1/#{edit_action}.xml", "edit_#{shallow_prefix}#{singular_name}_path", options[:shallow_options].merge(id: "1", format: "xml")
 
-      yield route_options if block_given?
+      if block_given?
+        _assert_nothing_raised_or_warn("assert_restful_named_routes_for") do
+          yield route_options
+        end
+      end
     end
 
     def assert_singleton_routes_for(singleton_name, options = {})
@@ -1284,7 +1395,11 @@ class ResourcesTest < ActionController::TestCase
       assert_recognizes(route_options.merge(action: "update",  format: "xml"), path: "#{full_path}.xml",  method: :put)
       assert_recognizes(route_options.merge(action: "destroy", format: "xml"), path: "#{full_path}.xml",  method: :delete)
 
-      yield route_options if block_given?
+      if block_given?
+        _assert_nothing_raised_or_warn("assert_singleton_routes_for") do
+          yield route_options
+        end
+      end
     end
 
     def assert_singleton_named_routes_for(singleton_name, options = {})
@@ -1305,10 +1420,16 @@ class ResourcesTest < ActionController::TestCase
       assert_named_route "#{full_path}/new.xml",  "new_#{name_prefix}#{singleton_name}_path",  route_options.merge(format: "xml")
       assert_named_route "#{full_path}/edit",     "edit_#{name_prefix}#{singleton_name}_path",           route_options
       assert_named_route "#{full_path}/edit.xml", "edit_#{name_prefix}#{singleton_name}_path", route_options.merge(format: "xml")
+
+      if block_given?
+        _assert_nothing_raised_or_warn("assert_singleton_named_routes_for") do
+          yield route_options
+        end
+      end
     end
 
     def assert_named_route(expected, route, options)
-      actual = @controller.send(route, options) rescue $!.class.name
+      actual = @controller.public_send(route, options) rescue $!.class.name
       assert_equal expected, actual, "Error on route: #{route}(#{options.inspect})"
     end
 
@@ -1323,7 +1444,7 @@ class ResourcesTest < ActionController::TestCase
     def assert_resource_allowed_routes(controller, options, shallow_options, allowed, not_allowed, path = controller)
       shallow_path = "#{path}/#{shallow_options[:id]}"
       format = options[:format] && ".#{options[:format]}"
-      options.merge!(controller: controller)
+      options[:controller] = controller
       shallow_options.merge!(options)
 
       assert_whether_allowed(allowed, not_allowed, options,         "index",    "#{path}#{format}",               :get)
@@ -1337,7 +1458,7 @@ class ResourcesTest < ActionController::TestCase
 
     def assert_singleton_resource_allowed_routes(controller, options, allowed, not_allowed, path = controller.singularize)
       format = options[:format] && ".#{options[:format]}"
-      options.merge!(controller: controller)
+      options[:controller] = controller
 
       assert_whether_allowed(allowed, not_allowed, options, "new",      "#{path}/new#{format}",   :get)
       assert_whether_allowed(allowed, not_allowed, options, "create",   "#{path}#{format}",       :post)

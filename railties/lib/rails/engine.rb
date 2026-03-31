@@ -1,19 +1,20 @@
 # frozen_string_literal: true
 
-require_relative "railtie"
-require_relative "engine/railties"
-require "active_support/core_ext/module/delegation"
+require "rails/railtie"
+require "rails/engine/railties"
+require "active_support/callbacks"
+require "active_support/core_ext/object/try"
 require "pathname"
-require "thread"
 
 module Rails
-  # <tt>Rails::Engine</tt> allows you to wrap a specific Rails application or subset of
+  # +Rails::Engine+ allows you to wrap a specific \Rails application or subset of
   # functionality and share it with other applications or within a larger packaged application.
-  # Every <tt>Rails::Application</tt> is just an engine, which allows for simple
+  # Every Rails::Application is just an engine, which allows for simple
   # feature and application sharing.
   #
-  # Any <tt>Rails::Engine</tt> is also a <tt>Rails::Railtie</tt>, so the same
-  # methods (like <tt>rake_tasks</tt> and +generators+) and configuration
+  # Any +Rails::Engine+ is also a Rails::Railtie, so the same
+  # methods (like {rake_tasks}[rdoc-ref:Rails::Railtie::rake_tasks] and
+  # {generators}[rdoc-ref:Rails::Railtie::generators]) and configuration
   # options that are available in railties can also be used in engines.
   #
   # == Creating an Engine
@@ -29,16 +30,16 @@ module Rails
   #   end
   #
   # Then ensure that this file is loaded at the top of your <tt>config/application.rb</tt>
-  # (or in your +Gemfile+) and it will automatically load models, controllers and helpers
+  # (or in your +Gemfile+), and it will automatically load models, controllers, and helpers
   # inside +app+, load routes at <tt>config/routes.rb</tt>, load locales at
-  # <tt>config/locales/*</tt>, and load tasks at <tt>lib/tasks/*</tt>.
+  # <tt>config/locales/**/*</tt>, and load tasks at <tt>lib/tasks/**/*</tt>.
   #
   # == Configuration
   #
-  # Besides the +Railtie+ configuration which is shared across the application, in a
-  # <tt>Rails::Engine</tt> you can access <tt>autoload_paths</tt>, <tt>eager_load_paths</tt>
-  # and <tt>autoload_once_paths</tt>, which, differently from a <tt>Railtie</tt>, are scoped to
-  # the current engine.
+  # Like railties, engines can access a config object which contains configuration shared by
+  # all railties and the application.
+  # Additionally, each engine can access <tt>autoload_paths</tt>, <tt>eager_load_paths</tt> and
+  # <tt>autoload_once_paths</tt> settings which are scoped to that engine.
   #
   #   class MyEngine < Rails::Engine
   #     # Add a load path for this specific Engine
@@ -112,9 +113,9 @@ module Rails
   # == Endpoint
   #
   # An engine can also be a Rack application. It can be useful if you have a Rack application that
-  # you would like to wrap with +Engine+ and provide with some of the +Engine+'s features.
+  # you would like to provide with some of the +Engine+'s features.
   #
-  # To do that, use the +endpoint+ method:
+  # To do that, use the ::endpoint method:
   #
   #   module MyEngine
   #     class Engine < Rails::Engine
@@ -122,7 +123,7 @@ module Rails
   #     end
   #   end
   #
-  # Now you can mount your engine in application's routes just like that:
+  # Now you can mount your engine in application's routes:
   #
   #   Rails.application.routes.draw do
   #     mount MyEngine::Engine => "/engine"
@@ -179,7 +180,7 @@ module Rails
   #   it's used as default <tt>:as</tt> option
   # * rake task for installing migrations <tt>my_engine:install:migrations</tt>
   #
-  # Engine name is set by default based on class name. For <tt>MyEngine::Engine</tt> it will be
+  # Engine name is set by default based on class name. For +MyEngine::Engine+ it will be
   # <tt>my_engine_engine</tt>. You can change it manually using the <tt>engine_name</tt> method:
   #
   #   module MyEngine
@@ -190,13 +191,13 @@ module Rails
   #
   # == Isolated Engine
   #
-  # Normally when you create controllers, helpers and models inside an engine, they are treated
+  # Normally when you create controllers, helpers, and models inside an engine, they are treated
   # as if they were created inside the application itself. This means that all helpers and
   # named routes from the application will be available to your engine's controllers as well.
   #
   # However, sometimes you want to isolate your engine from the application, especially if your engine
-  # has its own router. To do that, you simply need to call +isolate_namespace+. This method requires
-  # you to pass a module where all your controllers, helpers and models should be nested to:
+  # has its own router. To do that, you simply need to call ::isolate_namespace. This method requires
+  # you to pass a module where all your controllers, helpers, and models should be nested to:
   #
   #   module MyEngine
   #     class Engine < Rails::Engine
@@ -228,29 +229,29 @@ module Rails
   #     resources :articles
   #   end
   #
-  # If +MyEngine+ is isolated, The routes above will point to
-  # <tt>MyEngine::ArticlesController</tt>. You also don't need to use longer
-  # url helpers like +my_engine_articles_path+. Instead, you should simply use
+  # If +MyEngine+ is isolated, the routes above will point to
+  # +MyEngine::ArticlesController+. You also don't need to use longer
+  # URL helpers like +my_engine_articles_path+. Instead, you should simply use
   # +articles_path+, like you would do with your main application.
   #
   # To make this behavior consistent with other parts of the framework,
-  # isolated engines also have an effect on <tt>ActiveModel::Naming</tt>. In a
-  # normal Rails app, when you use a namespaced model such as
-  # <tt>Namespace::Article</tt>, <tt>ActiveModel::Naming</tt> will generate
+  # isolated engines also have an effect on ActiveModel::Naming. In a
+  # normal \Rails app, when you use a namespaced model such as
+  # +Namespace::Article+, ActiveModel::Naming will generate
   # names with the prefix "namespace". In an isolated engine, the prefix will
-  # be omitted in url helpers and form fields, for convenience.
+  # be omitted in URL helpers and form fields, for convenience.
   #
   #   polymorphic_url(MyEngine::Article.new)
   #   # => "articles_path" # not "my_engine_articles_path"
   #
-  #   form_for(MyEngine::Article.new) do
+  #   form_with(model: MyEngine::Article.new) do
   #     text_field :title # => <input type="text" name="article[title]" id="article_title" />
   #   end
   #
   # Additionally, an isolated engine will set its own name according to its
   # namespace, so <tt>MyEngine::Engine.engine_name</tt> will return
   # "my_engine". It will also set +MyEngine.table_name_prefix+ to "my_engine_",
-  # meaning for example that <tt>MyEngine::Article</tt> will use the
+  # meaning for example that +MyEngine::Article+ will use the
   # +my_engine_articles+ database table by default.
   #
   # == Using Engine's routes outside Engine
@@ -286,19 +287,19 @@ module Rails
   # Note that the <tt>:as</tt> option given to mount takes the <tt>engine_name</tt> as default, so most of the time
   # you can simply omit it.
   #
-  # Finally, if you want to generate a url to an engine's route using
+  # Finally, if you want to generate a URL to an engine's route using
   # <tt>polymorphic_url</tt>, you also need to pass the engine helper. Let's
   # say that you want to create a form pointing to one of the engine's routes.
   # All you need to do is pass the helper as the first element in array with
-  # attributes for url:
+  # attributes for URL:
   #
-  #   form_for([my_engine, @user])
+  #   form_with(model: [my_engine, @user])
   #
   # This code will use <tt>my_engine.user_path(@user)</tt> to generate the proper route.
   #
   # == Isolated engine's helpers
   #
-  # Sometimes you may want to isolate engine, but use helpers that are defined for it.
+  # Sometimes you may want to isolate an engine, but use helpers that are defined for it.
   # If you want to share just a few specific helpers you can add them to application's
   # helpers in ApplicationController:
   #
@@ -313,7 +314,7 @@ module Rails
   #     helper MyEngine::Engine.helpers
   #   end
   #
-  # It will include all of the helpers from engine's directory. Take into account that this does
+  # It will include all of the helpers from engine's directory. Take into account this does
   # not include helpers defined in controllers with helper_method or other similar solutions,
   # only helpers defined in the helpers directory will be included.
   #
@@ -325,7 +326,7 @@ module Rails
   # To use engine's migrations in application you can use the rake task below, which copies them to
   # application's dir:
   #
-  #   rake ENGINE_NAME:install:migrations
+  #   $ rake ENGINE_NAME:install:migrations
   #
   # Note that some of the migrations may be skipped if a migration with the same name already exists
   # in application. In such a situation you must decide whether to leave that migration or rename the
@@ -346,6 +347,7 @@ module Rails
   #   config.railties_order = [Blog::Engine, :main_app, :all]
   class Engine < Railtie
     autoload :Configuration, "rails/engine/configuration"
+    autoload :LazyRouteSet,  "rails/engine/lazy_route_set"
 
     class << self
       attr_accessor :called_from, :isolated
@@ -362,7 +364,7 @@ module Rails
           base.called_from = begin
             call_stack = caller_locations.map { |l| l.absolute_path || l.path }
 
-            File.dirname(call_stack.detect { |p| p !~ %r[railties[\w.-]*/lib/rails|rack[\w.-]*/lib/rack] })
+            File.dirname(call_stack.detect { |p| !p.match?(%r[railties[\w.-]*/lib/rails|rack[\w.-]*/lib/rack]) })
           end
         end
 
@@ -382,7 +384,8 @@ module Rails
       def isolate_namespace(mod)
         engine_name(generate_railtie_name(mod.name))
 
-        routes.default_scope = { module: ActiveSupport::Inflector.underscore(mod.name) }
+        config.default_scope = { module: ActiveSupport::Inflector.underscore(mod.name) }
+
         self.isolated = true
 
         unless mod.respond_to?(:railtie_namespace)
@@ -393,6 +396,12 @@ module Rails
 
             unless mod.respond_to?(:table_name_prefix)
               define_method(:table_name_prefix) { "#{name}_" }
+
+              ActiveSupport.on_load(:active_record) do
+                mod.singleton_class.redefine_method(:table_name_prefix) do
+                  "#{ActiveRecord::Base.table_name_prefix}#{name}_"
+                end
+              end
             end
 
             unless mod.respond_to?(:use_relative_model_naming?)
@@ -421,6 +430,9 @@ module Rails
       end
     end
 
+    include ActiveSupport::Callbacks
+    define_callbacks :load_seed
+
     delegate :middleware, :root, :paths, to: :config
     delegate :engine_name, :isolated?, to: :class
 
@@ -437,47 +449,46 @@ module Rails
     end
 
     # Load console and invoke the registered hooks.
-    # Check <tt>Rails::Railtie.console</tt> for more info.
+    # Check Rails::Railtie.console for more info.
     def load_console(app = self)
-      require_relative "console/app"
-      require_relative "console/helpers"
       run_console_blocks(app)
       self
     end
 
-    # Load Rails runner and invoke the registered hooks.
-    # Check <tt>Rails::Railtie.runner</tt> for more info.
+    # Load \Rails runner and invoke the registered hooks.
+    # Check Rails::Railtie.runner for more info.
     def load_runner(app = self)
       run_runner_blocks(app)
       self
     end
 
-    # Load Rake, railties tasks and invoke the registered hooks.
-    # Check <tt>Rails::Railtie.rake_tasks</tt> for more info.
+    # Load Rake and railties tasks, and invoke the registered hooks.
+    # Check Rails::Railtie.rake_tasks for more info.
     def load_tasks(app = self)
       require "rake"
       run_tasks_blocks(app)
       self
     end
 
-    # Load Rails generators and invoke the registered hooks.
-    # Check <tt>Rails::Railtie.generators</tt> for more info.
+    # Load \Rails generators and invoke the registered hooks.
+    # Check Rails::Railtie.generators for more info.
     def load_generators(app = self)
-      require_relative "generators"
+      require "rails/generators"
       run_generators_blocks(app)
       Rails::Generators.configure!(app.config.generators)
       self
     end
 
-    # Eager load the application by loading all ruby
-    # files inside eager_load paths.
+    # Invoke the server registered hooks.
+    # Check Rails::Railtie.server for more info.
+    def load_server(app = self)
+      run_server_blocks(app)
+      self
+    end
+
     def eager_load!
-      config.eager_load_paths.each do |load_path|
-        matcher = /\A#{Regexp.escape(load_path.to_s)}\/(.*)\.rb\Z/
-        Dir.glob("#{load_path}/**/*.rb").sort.each do |file|
-          require_dependency file.sub(matcher, '\1')
-        end
-      end
+      # Already done by Zeitwerk::Loader.eager_load_all. By now, we leave the
+      # method as a no-op for backwards compatibility.
     end
 
     def railties
@@ -488,8 +499,7 @@ module Rails
     def helpers
       @helpers ||= begin
         helpers = Module.new
-        all = ActionController::Base.all_helpers_from_path(helpers_paths)
-        ActionController::Base.modules_for_helpers(all).each do |mod|
+        AbstractController::Helpers.helper_modules_from_paths(helpers_paths).each do |mod|
           helpers.include(mod)
         end
         helpers
@@ -531,9 +541,21 @@ module Rails
 
     # Defines the routes for this engine. If a block is given to
     # routes, it is appended to the engine.
-    def routes
-      @routes ||= ActionDispatch::Routing::RouteSet.new_with_config(config)
-      @routes.append(&Proc.new) if block_given?
+    def routes(&block)
+      if block_given?
+        if @route_blocks
+          @route_blocks << block
+        else
+          @routes ||= config.route_set_class.new_with_config(config)
+          @routes.append(&block)
+        end
+      elsif @routes.nil?
+        @routes = config.route_set_class.new_with_config(config)
+        if @route_blocks
+          blocks, @route_blocks = @route_blocks, nil
+          blocks.each { |b| routes(&b) }
+        end
+      end
       @routes
     end
 
@@ -548,38 +570,56 @@ module Rails
     # Blog::Engine.load_seed
     def load_seed
       seed_file = paths["db/seeds.rb"].existent.first
-      load(seed_file) if seed_file
+      run_callbacks(:load_seed) { load(seed_file) } if seed_file
     end
 
-    # Add configured load paths to Ruby's load path, and remove duplicate entries.
-    initializer :set_load_path, before: :bootstrap_hook do
-      _all_load_paths.reverse_each do |path|
+    initializer :load_environment_config, before: :load_environment_hook, group: :all do
+      env_files = paths["config/environments"].existent
+
+      if env_files.empty? && any_environment_files?
+        missing_environment_file
+      else
+        env_files.each do |environment|
+          require environment
+        end
+      end
+    end
+
+    initializer :set_load_path, before: :bootstrap_hook do |app|
+      _all_load_paths(app.config.add_autoload_paths_to_load_path).reverse_each do |path|
         $LOAD_PATH.unshift(path) if File.directory?(path)
       end
       $LOAD_PATH.uniq!
     end
 
-    # Set the paths from which Rails will automatically load source files,
-    # and the load_once paths.
-    #
-    # This needs to be an initializer, since it needs to run once
-    # per engine and get the engine as a block parameter.
     initializer :set_autoload_paths, before: :bootstrap_hook do
       ActiveSupport::Dependencies.autoload_paths.unshift(*_all_autoload_paths)
       ActiveSupport::Dependencies.autoload_once_paths.unshift(*_all_autoload_once_paths)
 
-      # Freeze so future modifications will fail rather than do nothing mysteriously
       config.autoload_paths.freeze
-      config.eager_load_paths.freeze
       config.autoload_once_paths.freeze
+    end
+
+    initializer :set_eager_load_paths, before: :bootstrap_hook do
+      ActiveSupport::Dependencies._eager_load_paths.merge(config.all_eager_load_paths)
+      config.eager_load_paths.freeze
+    end
+
+    initializer :make_routes_lazy, before: :bootstrap_hook do |app|
+      config.route_set_class = LazyRouteSet if Rails.env.local?
+      routes
     end
 
     initializer :add_routing_paths do |app|
       routing_paths = paths["config/routes.rb"].existent
+      external_paths = self.paths["config/routes"].paths
+      routes.draw_paths.concat(external_paths)
+      app.routes.draw_paths.concat(external_paths)
 
       if routes? || routing_paths.any?
         app.routes_reloader.paths.unshift(*routing_paths)
         app.routes_reloader.route_sets << routes
+        app.routes_reloader.external_routes.unshift(*external_paths)
       end
     end
 
@@ -597,9 +637,19 @@ module Rails
       end
     end
 
-    initializer :load_environment_config, before: :load_environment_hook, group: :all do
-      paths["config/environments"].existent.each do |environment|
-        require environment
+    initializer :add_mailer_preview_paths do
+      previews = paths["test/mailers/previews"].existent
+      unless previews.empty?
+        ActiveSupport.on_load(:action_mailer) { self.preview_paths |= previews }
+      end
+    end
+
+    initializer :add_fixture_paths do
+      next if is_a?(Rails::Application)
+
+      fixtures = config.root.join("test", "fixtures")
+      if fixtures_in_root_and_not_in_vendor_or_dot_dir?(fixtures)
+        ActiveSupport.on_load(:active_record_fixtures) { self.fixture_paths |= ["#{fixtures}/"] }
       end
     end
 
@@ -612,6 +662,12 @@ module Rails
     initializer :load_config_initializers do
       config.paths["config/initializers"].existent.sort.each do |initializer|
         load_config_initializer(initializer)
+      end
+    end
+
+    initializer :wrap_reloader_around_load_seed do |app|
+      self.class.set_callback(:load_seed, :around) do |engine, seeds_block|
+        app.reloader.wrap(&seeds_block)
       end
     end
 
@@ -639,18 +695,22 @@ module Rails
       end
     end
 
-    def routes? #:nodoc:
+    def routes? # :nodoc:
       @routes
     end
 
     protected
-
-      def run_tasks_blocks(*) #:nodoc:
+      def run_tasks_blocks(*) # :nodoc:
         super
         paths["lib/tasks"].existent.sort.each { |ext| load(ext) }
       end
 
     private
+      def missing_environment_file; end
+
+      def any_environment_files?
+        false
+      end
 
       def load_config_initializer(initializer) # :doc:
         ActiveSupport::Notifications.instrument("load_config_initializer.railties", initializer: initializer) do
@@ -662,7 +722,7 @@ module Rails
         paths["db/migrate"].existent.any?
       end
 
-      def self.find_root_with_flag(flag, root_path, default = nil) #:nodoc:
+      def self.find_root_with_flag(flag, root_path, default = nil) # :nodoc:
         while root_path && File.directory?(root_path) && !File.exist?("#{root_path}/#{flag}")
           parent = File.dirname(root_path)
           root_path = parent != root_path && parent
@@ -679,15 +739,33 @@ module Rails
       end
 
       def _all_autoload_once_paths
-        config.autoload_once_paths
+        config.all_autoload_once_paths.uniq
       end
 
       def _all_autoload_paths
-        @_all_autoload_paths ||= (config.autoload_paths + config.eager_load_paths + config.autoload_once_paths).uniq
+        @_all_autoload_paths ||= begin
+          autoload_paths  = config.all_autoload_paths
+          autoload_paths += config.all_eager_load_paths
+          autoload_paths -= config.all_autoload_once_paths
+          autoload_paths.uniq
+        end
       end
 
-      def _all_load_paths
-        @_all_load_paths ||= (config.paths.load_paths + _all_autoload_paths).uniq
+      def _all_load_paths(add_autoload_paths_to_load_path)
+        @_all_load_paths ||= begin
+          load_paths = config.paths.load_paths
+          if add_autoload_paths_to_load_path
+            load_paths += _all_autoload_paths
+            load_paths += _all_autoload_once_paths
+          end
+          load_paths.uniq
+        end
+      end
+
+      def fixtures_in_root_and_not_in_vendor_or_dot_dir?(fixtures)
+        fixtures.exist? && fixtures.to_s.start_with?(Rails.root.to_s) &&
+          !fixtures.to_s.start_with?(Rails.root.join("vendor").to_s) &&
+          !fixtures.to_s.start_with?("#{Rails.root}/.".to_s)
       end
 
       def build_request(env)

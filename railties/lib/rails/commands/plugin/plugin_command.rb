@@ -5,6 +5,8 @@ module Rails
     class PluginCommand < Base # :nodoc:
       hide_command!
 
+      self.bin = "rails"
+
       def help
         run_plugin_generator %w( --help )
       end
@@ -26,7 +28,7 @@ module Rails
 
           if File.exist?(railsrc)
             extra_args = File.read(railsrc).split(/\n+/).flat_map(&:split)
-            puts "Using #{extra_args.join(" ")} from #{railsrc}"
+            say "Using #{extra_args.join(" ")} from #{railsrc}"
             plugin_args.insert(1, *extra_args)
           end
         end
@@ -36,8 +38,8 @@ module Rails
 
       private
         def run_plugin_generator(plugin_args)
-          require_relative "../../generators"
-          require_relative "../../generators/rails/plugin/plugin_generator"
+          require "rails/generators"
+          require "rails/generators/rails/plugin/plugin_generator"
           Rails::Generators::PluginGenerator.start plugin_args
         end
     end

@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../../abstract_unit"
 require "json"
-require "json/encoding_test_cases"
+require_relative "../../json/encoding_test_cases"
 
-# These test cases were added to test that we do not interfere with json gem's
+# These test cases were added to test that we do not interfere with JSON gem's
 # output when the AS encoder is loaded, primarily for problems reported in
 # #20775. They need to be executed in isolation to reproduce the scenario
 # correctly, because other test cases might have already loaded additional
@@ -22,7 +22,7 @@ class JsonGemEncodingTest < ActiveSupport::TestCase
 
   JSONTest::EncodingTestCases.constants.each_with_index do |name|
     JSONTest::EncodingTestCases.const_get(name).each_with_index do |(subject, _), i|
-      test("#{name[0..-6].underscore} #{i}") do
+      test("#{name[0..-6]} #{i}") do
         assert_same_with_or_without_active_support(subject)
       end
     end
@@ -40,12 +40,12 @@ class JsonGemEncodingTest < ActiveSupport::TestCase
 
   private
     def require_or_skip(file)
-      require(file) || skip("'#{file}' was already loaded")
+      require(file) || force_skip("'#{file}' was already loaded")
     end
 
     def assert_same_with_or_without_active_support(subject)
       begin
-        expected = JSON.generate(subject, quirks_mode: true)
+        expected = JSON.generate(subject)
       rescue JSON::GeneratorError => e
         exception = e
       end
@@ -53,16 +53,11 @@ class JsonGemEncodingTest < ActiveSupport::TestCase
       require_or_skip "active_support/core_ext/object/json"
 
       if exception
-        assert_raises_with_message JSON::GeneratorError, e.message do
-          JSON.generate(subject, quirks_mode: true)
+        assert_raises JSON::GeneratorError, match: e.message do
+          JSON.generate(subject)
         end
       else
-        assert_equal expected, JSON.generate(subject, quirks_mode: true)
+        assert_equal expected, JSON.generate(subject)
       end
-    end
-
-    def assert_raises_with_message(exception_class, message, &block)
-      err = assert_raises(exception_class) { block.call }
-      assert_match message, err.message
     end
 end

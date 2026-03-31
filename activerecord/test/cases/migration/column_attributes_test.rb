@@ -39,13 +39,13 @@ module ActiveRecord
 
       def test_add_column_without_limit
         # TODO: limit: nil should work with all adapters.
-        skip "MySQL wrongly enforces a limit of 255" if current_adapter?(:Mysql2Adapter)
+        skip "MySQL wrongly enforces a limit of 255" if current_adapter?(:Mysql2Adapter, :TrilogyAdapter)
         add_column :test_models, :description, :string, limit: nil
         TestModel.reset_column_information
         assert_nil TestModel.columns_hash["description"].limit
       end
 
-      if current_adapter?(:Mysql2Adapter, :PostgreSQLAdapter)
+      if current_adapter?(:Mysql2Adapter, :TrilogyAdapter, :PostgreSQLAdapter)
         def test_unabstracted_database_dependent_types
           add_column :test_models, :intelligence_quotient, :smallint
           TestModel.reset_column_information
@@ -62,12 +62,7 @@ module ActiveRecord
 
           connection.add_column "test_models", "wealth", :decimal, precision: "30", scale: "10"
 
-          # Do a manual insertion
-          if current_adapter?(:OracleAdapter)
-            connection.execute "insert into test_models (id, wealth) values (people_seq.nextval, 12345678901234567890.0123456789)"
-          else
-            connection.execute "insert into test_models (wealth) values (12345678901234567890.0123456789)"
-          end
+          connection.execute "insert into test_models (wealth) values (12345678901234567890.0123456789)"
 
           # SELECT
           row = TestModel.first
@@ -80,7 +75,7 @@ module ActiveRecord
           TestModel.delete_all
 
           # Now use the Rails insertion
-          TestModel.create wealth: BigDecimal.new("12345678901234567890.0123456789")
+          TestModel.create wealth: BigDecimal("12345678901234567890.0123456789")
 
           # SELECT
           row = TestModel.first
@@ -146,7 +141,7 @@ module ActiveRecord
 
           TestModel.create first_name: "bob", last_name: "bobsen",
             bio: "I was born ....", age: 18, height: 1.78,
-            wealth: BigDecimal.new("12345678901234567890.0123456789"),
+            wealth: BigDecimal("12345678901234567890.0123456789"),
             birthday: 18.years.ago, favorite_day: 10.days.ago,
             moment_of_truth: "1782-10-10 21:40:18", male: true
 
@@ -159,7 +154,7 @@ module ActiveRecord
           # Test for 30 significant digits (beyond the 16 of float), 10 of them
           # after the decimal place.
 
-          assert_equal BigDecimal.new("0012345678901234567890.0123456789"), bob.wealth
+          assert_equal BigDecimal("0012345678901234567890.0123456789"), bob.wealth
 
           assert_equal true, bob.male?
 
@@ -174,13 +169,11 @@ module ActiveRecord
         end
       end
 
-      if current_adapter?(:Mysql2Adapter, :PostgreSQLAdapter)
+      if current_adapter?(:Mysql2Adapter, :TrilogyAdapter, :PostgreSQLAdapter)
         def test_out_of_range_limit_should_raise
-          assert_raise(ActiveRecordError) { add_column :test_models, :integer_too_big, :integer, limit: 10 }
-
-          unless current_adapter?(:PostgreSQLAdapter)
-            assert_raise(ActiveRecordError) { add_column :test_models, :text_too_big, :text, limit: 0xfffffffff }
-          end
+          assert_raise(ArgumentError) { add_column :test_models, :integer_too_big, :integer, limit: 10 }
+          assert_raise(ArgumentError) { add_column :test_models, :text_too_big, :text, limit: 0xfffffffff }
+          assert_raise(ArgumentError) { add_column :test_models, :binary_too_big, :binary, limit: 0xfffffffff }
         end
       end
     end

@@ -1,12 +1,12 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../abstract_unit"
 require "active_support/cache"
 
 class CacheKeyTest < ActiveSupport::TestCase
   def test_entry_legacy_optional_ivars
     legacy = Class.new(ActiveSupport::Cache::Entry) do
-      def initialize(value, options = {})
+      def initialize(value, **options)
         @value = value
         @expires_in = nil
         @created_at = nil
@@ -47,7 +47,7 @@ class CacheKeyTest < ActiveSupport::TestCase
   end
 
   def test_expand_cache_key_respond_to_cache_key
-    key = "foo".dup
+    key = +"foo"
     def key.cache_key
       :foo_key
     end
@@ -55,7 +55,7 @@ class CacheKeyTest < ActiveSupport::TestCase
   end
 
   def test_expand_cache_key_array_with_something_that_responds_to_cache_key
-    key = "foo".dup
+    key = +"foo"
     def key.cache_key
       :foo_key
     end
@@ -78,8 +78,17 @@ class CacheKeyTest < ActiveSupport::TestCase
     assert_equal "foo/bar/baz", ActiveSupport::Cache.expand_cache_key(%w{foo bar baz}.to_enum)
   end
 
-  private
+  def test_set_and_get_namespace
+    cache = ActiveSupport::Cache::MemoryStore.new
+    assert_nil cache.namespace
+    cache.namespace = "test"
+    assert_equal "test", cache.namespace
 
+    cache.namespace = "test2"
+    assert_equal "test2", cache.namespace
+  end
+
+  private
     def with_env(kv)
       old_values = {}
       kv.each { |key, value| old_values[key], ENV[key] = ENV[key], value }

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../abstract_unit"
 require "active_support/time"
-require "core_ext/date_and_time_behavior"
-require "time_zone_test_helpers"
+require_relative "../core_ext/date_and_time_behavior"
+require_relative "../time_zone_test_helpers"
 
 class DateExtCalculationsTest < ActiveSupport::TestCase
   def date_time_init(year, month, day, *args)
@@ -21,26 +21,29 @@ class DateExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Date.new(1582, 10, 15), Date.new(1582, 10, 4).tomorrow
   end
 
-  def test_to_s
+  def test_to_fs
     date = Date.new(2005, 2, 21)
-    assert_equal "2005-02-21",          date.to_s
-    assert_equal "21 Feb",              date.to_s(:short)
-    assert_equal "February 21, 2005",   date.to_s(:long)
-    assert_equal "February 21st, 2005", date.to_s(:long_ordinal)
-    assert_equal "2005-02-21",          date.to_s(:db)
-    assert_equal "21 Feb 2005",         date.to_s(:rfc822)
-    assert_equal "2005-02-21",          date.to_s(:iso8601)
+    assert_equal "21 Feb",              date.to_fs(:short)
+    assert_equal "February 21, 2005",   date.to_fs(:long)
+    assert_equal "February 21st, 2005", date.to_fs(:long_ordinal)
+    assert_equal "2005-02-21",          date.to_fs(:db)
+    assert_equal "2005-02-21",          date.to_fs(:inspect)
+    assert_equal "21 Feb 2005",         date.to_fs(:rfc822)
+    assert_equal "21 Feb 2005",         date.to_fs(:rfc2822)
+    assert_equal "2005-02-21",          date.to_fs(:iso8601)
+    assert_equal date.to_s,             date.to_fs(:doesnt_exist)
+    assert_equal "21 Feb",              date.to_formatted_s(:short)
   end
 
-  def test_to_s_with_single_digit_day
+  def test_to_fs_with_single_digit_day
     date = Date.new(2005, 2, 1)
-    assert_equal "2005-02-01",          date.to_s
-    assert_equal "01 Feb",              date.to_s(:short)
-    assert_equal "February 01, 2005",   date.to_s(:long)
-    assert_equal "February 1st, 2005",  date.to_s(:long_ordinal)
-    assert_equal "2005-02-01",          date.to_s(:db)
-    assert_equal "01 Feb 2005",         date.to_s(:rfc822)
-    assert_equal "2005-02-01",          date.to_s(:iso8601)
+    assert_equal "01 Feb",              date.to_fs(:short)
+    assert_equal "February 01, 2005",   date.to_fs(:long)
+    assert_equal "February 1st, 2005",  date.to_fs(:long_ordinal)
+    assert_equal "2005-02-01",          date.to_fs(:db)
+    assert_equal "2005-02-01",          date.to_fs(:inspect)
+    assert_equal "01 Feb 2005",         date.to_fs(:rfc822)
+    assert_equal "2005-02-01",          date.to_fs(:iso8601)
   end
 
   def test_readable_inspect
@@ -95,11 +98,11 @@ class DateExtCalculationsTest < ActiveSupport::TestCase
   end
 
   def test_beginning_of_week_in_calendar_reform
-    assert_equal Date.new(1582, 10, 1), Date.new(1582, 10, 15).beginning_of_week #friday
+    assert_equal Date.new(1582, 10, 1), Date.new(1582, 10, 15).beginning_of_week # friday
   end
 
   def test_end_of_week_in_calendar_reform
-    assert_equal Date.new(1582, 10, 17), Date.new(1582, 10, 4).end_of_week #thursday
+    assert_equal Date.new(1582, 10, 17), Date.new(1582, 10, 4).end_of_week # thursday
   end
 
   def test_end_of_year
@@ -112,32 +115,12 @@ class DateExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Date.new(2005, 4, 30), Date.new(2005, 4, 20).end_of_month
   end
 
-  def test_prev_year_in_leap_years
-    assert_equal Date.new(1999, 2, 28), Date.new(2000, 2, 29).prev_year
-  end
-
-  def test_prev_year_in_calendar_reform
-    assert_equal Date.new(1582, 10, 4), Date.new(1583, 10, 14).prev_year
-  end
-
-  def test_last_year
-    assert_equal Date.new(2004, 6, 5),  Date.new(2005, 6, 5).last_year
-  end
-
   def test_last_year_in_leap_years
     assert_equal Date.new(1999, 2, 28), Date.new(2000, 2, 29).last_year
   end
 
   def test_last_year_in_calendar_reform
     assert_equal Date.new(1582, 10, 4), Date.new(1583, 10, 14).last_year
-  end
-
-  def test_next_year_in_leap_years
-    assert_equal Date.new(2001, 2, 28), Date.new(2000, 2, 29).next_year
-  end
-
-  def test_next_year_in_calendar_reform
-    assert_equal Date.new(1582, 10, 4), Date.new(1581, 10, 10).next_year
   end
 
   def test_advance
@@ -148,7 +131,7 @@ class DateExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Date.new(2012, 9, 28), Date.new(2005, 2, 28).advance(years: 7, months: 7)
     assert_equal Date.new(2013, 10, 3), Date.new(2005, 2, 28).advance(years: 7, months: 19, days: 5)
     assert_equal Date.new(2013, 10, 17), Date.new(2005, 2, 28).advance(years: 7, months: 19, weeks: 2, days: 5)
-    assert_equal Date.new(2005, 2, 28), Date.new(2004, 2, 29).advance(years: 1) #leap day plus one year
+    assert_equal Date.new(2005, 2, 28), Date.new(2004, 2, 29).advance(years: 1) # leap day plus one year
   end
 
   def test_advance_does_first_years_and_then_days
@@ -183,10 +166,6 @@ class DateExtCalculationsTest < ActiveSupport::TestCase
   def test_next_week_in_calendar_reform
     assert_equal Date.new(1582, 10, 15), Date.new(1582, 9, 30).next_week(:friday)
     assert_equal Date.new(1582, 10, 18), Date.new(1582, 10, 4).next_week
-  end
-
-  def test_last_month_on_31st
-    assert_equal Date.new(2004, 2, 29), Date.new(2004, 3, 31).last_month
   end
 
   def test_last_quarter_on_31st
@@ -394,11 +373,11 @@ end
 
 class DateExtBehaviorTest < ActiveSupport::TestCase
   def test_date_acts_like_date
-    assert Date.new.acts_like_date?
+    assert_predicate Date.new, :acts_like_date?
   end
 
   def test_blank?
-    assert_not Date.new.blank?
+    assert_not_predicate Date.new, :blank?
   end
 
   def test_freeze_doesnt_clobber_memoized_instance_methods

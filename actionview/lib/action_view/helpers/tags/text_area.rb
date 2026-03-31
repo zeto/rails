@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "placeholderable"
+require "action_view/helpers/tags/placeholderable"
 
 module ActionView
   module Helpers
@@ -10,7 +10,7 @@ module ActionView
 
         def render
           options = @options.stringify_keys
-          add_default_name_and_id(options)
+          add_default_name_and_field(options)
 
           if size = options.delete("size")
             options["cols"], options["rows"] = size.split("x") if size.respond_to?(:split)

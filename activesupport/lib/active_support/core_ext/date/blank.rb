@@ -2,7 +2,7 @@
 
 require "date"
 
-class Date #:nodoc:
+class Date # :nodoc:
   # No Date is blank:
   #
   #   Date.today.blank? # => false
@@ -10,5 +10,9 @@ class Date #:nodoc:
   # @return [false]
   def blank?
     false
+  end
+
+  def present?
+    true
   end
 end

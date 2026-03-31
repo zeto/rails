@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 module ActionDispatch
   module Journey # :nodoc:
-    # The Routing table. Contains all routes for a system. Routes can be
-    # added to the table by calling Routes#add_route.
+    # The Routing table. Contains all routes for a system. Routes can be added to
+    # the table by calling Routes#add_route.
     class Routes # :nodoc:
       include Enumerable
 
       attr_reader :routes, :custom_routes, :anchored_routes
 
-      def initialize
-        @routes             = []
+      def initialize(routes = [])
+        @routes             = routes
         @ast                = nil
         @anchored_routes    = []
         @custom_routes      = []
@@ -41,7 +43,7 @@ module ActionDispatch
       end
 
       def partition_route(route)
-        if route.path.anchored && route.ast.grep(Nodes::Symbol).all?(&:default_regexp?)
+        if route.path.anchored && route.path.requirements_anchored?
           anchored_routes << route
         else
           custom_routes << route
@@ -50,8 +52,8 @@ module ActionDispatch
 
       def ast
         @ast ||= begin
-          asts = anchored_routes.map(&:ast)
-          Nodes::Or.new(asts) unless asts.empty?
+          nodes = anchored_routes.map(&:ast)
+          Nodes::Or.new(nodes)
         end
       end
 
@@ -70,8 +72,14 @@ module ActionDispatch
         route
       end
 
-      private
+      def visualizer
+        tt     = GTG::Builder.new(ast).transition_table
+        groups = anchored_routes.map(&:ast).group_by(&:to_s)
+        asts   = groups.values.map(&:first)
+        tt.visualizer(asts)
+      end
 
+      private
         def clear_cache!
           @ast                = nil
           @simulator          = nil

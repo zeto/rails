@@ -1,24 +1,13 @@
 # frozen_string_literal: true
 
 require "sneakers/runner"
-require "sneakers/publisher"
 require "timeout"
-
-module Sneakers
-  class Publisher
-    def safe_ensure_connected
-      @mutex.synchronize do
-        ensure_connection! unless connected?
-      end
-    end
-  end
-end
 
 module SneakersJobsManager
   def setup
     ActiveJob::Base.queue_adapter = :sneakers
     Sneakers.configure  heartbeat: 2,
-                        amqp: "amqp://guest:guest@localhost:5672",
+                        amqp: ENV["RABBITMQ_URL"] || "amqp://guest:guest@localhost:5672",
                         vhost: "/",
                         exchange: "active_jobs_sneakers_int_test",
                         exchange_type: :direct,
@@ -28,8 +17,9 @@ module SneakersJobsManager
                         pid_path: Rails.root.join("tmp/sneakers.pid").to_s,
                         log: Rails.root.join("log/sneakers.log").to_s
     unless can_run?
-      puts "Cannot run integration tests for sneakers. To be able to run integration tests for sneakers you need to install and start rabbitmq.\n"
-      exit
+      puts "Cannot run integration tests for Sneakers. To be able to run integration tests for Sneakers you need to install and start RabbitMQ.\n"
+      status = ENV["BUILDKITE"] ? false : true
+      exit status
     end
   end
 
@@ -41,7 +31,7 @@ module SneakersJobsManager
     @pid = fork do
       queues = %w(integration_tests)
       workers = queues.map do |q|
-        worker_klass = "ActiveJobWorker" + Digest::MD5.hexdigest(q)
+        worker_klass = "ActiveJobWorker" + OpenSSL::Digest::MD5.hexdigest(q)
         Sneakers.const_set(worker_klass, Class.new(ActiveJob::QueueAdapters::SneakersAdapter::JobWrapper) do
           from_queue q
         end)
@@ -79,7 +69,7 @@ module SneakersJobsManager
     def bunny_publisher
       @bunny_publisher ||= begin
         p = ActiveJob::QueueAdapters::SneakersAdapter::JobWrapper.send(:publisher)
-        p.safe_ensure_connected
+        p.ensure_connection!
         p
       end
     end

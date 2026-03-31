@@ -8,26 +8,24 @@ module ActiveRecord
         @table_name = table_name
       end
 
-      def type_cast_for_database(attribute_name, value)
-        return value if value.is_a?(Arel::Nodes::BindParam)
-        column = column_for(attribute_name)
-        connection.type_cast_from_column(column, value)
+      def type_cast_for_database(attr_name, value)
+        type = type_for_attribute(attr_name)
+        type.serialize(value)
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
+      def type_for_attribute(attr_name)
+        schema_cache = @klass.schema_cache
 
-        attr_reader :table_name
-        delegate :connection, to: :@klass
+        if schema_cache.data_source_exists?(table_name)
+          column = schema_cache.columns_hash(table_name)[attr_name.to_s]
+          type = column.cast_type if column
+        end
+
+        type || Type.default_value
+      end
 
       private
-
-        def column_for(attribute_name)
-          if connection.schema_cache.data_source_exists?(table_name)
-            connection.schema_cache.columns_hash(table_name)[attribute_name.to_s]
-          end
-        end
+        attr_reader :table_name
     end
   end
 end

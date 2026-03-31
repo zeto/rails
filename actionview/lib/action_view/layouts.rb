@@ -1,15 +1,17 @@
 # frozen_string_literal: true
 
-require_relative "rendering"
+require "action_view/rendering"
 require "active_support/core_ext/module/redefine_method"
 
 module ActionView
+  # = Action View \Layouts
+  #
   # Layouts reverse the common pattern of including shared headers and footers in many templates to isolate changes in
   # repeated setups. The inclusion pattern has pages that look like this:
   #
-  #   <%= render "shared/header" %>
+  #   <%= render "application/header" %>
   #   Hello World
-  #   <%= render "shared/footer" %>
+  #   <%= render "application/footer" %>
   #
   # This approach is a decent way of keeping common structures isolated from the changing content, but it's verbose
   # and if you ever want to change the structure of these two includes, you'll have to change all the templates.
@@ -150,7 +152,7 @@ module ActionView
   # The template will be looked always in <tt>app/views/layouts/</tt> folder. But you can point
   # <tt>layouts</tt> folder direct also. <tt>layout "layouts/demo"</tt> is the same as <tt>layout "demo"</tt>.
   #
-  # Setting the layout to +nil+ forces it to be looked up in the filesystem and fallbacks to the parent behavior if none exists.
+  # Setting the layout to +nil+ forces it to be looked up in the filesystem and falls back to the parent behavior if none exists.
   # Setting it to +nil+ is useful to re-enable template lookup overriding a previous configuration set in the parent:
   #
   #     class ApplicationController < ActionController::Base
@@ -162,7 +164,7 @@ module ActionView
   #     end
   #
   #     class CommentsController < ApplicationController
-  #       # Will search for "comments" layout and fallback "application" layout
+  #       # Will search for "comments" layout and fall back to "application" layout
   #       layout nil
   #     end
   #
@@ -183,7 +185,7 @@ module ActionView
   # be rendered directly, without wrapping a layout around the rendered view.
   #
   # Both the <tt>:only</tt> and <tt>:except</tt> condition can accept an arbitrary number of method references, so
-  # #<tt>except: [ :rss, :text_only ]</tt> is valid, as is <tt>except: :rss</tt>.
+  # <tt>except: [ :rss, :text_only ]</tt> is valid, as is <tt>except: :rss</tt>.
   #
   # == Using a different layout in the action render call
   #
@@ -207,12 +209,10 @@ module ActionView
 
     included do
       class_attribute :_layout, instance_accessor: false
-      class_attribute :_layout_conditions, instance_accessor: false, default: {}
+      class_attribute :_layout_conditions, instance_accessor: false, instance_reader: true, default: {}
 
       _write_layout_method
     end
-
-    delegate :_layout_conditions, to: :class
 
     module ClassMethods
       def inherited(klass) # :nodoc:
@@ -224,7 +224,6 @@ module ActionView
       # that if no layout conditions are used, this method is not used
       module LayoutConditions # :nodoc:
         private
-
           # Determines whether the current action has a layout definition by
           # checking the action name against the :only and :except conditions
           # set by the <tt>layout</tt> method.
@@ -256,14 +255,17 @@ module ActionView
       # true::   raise an ArgumentError
       # nil::    Force default layout behavior with inheritance
       #
-      # Return value of +Proc+ and +Symbol+ arguments should be +String+, +false+, +true+ or +nil+
+      # Return value of +Proc+ and +Symbol+ arguments should be +String+, +false+, +true+, or +nil+
       # with the same meaning as described above.
+      #
       # ==== Parameters
+      #
       # * <tt>layout</tt> - The layout to use.
       #
       # ==== Options (conditions)
-      # * :only   - A list of actions to apply this layout to.
-      # * :except - Apply this layout to all actions but this one.
+      #
+      # * +:only+   - A list of actions to apply this layout to.
+      # * +:except+ - Apply this layout to all actions but this one.
       def layout(layout, conditions = {})
         include LayoutConditions unless conditions.empty?
 
@@ -282,7 +284,7 @@ module ActionView
         silence_redefinition_of_method(:_layout)
 
         prefixes = /\blayouts/.match?(_implied_layout_name) ? [] : ["layouts"]
-        default_behavior = "lookup_context.find_all('#{_implied_layout_name}', #{prefixes.inspect}, false, [], { formats: formats }).first || super"
+        default_behavior = "lookup_context.find_all('#{_implied_layout_name}', #{prefixes.inspect}, false, keys, { formats: formats }).first || super"
         name_clause = if name
           default_behavior
         else
@@ -307,7 +309,7 @@ module ActionView
             RUBY
           when Proc
             define_method :_layout_from_proc, &_layout
-            protected :_layout_from_proc
+            private :_layout_from_proc
             <<-RUBY
               result = _layout_from_proc(#{_layout.arity == 0 ? '' : 'self'})
               return #{default_behavior} if result.nil?
@@ -322,7 +324,8 @@ module ActionView
           end
 
         class_eval <<-RUBY, __FILE__, __LINE__ + 1
-          def _layout(formats)
+          # frozen_string_literal: true
+          def _layout(lookup_context, formats, keys)
             if _conditional_layout?
               #{layout_definition}
             else
@@ -334,7 +337,6 @@ module ActionView
       end
 
       private
-
         # If no layout is supplied, look for a template named the return
         # value of this method.
         #
@@ -345,7 +347,7 @@ module ActionView
         end
     end
 
-    def _normalize_options(options) # :nodoc:
+    def _process_render_template_options(options) # :nodoc:
       super
 
       if _include_layout?(options)
@@ -372,7 +374,6 @@ module ActionView
     end
 
   private
-
     def _conditional_layout?
       true
     end
@@ -388,8 +389,8 @@ module ActionView
       case name
       when String     then _normalize_layout(name)
       when Proc       then name
-      when true       then Proc.new { |formats| _default_layout(formats, true)  }
-      when :default   then Proc.new { |formats| _default_layout(formats, false) }
+      when true       then Proc.new { |lookup_context, formats, keys| _default_layout(lookup_context, formats, keys, true)  }
+      when :default   then Proc.new { |lookup_context, formats, keys| _default_layout(lookup_context, formats, keys, false) }
       when false, nil then nil
       else
         raise ArgumentError,
@@ -398,7 +399,7 @@ module ActionView
     end
 
     def _normalize_layout(value)
-      value.is_a?(String) && value !~ /\blayouts/ ? "layouts/#{value}" : value
+      value.is_a?(String) && !value.match?(/\blayouts/) ? "layouts/#{value}" : value
     end
 
     # Returns the default layout for this controller.
@@ -411,9 +412,9 @@ module ActionView
     #
     # ==== Returns
     # * <tt>template</tt> - The template object for the default layout (or +nil+)
-    def _default_layout(formats, require_layout = false)
+    def _default_layout(lookup_context, formats, keys, require_layout = false)
       begin
-        value = _layout(formats) if action_has_layout?
+        value = _layout(lookup_context, formats, keys) if action_has_layout?
       rescue NameError => e
         raise e, "Could not render layout: #{e.message}"
       end
@@ -427,7 +428,7 @@ module ActionView
     end
 
     def _include_layout?(options)
-      (options.keys & [:body, :plain, :html, :inline, :partial]).empty? || options.key?(:layout)
+      !options.keys.intersect?([:body, :plain, :html, :inline, :partial]) || options.key?(:layout)
     end
   end
 end

@@ -36,6 +36,8 @@ class ActionPackAssertionsController < ActionController::Base
 
   def redirect_external_protocol_relative() redirect_to "//www.rubyonrails.org"; end
 
+  def redirect_permanently() redirect_to "/some/path", status: :moved_permanently end
+
   def response404() head "404 AWOL" end
 
   def response500() head "500 Sorry" end
@@ -175,9 +177,11 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
   end
 
   def test_string_constraint
-    with_routing do |set|
-      set.draw do
-        get "photos", to: "action_pack_assertions#nothing", constraints: { subdomain: "admin" }
+    assert_nothing_raised do
+      with_routing do |set|
+        set.draw do
+          get "photos", to: "action_pack_assertions#nothing", constraints: { subdomain: "admin" }
+        end
       end
     end
   end
@@ -202,7 +206,7 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
         get "route_one", to: "action_pack_assertions#nothing", as: :route_one
         get "route_two", to: "action_pack_assertions#nothing", id: "two", as: :route_two
 
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":controller/:action"
         end
       end
@@ -229,7 +233,7 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
       set.draw do
         get "admin/inner_module", to: "admin/inner_module#index", as: :admin_inner_module
 
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":controller/:action"
         end
       end
@@ -246,7 +250,7 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
       set.draw do
         get "/action_pack_assertions/:id", to: "action_pack_assertions#index", as: :top_level
 
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":controller/:action"
         end
       end
@@ -265,7 +269,7 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
         # this controller exists in the admin namespace as well which is the only difference from previous test
         get "/user/:id", to: "user#index", as: :top_level
 
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":controller/:action"
         end
       end
@@ -276,43 +280,41 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
   end
 
   def test_assert_redirect_failure_message_with_protocol_relative_url
-    begin
-      process :redirect_external_protocol_relative
-      assert_redirected_to "/foo"
-    rescue ActiveSupport::TestCase::Assertion => ex
-      assert_no_match(
-        /#{request.protocol}#{request.host}\/\/www.rubyonrails.org/,
-        ex.message,
-        "protocol relative url was incorrectly normalized"
-      )
-    end
+    process :redirect_external_protocol_relative
+    assert_redirected_to "/foo"
+  rescue ActiveSupport::TestCase::Assertion => ex
+    assert_no_match(
+      /#{request.protocol}#{request.host}\/\/www.rubyonrails.org/,
+      ex.message,
+      "protocol relative URL was incorrectly normalized"
+    )
   end
 
   def test_template_objects_exist
     process :assign_this
-    assert !@controller.instance_variable_defined?(:"@hi")
+    assert_not @controller.instance_variable_defined?(:"@hi")
     assert @controller.instance_variable_get(:"@howdy")
   end
 
   def test_template_objects_missing
     process :nothing
-    assert !@controller.instance_variable_defined?(:@howdy)
+    assert_not @controller.instance_variable_defined?(:@howdy)
   end
 
   def test_empty_flash
     process :flash_me_naked
-    assert flash.empty?
+    assert_empty flash
   end
 
   def test_flash_exist
     process :flash_me
-    assert flash.any?
-    assert flash["hello"].present?
+    assert_predicate flash, :any?
+    assert_predicate flash["hello"], :present?
   end
 
   def test_flash_does_not_exist
     process :nothing
-    assert flash.empty?
+    assert_empty flash
   end
 
   def test_session_exist
@@ -322,7 +324,7 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
 
   def session_does_not_exist
     process :nothing
-    assert session.empty?
+    assert_empty session
   end
 
   def test_redirection_location
@@ -343,46 +345,46 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
 
   def test_server_error_response_code
     process :response500
-    assert @response.server_error?
+    assert_predicate @response, :server_error?
 
     process :response599
-    assert @response.server_error?
+    assert_predicate @response, :server_error?
 
     process :response404
-    assert !@response.server_error?
+    assert_not_predicate @response, :server_error?
   end
 
   def test_missing_response_code
     process :response404
-    assert @response.not_found?
+    assert_predicate @response, :not_found?
   end
 
   def test_client_error_response_code
     process :response404
-    assert @response.client_error?
+    assert_predicate @response, :client_error?
   end
 
   def test_redirect_url_match
     process :redirect_external
-    assert @response.redirect?
+    assert_predicate @response, :redirect?
     assert_match(/rubyonrails/, @response.redirect_url)
-    assert !/perloffrails/.match(@response.redirect_url)
+    assert_no_match(/perloffrails/, @response.redirect_url)
   end
 
   def test_redirection
     process :redirect_internal
-    assert @response.redirect?
+    assert_predicate @response, :redirect?
 
     process :redirect_external
-    assert @response.redirect?
+    assert_predicate @response, :redirect?
 
     process :nothing
-    assert !@response.redirect?
+    assert_not_predicate @response, :redirect?
   end
 
   def test_successful_response_code
     process :nothing
-    assert @response.successful?
+    assert_predicate @response, :successful?
   end
 
   def test_response_object
@@ -442,6 +444,34 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
     }
   end
 
+  def test_assert_redirection_with_custom_message
+    error = assert_raise(ActiveSupport::TestCase::Assertion) do
+      assert_redirected_to "http://test.host/some/path", "wrong redirect"
+    end
+
+    assert_equal("wrong redirect", error.message)
+  end
+
+  def test_assert_redirection_with_status
+    process :redirect_to_path
+    assert_redirected_to "http://test.host/some/path", status: :found
+    assert_raise ActiveSupport::TestCase::Assertion do
+      assert_redirected_to "http://test.host/some/path", status: :moved_permanently
+    end
+    assert_raise ActiveSupport::TestCase::Assertion, "Custom message" do
+      assert_redirected_to "http://test.host/some/path", { status: :moved_permanently }, "Custom message"
+    end
+
+    process :redirect_permanently
+    assert_redirected_to "http://test.host/some/path", status: :moved_permanently
+    assert_raise ActiveSupport::TestCase::Assertion do
+      assert_redirected_to "http://test.host/some/path", status: :found
+    end
+    assert_raise ActiveSupport::TestCase::Assertion, "Custom message" do
+      assert_redirected_to "http://test.host/some/path", { status: :found }, "Custom message"
+    end
+  end
+
   def test_redirected_to_with_nested_controller
     @controller = Admin::InnerModuleController.new
     get :redirect_to_absolute_controller
@@ -465,6 +495,25 @@ class ActionPackAssertionsControllerTest < ActionController::TestCase
     get :show
     assert_response 500
     assert_equal "Boom", response.body
+  end
+
+  def test_assert_in_body
+    post :raise_exception_on_get
+    assert_in_body "request method: POST"
+    assert_not_in_body "request method: GET"
+  end
+
+  def test_url_helper_delegation
+    @controller = ActionPackAssertionsController.new
+    @controller.request = ActionDispatch::TestRequest.create
+
+    with_routing do |set|
+      set.draw do
+        get "/route_one", to: "action_pack_assertions#nothing", as: :route_one
+      end
+
+      assert_equal("/route_one", route_one_path)
+    end
   end
 end
 

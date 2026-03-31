@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../../erb"
+require "rails/generators/erb"
 
 module Erb # :nodoc:
   module Generators # :nodoc:
@@ -29,13 +29,12 @@ module Erb # :nodoc:
       end
 
       private
-
         def formats
           [:text, :html]
         end
 
         def file_name
-          @_file_name ||= super.gsub(/_mailer/i, "")
+          @_file_name ||= super.sub(/_mailer\z/i, "")
         end
     end
   end

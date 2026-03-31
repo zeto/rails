@@ -51,15 +51,78 @@ module ActiveRecord
       assert_equal 3, data.overloaded_float
     end
 
+    test ".type_for_attribute supports attribute aliases" do
+      with_alias = Class.new(OverloadedType) do
+        alias_attribute :overloaded_float, :x
+      end
+
+      assert_equal with_alias.type_for_attribute(:overloaded_float), with_alias.type_for_attribute(:x)
+    end
+
     test "overloaded properties with limit" do
       assert_equal 50, OverloadedType.type_for_attribute("overloaded_string_with_limit").limit
       assert_equal 255, UnoverloadedType.type_for_attribute("overloaded_string_with_limit").limit
     end
 
+    test "overloaded default but keeping its own type" do
+      klass = Class.new(UnoverloadedType) do
+        attribute :overloaded_string_with_limit, default: "the overloaded default"
+      end
+
+      assert_equal 255, UnoverloadedType.type_for_attribute("overloaded_string_with_limit").limit
+      assert_equal 255, klass.type_for_attribute("overloaded_string_with_limit").limit
+
+      assert_nil UnoverloadedType.new.overloaded_string_with_limit
+      assert_equal "the overloaded default", klass.new.overloaded_string_with_limit
+    end
+
+    test "attributes with overridden types keep their type when a default value is configured separately" do
+      child = Class.new(OverloadedType) do
+        attribute :overloaded_float, default: "123"
+      end
+
+      assert_equal OverloadedType.type_for_attribute("overloaded_float"), child.type_for_attribute("overloaded_float")
+      assert_equal 123, child.new.overloaded_float
+    end
+
+    test "extra options are forwarded to the type caster constructor" do
+      klass = Class.new(OverloadedType) do
+        attribute :starts_at, :datetime, precision: 3, limit: 2, scale: 1, default: -> { Time.now.utc }
+      end
+
+      starts_at_type = klass.type_for_attribute(:starts_at)
+
+      assert_equal 3, starts_at_type.precision
+      assert_equal 2, starts_at_type.limit
+      assert_equal 1, starts_at_type.scale
+
+      assert_kind_of Type::DateTime, starts_at_type
+      assert_instance_of Time, klass.new.starts_at
+    end
+
+    test "time zone aware attribute" do
+      with_timezone_config aware_attributes: true, zone: "Pacific Time (US & Canada)" do
+        klass = Class.new(OverloadedType) do
+          attribute :starts_at, :datetime, precision: 3, default: -> { Time.now.utc }
+          attribute :ends_at, default: -> { Time.now.utc }
+        end
+
+        starts_at_type = klass.type_for_attribute(:starts_at)
+        ends_at_type   = klass.type_for_attribute(:ends_at)
+
+        assert_instance_of AttributeMethods::TimeZoneConversion::TimeZoneConverter, starts_at_type
+        assert_instance_of AttributeMethods::TimeZoneConversion::TimeZoneConverter, ends_at_type
+        assert_kind_of Type::DateTime, starts_at_type.__getobj__
+        assert_kind_of Type::DateTime, ends_at_type.__getobj__
+        assert_instance_of ActiveSupport::TimeWithZone, klass.new.starts_at
+        assert_instance_of ActiveSupport::TimeWithZone, klass.new.ends_at
+      end
+    end
+
     test "nonexistent attribute" do
       data = OverloadedType.new(non_existent_decimal: 1)
 
-      assert_equal BigDecimal.new(1), data.non_existent_decimal
+      assert_equal BigDecimal(1), data.non_existent_decimal
       assert_raise ActiveRecord::UnknownAttributeError do
         UnoverloadedType.new(non_existent_decimal: 1)
       end
@@ -100,22 +163,24 @@ module ActiveRecord
 
     test "overloading properties does not attribute method order" do
       attribute_names = OverloadedType.attribute_names
-      assert_equal %w(id overloaded_float unoverloaded_float overloaded_string_with_limit string_with_default non_existent_decimal), attribute_names
+      expected = OverloadedType.column_names + ["non_existent_decimal"]
+      assert_equal expected, attribute_names
     end
 
     test "caches are cleared" do
       klass = Class.new(OverloadedType)
+      column_count = klass.columns.length
 
-      assert_equal 6, klass.attribute_types.length
-      assert_equal 6, klass.column_defaults.length
-      assert_equal 6, klass.attribute_names.length
+      assert_equal column_count + 1, klass.attribute_types.length
+      assert_equal column_count + 1, klass.column_defaults.length
+      assert_equal column_count + 1, klass.attribute_names.length
       assert_not klass.attribute_types.include?("wibble")
 
       klass.attribute :wibble, Type::Value.new
 
-      assert_equal 7, klass.attribute_types.length
-      assert_equal 7, klass.column_defaults.length
-      assert_equal 7, klass.attribute_names.length
+      assert_equal column_count + 2, klass.attribute_types.length
+      assert_equal column_count + 2, klass.column_defaults.length
+      assert_equal column_count + 2, klass.attribute_names.length
       assert_includes klass.attribute_types, "wibble"
     end
 
@@ -146,6 +211,20 @@ module ActiveRecord
 
       assert_equal 1, klass.new.counter
       assert_equal 2, klass.new.counter
+    end
+
+    test "procs for default values are evaluated even after column_defaults is called" do
+      klass = Class.new(OverloadedType) do
+        @@counter = 0
+        attribute :counter, :integer, default: -> { @@counter += 1 }
+      end
+
+      assert_equal 1, klass.new.counter
+
+      # column_defaults will increment the counter since the proc is called
+      klass.column_defaults
+
+      assert_equal 3, klass.new.counter
     end
 
     test "procs are memoized before type casting" do
@@ -211,12 +290,12 @@ module ActiveRecord
     end
 
     test "attributes not backed by database columns are not dirty when unchanged" do
-      refute OverloadedType.new.non_existent_decimal_changed?
+      assert_not_predicate OverloadedType.new, :non_existent_decimal_changed?
     end
 
     test "attributes not backed by database columns are always initialized" do
       OverloadedType.create!
-      model = OverloadedType.first
+      model = OverloadedType.last
 
       assert_nil model.non_existent_decimal
       model.non_existent_decimal = "123"
@@ -228,9 +307,18 @@ module ActiveRecord
         attribute :non_existent_decimal, :decimal, default: 123
       end
       child.create!
-      model = child.first
+      model = child.last
 
       assert_equal 123, model.non_existent_decimal
+    end
+
+    test "attributes not backed by database columns keep their type when a default value is configured separately" do
+      child = Class.new(OverloadedType) do
+        attribute :non_existent_decimal, default: "123"
+      end
+
+      assert_equal OverloadedType.type_for_attribute("non_existent_decimal"), child.type_for_attribute("non_existent_decimal")
+      assert_equal 123, child.new.non_existent_decimal
     end
 
     test "attributes not backed by database columns properly interact with mutation and dirty" do
@@ -239,23 +327,23 @@ module ActiveRecord
         attribute :foo, :string, default: "lol"
       end
       child.create!
-      model = child.first
+      model = child.last
 
       assert_equal "lol", model.foo
 
       model.foo << "asdf"
       assert_equal "lolasdf", model.foo
-      assert model.foo_changed?
+      assert_predicate model, :foo_changed?
 
       model.reload
       assert_equal "lol", model.foo
 
       model.foo = "lol"
-      refute model.changed?
+      assert_not_predicate model, :changed?
     end
 
     test "attributes not backed by database columns appear in inspect" do
-      inspection = OverloadedType.new.inspect
+      inspection = OverloadedType.new.full_inspect
 
       assert_includes inspection, "non_existent_decimal"
     end
@@ -267,5 +355,58 @@ module ActiveRecord
       assert_equal 1, klass.new(no_type: 1).no_type
       assert_equal "foo", klass.new(no_type: "foo").no_type
     end
+
+    test "attributes do not require a connection is established" do
+      assert_not_called(ActiveRecord::Base, :lease_connection) do
+        Class.new(OverloadedType) do
+          attribute :foo, :string
+        end
+      end
+    end
+
+    test "unknown type error is raised" do
+      assert_raise(ArgumentError) do
+        OverloadedType.attribute :foo, :unknown
+      end
+    end
+
+    test "immutable_strings_by_default changes schema inference for string columns" do
+      with_immutable_strings do
+        OverloadedType.reset_column_information
+        immutable_string_type = Type.lookup(:immutable_string).class
+        assert_instance_of immutable_string_type, OverloadedType.type_for_attribute("inferred_string")
+      end
+    end
+
+    test "immutable_strings_by_default retains limit information" do
+      with_immutable_strings do
+        OverloadedType.reset_column_information
+        assert_equal 255, OverloadedType.type_for_attribute("inferred_string").limit
+      end
+    end
+
+    test "immutable_strings_by_default does not affect `attribute :foo, :string`" do
+      with_immutable_strings do
+        OverloadedType.reset_column_information
+        default_string_type = Type.lookup(:string).class
+        assert_instance_of default_string_type, OverloadedType.type_for_attribute("string_with_default")
+      end
+    end
+
+    test "serialize boolean for both string types" do
+      default_string_type = Type.lookup(:string)
+      immutable_string_type = Type.lookup(:immutable_string)
+      assert_equal default_string_type.serialize(true), immutable_string_type.serialize(true)
+      assert_equal default_string_type.serialize(false), immutable_string_type.serialize(false)
+    end
+
+    private
+      def with_immutable_strings
+        old_value = ActiveRecord::Base.immutable_strings_by_default
+        ActiveRecord::Base.immutable_strings_by_default = true
+        yield
+      ensure
+        ActiveRecord::Base.immutable_strings_by_default = old_value
+      end
   end
 end

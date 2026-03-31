@@ -7,7 +7,7 @@ require "concurrent/utility/processor_counter"
 
 module ActiveJob
   module QueueAdapters
-    # == Active Job Async adapter
+    # = Active Job Async adapter
     #
     # The Async adapter runs jobs with an in-process thread pool.
     #
@@ -30,29 +30,29 @@ module ActiveJob
     # The adapter uses a {Concurrent Ruby}[https://github.com/ruby-concurrency/concurrent-ruby] thread pool to schedule and execute
     # jobs. Since jobs share a single thread pool, long-running jobs will block
     # short-lived jobs. Fine for dev/test; bad for production.
-    class AsyncAdapter
-      # See {Concurrent::ThreadPoolExecutor}[https://ruby-concurrency.github.io/concurrent-ruby/Concurrent/ThreadPoolExecutor.html] for executor options.
+    class AsyncAdapter < AbstractAdapter
+      # See {Concurrent::ThreadPoolExecutor}[https://ruby-concurrency.github.io/concurrent-ruby/master/Concurrent/ThreadPoolExecutor.html] for executor options.
       def initialize(**executor_options)
         @scheduler = Scheduler.new(**executor_options)
       end
 
-      def enqueue(job) #:nodoc:
+      def enqueue(job) # :nodoc:
         @scheduler.enqueue JobWrapper.new(job), queue_name: job.queue_name
       end
 
-      def enqueue_at(job, timestamp) #:nodoc:
+      def enqueue_at(job, timestamp) # :nodoc:
         @scheduler.enqueue_at JobWrapper.new(job), timestamp, queue_name: job.queue_name
       end
 
       # Gracefully stop processing jobs. Finishes in-progress work and handles
       # any new jobs following the executor's fallback policy (`caller_runs`).
       # Waits for termination by default. Pass `wait: false` to continue.
-      def shutdown(wait: true) #:nodoc:
+      def shutdown(wait: true) # :nodoc:
         @scheduler.shutdown wait: wait
       end
 
       # Used for our test suite.
-      def immediate=(immediate) #:nodoc:
+      def immediate=(immediate) # :nodoc:
         @scheduler.immediate = immediate
       end
 
@@ -60,7 +60,7 @@ module ActiveJob
       # performing them in-process, but we do so anyway for parity with other
       # adapters and deployment environments. Otherwise, serialization bugs
       # may creep in undetected.
-      class JobWrapper #:nodoc:
+      class JobWrapper # :nodoc:
         def initialize(job)
           job.provider_job_id = SecureRandom.uuid
           @job_data = job.serialize
@@ -71,10 +71,10 @@ module ActiveJob
         end
       end
 
-      class Scheduler #:nodoc:
+      class Scheduler # :nodoc:
         DEFAULT_EXECUTOR_OPTIONS = {
           min_threads:     0,
-          max_threads:     Concurrent.processor_count,
+          max_threads:     ENV.fetch("RAILS_MAX_THREADS", 5).to_i,
           auto_terminate:  true,
           idletime:        60, # 1 minute
           max_queue:       0, # unlimited
@@ -86,7 +86,11 @@ module ActiveJob
         def initialize(**options)
           self.immediate = false
           @immediate_executor = Concurrent::ImmediateExecutor.new
-          @async_executor = Concurrent::ThreadPoolExecutor.new(DEFAULT_EXECUTOR_OPTIONS.merge(options))
+          @async_executor = Concurrent::ThreadPoolExecutor.new(
+            name: "ActiveJob-async-scheduler",
+            **DEFAULT_EXECUTOR_OPTIONS,
+            **options
+          )
         end
 
         def enqueue(job, queue_name:)
@@ -95,7 +99,7 @@ module ActiveJob
 
         def enqueue_at(job, timestamp, queue_name:)
           delay = timestamp - Time.current.to_f
-          if delay > 0
+          if !immediate && delay > 0
             Concurrent::ScheduledTask.execute(delay, args: [job], executor: executor, &:perform)
           else
             enqueue(job, queue_name: queue_name)

@@ -3,14 +3,15 @@
 require "active_support/core_ext/module/attr_internal"
 require "active_support/core_ext/module/attribute_accessors"
 require "active_support/ordered_options"
-require_relative "log_subscriber"
-require_relative "helpers"
-require_relative "context"
-require_relative "template"
-require_relative "lookup_context"
+require "action_view/log_subscriber"
+require "action_view/structured_event_subscriber"
+require "action_view/helpers"
+require "action_view/context"
+require "action_view/template"
+require "action_view/lookup_context"
 
-module ActionView #:nodoc:
-  # = Action View Base
+module ActionView # :nodoc:
+  # = Action View \Base
   #
   # Action View templates can be written in several ways.
   # If the template file has a <tt>.erb</tt> extension, then it uses the erubi[https://rubygems.org/gems/erubi]
@@ -27,7 +28,7 @@ module ActionView #:nodoc:
   #     Name: <%= person.name %><br/>
   #   <% end %>
   #
-  # The loop is setup in regular embedding tags <tt><% %></tt>, and the name is written using the output embedding tag <tt><%= %></tt>. Note that this
+  # The loop is set up in regular embedding tags <tt><% %></tt>, and the name is written using the output embedding tag <tt><%= %></tt>. Note that this
   # is not just a usage suggestion. Regular output functions like print or puts won't work with ERB templates. So this would be wrong:
   #
   #   <%# WRONG %>
@@ -44,9 +45,9 @@ module ActionView #:nodoc:
   # Using sub templates allows you to sidestep tedious replication and extract common display structures in shared templates. The
   # classic example is the use of a header and footer (even though the Action Pack-way would be to use Layouts):
   #
-  #   <%= render "shared/header" %>
+  #   <%= render "application/header" %>
   #   Something really specific and terrific
-  #   <%= render "shared/footer" %>
+  #   <%= render "application/footer" %>
   #
   # As you see, we use the output embeddings for the render methods. The render call itself will just return a string holding the
   # result of the rendering. The output embedding writes it to the current template.
@@ -55,7 +56,7 @@ module ActionView #:nodoc:
   # variables defined using the regular embedding tags. Like this:
   #
   #   <% @page_title = "A Wonderful Hello" %>
-  #   <%= render "shared/header" %>
+  #   <%= render "application/header" %>
   #
   # Now the header can pick up on the <tt>@page_title</tt> variable and use it for outputting a title tag:
   #
@@ -65,9 +66,9 @@ module ActionView #:nodoc:
   #
   # You can pass local variables to sub templates by using a hash with the variable names as keys and the objects as values:
   #
-  #   <%= render "shared/header", { headline: "Welcome", person: person } %>
+  #   <%= render "application/header", { headline: "Welcome", person: person } %>
   #
-  # These can now be accessed in <tt>shared/header</tt> with:
+  # These can now be accessed in <tt>application/header</tt> with:
   #
   #   Headline: <%= headline %>
   #   First name: <%= person.first_name %>
@@ -80,10 +81,27 @@ module ActionView #:nodoc:
   # This is useful in cases where you aren't sure if the local variable has been assigned. Alternatively, you could also use
   # <tt>defined? headline</tt> to first check if the variable has been assigned before using it.
   #
+  # By default, templates will accept any <tt>locals</tt> as keyword arguments. To restrict what <tt>locals</tt> a template accepts, add a <tt>locals:</tt> magic comment:
+  #
+  #   <%# locals: (headline:) %>
+  #
+  #   Headline: <%= headline %>
+  #
+  # In cases where the local variables are optional, declare the keyword argument with a default value:
+  #
+  #   <%# locals: (headline: nil) %>
+  #
+  #   <% unless headline.nil? %>
+  #   Headline: <%= headline %>
+  #   <% end %>
+  #
+  # Read more about strict locals in {Action View Overview}[https://guides.rubyonrails.org/action_view_overview.html#strict-locals]
+  # in the guides.
+  #
   # === Template caching
   #
-  # By default, Rails will compile each template to a method in order to render it. When you alter a template,
-  # Rails will check the file's modification time and recompile it in development mode.
+  # By default, \Rails will compile each template to a method in order to render it. When you alter a template,
+  # \Rails will check the file's modification time and recompile it in development mode.
   #
   # == Builder
   #
@@ -136,13 +154,12 @@ module ActionView #:nodoc:
   #     end
   #   end
   #
-  # For more information on Builder please consult the {source
-  # code}[https://github.com/jimweirich/builder].
+  # For more information on Builder please consult the {source code}[https://github.com/rails/builder].
   class Base
     include Helpers, ::ERB::Util, Context
 
     # Specify the proc used to decorate input tags that refer to attributes with errors.
-    cattr_accessor :field_error_proc, default: Proc.new { |html_tag, instance| "<div class=\"field_with_errors\">#{html_tag}</div>".html_safe }
+    cattr_accessor :field_error_proc, default: Proc.new { |html_tag, instance| content_tag :div, html_tag, class: "field_with_errors" }
 
     # How to complete the streaming when an exception occurs.
     # This is our best guess: first try to close the attribute, then the tag.
@@ -151,19 +168,23 @@ module ActionView #:nodoc:
     # Specify whether rendering within namespaced controllers should prefix
     # the partial paths for ActiveModel objects with the namespace.
     # (e.g., an Admin::PostsController would render @post using /admin/posts/_post.erb)
-    cattr_accessor :prefix_partial_path_with_controller_namespace, default: true
+    class_attribute :prefix_partial_path_with_controller_namespace, default: true
 
     # Specify default_formats that can be rendered.
     cattr_accessor :default_formats
 
-    # Specify whether an error should be raised for missing translations
-    cattr_accessor :raise_on_missing_translations, default: false
-
     # Specify whether submit_tag should automatically disable on click
     cattr_accessor :automatically_disable_submit_tag, default: true
 
+    # Annotate rendered view with file names
+    cattr_accessor :annotate_rendered_view_with_filenames, default: false
+
     class_attribute :_routes
     class_attribute :logger
+
+    # Specify whether to omit autocomplete="off" on hidden inputs generated by helpers.
+    # Configured via `config.action_view.remove_hidden_field_autocomplete`
+    cattr_accessor :remove_hidden_field_autocomplete, default: false
 
     class << self
       delegate :erb_trim_mode=, to: "ActionView::Template::Handlers::ERB"
@@ -176,38 +197,118 @@ module ActionView #:nodoc:
         ActionView::Resolver.caching = value
       end
 
-      def xss_safe? #:nodoc:
+      def xss_safe? # :nodoc:
         true
+      end
+
+      def with_empty_template_cache # :nodoc:
+        subclass = Class.new(self) {
+          # We can't implement these as self.class because subclasses will
+          # share the same template cache as superclasses, so "changed?" won't work
+          # correctly.
+          define_method(:compiled_method_container)           { subclass }
+          define_singleton_method(:compiled_method_container) { subclass }
+
+          def inspect
+            "#<ActionView::Base:#{'%#016x' % (object_id << 1)}>"
+          end
+        }
+      end
+
+      def changed?(other) # :nodoc:
+        compiled_method_container != other.compiled_method_container
       end
     end
 
-    attr_accessor :view_renderer
+    attr_reader :view_renderer, :lookup_context
     attr_internal :config, :assigns
 
-    delegate :lookup_context, to: :view_renderer
     delegate :formats, :formats=, :locale, :locale=, :view_paths, :view_paths=, to: :lookup_context
 
     def assign(new_assigns) # :nodoc:
-      @_assigns = new_assigns.each { |key, value| instance_variable_set("@#{key}", value) }
+      @_assigns = new_assigns
+      new_assigns.each { |key, value| instance_variable_set("@#{key}", value) }
     end
 
-    def initialize(context = nil, assigns = {}, controller = nil, formats = nil) #:nodoc:
-      @_config = ActiveSupport::InheritableOptions.new
+    # :stopdoc:
 
-      if context.is_a?(ActionView::Renderer)
-        @view_renderer = context
-      else
-        lookup_context = context.is_a?(ActionView::LookupContext) ?
-          context : ActionView::LookupContext.new(context)
-        lookup_context.formats  = formats if formats
-        lookup_context.prefixes = controller._prefixes if controller
-        @view_renderer = ActionView::Renderer.new(lookup_context)
-      end
+    def self.empty
+      with_view_paths([])
+    end
 
-      @cache_hit = {}
-      assign(assigns)
+    def self.with_view_paths(view_paths, assigns = {}, controller = nil)
+      with_context ActionView::LookupContext.new(view_paths), assigns, controller
+    end
+
+    def self.with_context(context, assigns = {}, controller = nil)
+      new context, assigns, controller
+    end
+
+    # :startdoc:
+
+    def initialize(lookup_context, assigns, controller) # :nodoc:
+      @lookup_context = lookup_context
+
+      @view_renderer = ActionView::Renderer.new @lookup_context
+      @current_template = nil
+
       assign_controller(controller)
       _prepare_context
+
+      super()
+
+      # Assigns must be called last to minimize the number of shapes
+      assign(assigns)
+    end
+
+    def _run(method, template, locals, buffer, add_to_stack: true, has_strict_locals: false, &block)
+      _old_output_buffer, _old_virtual_path, _old_template = @output_buffer, @virtual_path, @current_template
+      @current_template = template if add_to_stack
+      @output_buffer = buffer
+
+      if has_strict_locals
+        begin
+          public_send(method, locals, buffer, **locals, &block)
+        rescue ArgumentError => argument_error
+          public_send_line = __LINE__ - 2
+          frame = argument_error.backtrace_locations[1]
+          if frame.path == __FILE__ && frame.lineno == public_send_line
+            raise StrictLocalsError.new(argument_error, @current_template)
+          end
+          raise
+        end
+      else
+        public_send(method, locals, buffer, &block)
+      end
+    ensure
+      @output_buffer, @virtual_path, @current_template = _old_output_buffer, _old_virtual_path, _old_template
+    end
+
+    def compiled_method_container
+      raise NotImplementedError, <<~msg.squish
+        Subclasses of ActionView::Base must implement `compiled_method_container`
+        or use the class method `with_empty_template_cache` for constructing
+        an ActionView::Base subclass that has an empty cache.
+      msg
+    end
+
+    def in_rendering_context(options)
+      old_view_renderer  = @view_renderer
+      old_lookup_context = @lookup_context
+
+      if !lookup_context.html_fallback_for_js && options[:formats]
+        formats = Array(options[:formats])
+        if formats == [:js]
+          formats << :html
+        end
+        @lookup_context = lookup_context.with_prepended_formats(formats)
+        @view_renderer = ActionView::Renderer.new @lookup_context
+      end
+
+      yield @view_renderer
+    ensure
+      @view_renderer = old_view_renderer
+      @lookup_context = old_lookup_context
     end
 
     ActiveSupport.run_load_hooks(:action_view, self)

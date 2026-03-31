@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "abstract_unit"
-require "set"
 
 module AbstractController
   module Testing
@@ -52,6 +51,10 @@ module AbstractController
         render "index.erb"
       end
 
+      def with_final_newline
+        render "with_final_newline.erb"
+      end
+
       def index_to_string
         self.response_body = render_to_string "index"
       end
@@ -82,6 +85,14 @@ module AbstractController
       test "rendering templates works" do
         @controller.process(:index)
         assert_equal "Hello from index.erb", @controller.response_body
+      end
+
+      test "stripping final newline works" do
+        ActionView::Template::Handlers::ERB.strip_trailing_newlines = true
+        @controller.process(:with_final_newline)
+        assert_equal "Hello from with_final_newline.erb", @controller.response_body
+      ensure
+        ActionView::Template::Handlers::ERB.strip_trailing_newlines = false
       end
 
       test "render_to_string works with a String as an argument" do
@@ -200,7 +211,6 @@ module AbstractController
         end
 
         def render_to_body(options = {})
-          options[:_layout] = options[:layout] || _default_layout({})
           super
         end
     end
@@ -229,20 +239,20 @@ module AbstractController
     end
 
     class ActionMissingRespondToActionController < AbstractController::Base
-    # No actions
-    private
-      def action_missing(action_name)
-        self.response_body = "success"
-      end
+      # No actions
+
+      private
+        def action_missing(action_name)
+          self.response_body = "success"
+        end
     end
 
-    class RespondToActionController < AbstractController::Base;
+    class RespondToActionController < AbstractController::Base
       def index() self.response_body = "success" end
 
       def fail()  self.response_body = "fail"    end
 
     private
-
       def method_for_action(action_name)
         action_name.to_s != "fail" && action_name
       end

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "../configuration"
+require "rails/configuration"
 
 module Rails
   class Railtie
@@ -10,7 +10,7 @@ module Rails
       end
 
       # Expose the eager_load_namespaces at "module" level for convenience.
-      def self.eager_load_namespaces #:nodoc:
+      def self.eager_load_namespaces # :nodoc:
         @@eager_load_namespaces ||= []
       end
 
@@ -55,7 +55,7 @@ module Rails
         ActiveSupport.on_load(:before_configuration, yield: true, &block)
       end
 
-      # Third configurable block to run. Does not run if +config.cache_classes+
+      # Third configurable block to run. Does not run if +config.eager_load+
       # set to false.
       def before_eager_load(&block)
         ActiveSupport.on_load(:before_eager_load, yield: true, &block)
@@ -69,6 +69,11 @@ module Rails
       # Last configurable block to run. Called after frameworks initialize.
       def after_initialize(&block)
         ActiveSupport.on_load(:after_initialize, yield: true, &block)
+      end
+
+      # Called after application routes have been loaded.
+      def after_routes_loaded(&block)
+        ActiveSupport.on_load(:after_routes_loaded, yield: true, &block)
       end
 
       # Array of callbacks defined by #to_prepare.
@@ -87,10 +92,17 @@ module Rails
       end
 
     private
+      def actual_method?(key)
+        !@@options.key?(key) && respond_to?(key)
+      end
 
       def method_missing(name, *args, &blk)
-        if name.to_s =~ /=$/
-          @@options[$`.to_sym] = args.first
+        if name.end_with?("=")
+          key = name[0..-2].to_sym
+          if actual_method?(key)
+            raise NoMethodError.new("Cannot assign to `#{key}`, it is a configuration method")
+          end
+          @@options[key] = args.first
         elsif @@options.key?(name)
           @@options[name]
         else

@@ -7,7 +7,7 @@ module ActiveRecord
   # but can be queried by name. Example:
   #
   #   class Conversation < ActiveRecord::Base
-  #     enum status: [ :active, :archived ]
+  #     enum :status, [ :active, :archived ]
   #   end
   #
   #   # conversation.update! status: 0
@@ -31,7 +31,9 @@ module ActiveRecord
   # as well. With the above example:
   #
   #   Conversation.active
+  #   Conversation.not_active
   #   Conversation.archived
+  #   Conversation.not_archived
   #
   # Of course, you can also query them directly if the scopes don't fit your
   # needs:
@@ -39,19 +41,33 @@ module ActiveRecord
   #   Conversation.where(status: [:active, :archived])
   #   Conversation.where.not(status: :active)
   #
-  # You can set the default value from the database declaration, like:
+  # Defining scopes can be disabled by setting +:scopes+ to +false+.
   #
-  #   create_table :conversations do |t|
-  #     t.column :status, :integer, default: 0
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], scopes: false
   #   end
   #
-  # Good practice is to let the first declared status be the default.
+  # You can set the default enum value by setting +:default+, like:
   #
-  # Finally, it's also possible to explicitly map the relation between attribute and
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], default: :active
+  #   end
+  #
+  #   conversation = Conversation.new
+  #   conversation.status # => "active"
+  #
+  # It's possible to explicitly map the relation between attribute and
   # database integer with a hash:
   #
   #   class Conversation < ActiveRecord::Base
-  #     enum status: { active: 0, archived: 1 }
+  #     enum :status, active: 0, archived: 1
+  #   end
+  #
+  # Finally it's also possible to use a string column to persist the enumerated value.
+  # Note that this will likely lead to slower database queries:
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, active: "active", archived: "archived"
   #   end
   #
   # Note that when an array is used, the implicit mapping from the values to database
@@ -66,7 +82,7 @@ module ActiveRecord
   #
   # In rare circumstances you might need to access the mapping directly.
   # The mappings are exposed through a class method with the pluralized attribute
-  # name, which return the mapping in a +HashWithIndifferentAccess+:
+  # name, which return the mapping in a ActiveSupport::HashWithIndifferentAccess :
   #
   #   Conversation.statuses[:active]    # => 0
   #   Conversation.statuses["archived"] # => 1
@@ -76,14 +92,14 @@ module ActiveRecord
   #
   #   Conversation.where("status <> ?", Conversation.statuses[:archived])
   #
-  # You can use the +:_prefix+ or +:_suffix+ options when you need to define
+  # You can use the +:prefix+ or +:suffix+ options when you need to define
   # multiple enums with same values. If the passed value is +true+, the methods
   # are prefixed/suffixed with the name of the enum. It is also possible to
   # supply a custom value:
   #
   #   class Conversation < ActiveRecord::Base
-  #     enum status: [:active, :archived], _suffix: true
-  #     enum comments_status: [:active, :inactive], _prefix: :comments
+  #     enum :status, [ :active, :archived ], suffix: true
+  #     enum :comments_status, [ :active, :inactive ], prefix: :comments
   #   end
   #
   # With the above example, the bang and predicate methods along with the
@@ -94,141 +110,298 @@ module ActiveRecord
   #
   #   conversation.comments_inactive!
   #   conversation.comments_active? # => false
-
+  #
+  # If you want to disable the auto-generated methods on the model, you can do
+  # so by setting the +:instance_methods+ option to false:
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], instance_methods: false
+  #   end
+  #
+  # By default, an +ArgumentError+ will be raised when assigning an invalid value:
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ]
+  #   end
+  #
+  #   conversation = Conversation.new
+  #
+  #   conversation.status = :unknown # 'unknown' is not a valid status (ArgumentError)
+  #
+  # If, instead, you want the enum value to be validated before saving, use the
+  # +:validate+ option:
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], validate: true
+  #   end
+  #
+  #   conversation = Conversation.new
+  #
+  #   conversation.status = :unknown
+  #   conversation.valid? # => false
+  #
+  #   conversation.status = nil
+  #   conversation.valid? # => false
+  #
+  #   conversation.status = :active
+  #   conversation.valid? # => true
+  #
+  # You may also pass additional validation options:
+  #
+  #   class Conversation < ActiveRecord::Base
+  #     enum :status, [ :active, :archived ], validate: { allow_nil: true }
+  #   end
+  #
+  #   conversation = Conversation.new
+  #
+  #   conversation.status = :unknown
+  #   conversation.valid? # => false
+  #
+  #   conversation.status = nil
+  #   conversation.valid? # => true
+  #
+  #   conversation.status = :active
+  #   conversation.valid? # => true
   module Enum
     def self.extended(base) # :nodoc:
       base.class_attribute(:defined_enums, instance_writer: false, default: {})
     end
 
-    def inherited(base) # :nodoc:
-      base.defined_enums = defined_enums.deep_dup
-      super
-    end
-
     class EnumType < Type::Value # :nodoc:
       delegate :type, to: :subtype
 
-      def initialize(name, mapping, subtype)
+      def initialize(name, mapping, subtype, raise_on_invalid_values: true)
         @name = name
         @mapping = mapping
         @subtype = subtype
+        @_raise_on_invalid_values = raise_on_invalid_values
       end
 
       def cast(value)
-        return if value.blank?
-
         if mapping.has_key?(value)
           value.to_s
         elsif mapping.has_value?(value)
           mapping.key(value)
         else
-          assert_valid_value(value)
+          value.presence
         end
       end
 
       def deserialize(value)
-        return if value.nil?
         mapping.key(subtype.deserialize(value))
       end
 
       def serialize(value)
-        mapping.fetch(value, value)
+        subtype.serialize(mapping.fetch(value, value))
+      end
+
+      def serializable?(value, &block)
+        subtype.serializable?(mapping.fetch(value, value), &block)
       end
 
       def assert_valid_value(value)
+        return unless @_raise_on_invalid_values
+
         unless value.blank? || mapping.has_key?(value) || mapping.has_value?(value)
           raise ArgumentError, "'#{value}' is not a valid #{name}"
         end
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
+      attr_reader :subtype
 
-        attr_reader :name, :mapping, :subtype
+      private
+        attr_reader :name, :mapping
     end
 
-    def enum(definitions)
-      klass = self
-      enum_prefix = definitions.delete(:_prefix)
-      enum_suffix = definitions.delete(:_suffix)
-      definitions.each do |name, values|
+    def enum(name, values = nil, **options)
+      values, options = options, {} unless values
+      _enum(name, values, **options)
+    end
+
+    private
+      def _enum(name, values, prefix: nil, suffix: nil, scopes: true, instance_methods: true, validate: false, **options)
+        values = assert_valid_enum_definition_values(values)
+        assert_valid_enum_options(options)
+
         # statuses = { }
         enum_values = ActiveSupport::HashWithIndifferentAccess.new
         name = name.to_s
 
         # def self.statuses() statuses end
         detect_enum_conflict!(name, name.pluralize, true)
-        singleton_class.send(:define_method, name.pluralize) { enum_values }
+        singleton_class.define_method(name.pluralize) { enum_values }
         defined_enums[name] = enum_values
 
         detect_enum_conflict!(name, name)
         detect_enum_conflict!(name, "#{name}=")
 
-        attr = attribute_alias?(name) ? attribute_alias(name) : name
-        decorate_attribute_type(attr, :enum) do |subtype|
-          EnumType.new(attr, enum_values, subtype)
+        attribute(name, **options)
+
+        decorate_attributes([name]) do |_name, subtype|
+          if subtype == ActiveModel::Type.default_value
+            raise "Undeclared attribute type for enum '#{name}' in #{self.name}. Enums must be" \
+              " backed by a database column or declared with an explicit type" \
+              " via `attribute`."
+          end
+
+          subtype = subtype.subtype if EnumType === subtype
+          EnumType.new(name, enum_values, subtype, raise_on_invalid_values: !validate)
         end
 
+        value_method_names = []
         _enum_methods_module.module_eval do
+          prefix = if prefix
+            prefix == true ? "#{name}_" : "#{prefix}_"
+          end
+
+          suffix = if suffix
+            suffix == true ? "_#{name}" : "_#{suffix}"
+          end
+
           pairs = values.respond_to?(:each_pair) ? values.each_pair : values.each_with_index
           pairs.each do |label, value|
-            if enum_prefix == true
-              prefix = "#{name}_"
-            elsif enum_prefix
-              prefix = "#{enum_prefix}_"
-            end
-            if enum_suffix == true
-              suffix = "_#{name}"
-            elsif enum_suffix
-              suffix = "_#{enum_suffix}"
-            end
-
-            value_method_name = "#{prefix}#{label}#{suffix}"
             enum_values[label] = value
             label = label.to_s
 
-            # def active?() status == "active" end
-            klass.send(:detect_enum_conflict!, name, "#{value_method_name}?")
-            define_method("#{value_method_name}?") { self[attr] == label }
+            value_method_name = "#{prefix}#{label}#{suffix}"
+            value_method_names << value_method_name
+            define_enum_methods(name, value_method_name, value, scopes, instance_methods)
 
-            # def active!() update!(status: 0) end
-            klass.send(:detect_enum_conflict!, name, "#{value_method_name}!")
-            define_method("#{value_method_name}!") { update!(attr => value) }
+            method_friendly_label = label.gsub(/[\W&&[:ascii:]]+/, "_")
+            value_method_alias = "#{prefix}#{method_friendly_label}#{suffix}"
 
-            # scope :active, -> { where(status: 0) }
-            klass.send(:detect_enum_conflict!, name, value_method_name, true)
-            klass.scope value_method_name, -> { where(attr => value) }
+            if value_method_alias != value_method_name && !value_method_names.include?(value_method_alias)
+              value_method_names << value_method_alias
+              define_enum_methods(name, value_method_alias, value, scopes, instance_methods)
+            end
           end
         end
-      end
-    end
+        detect_negative_enum_conditions!(value_method_names) if scopes
 
-    private
+        if validate
+          validate = {} unless Hash === validate
+          validates_inclusion_of name, in: enum_values.keys, **validate
+        end
+
+        enum_values.freeze
+      end
+
+      def inherited(base)
+        base.defined_enums = defined_enums.deep_dup
+        super
+      end
+
+      class EnumMethods < Module # :nodoc:
+        def initialize(klass)
+          @klass = klass
+        end
+
+        private
+          attr_reader :klass
+
+          def define_enum_methods(name, value_method_name, value, scopes, instance_methods)
+            if instance_methods
+              # def active?() status_for_database == 0 end
+              klass.send(:detect_enum_conflict!, name, "#{value_method_name}?")
+              define_method("#{value_method_name}?") { public_send(:"#{name}_for_database") == value }
+
+              # def active!() update!(status: 0) end
+              klass.send(:detect_enum_conflict!, name, "#{value_method_name}!")
+              define_method("#{value_method_name}!") { update!(name => value) }
+            end
+
+            if scopes
+              # scope :active, -> { where(status: 0) }
+              klass.send(:detect_enum_conflict!, name, value_method_name, true)
+              klass.scope value_method_name, -> { where(name => value) }
+
+              # scope :not_active, -> { where.not(status: 0) }
+              klass.send(:detect_enum_conflict!, name, "not_#{value_method_name}", true)
+              klass.scope "not_#{value_method_name}", -> { where(predicate_builder[name, value, :is_distinct_from]) }
+            end
+          end
+      end
+      private_constant :EnumMethods
+
       def _enum_methods_module
         @_enum_methods_module ||= begin
-          mod = Module.new
+          mod = EnumMethods.new(self)
           include mod
           mod
         end
       end
 
-      ENUM_CONFLICT_MESSAGE = \
-        "You tried to define an enum named \"%{enum}\" on the model \"%{klass}\", but " \
-        "this will generate a %{type} method \"%{method}\", which is already defined " \
-        "by %{source}."
+      def assert_valid_enum_definition_values(values)
+        case values
+        when Hash
+          if values.empty?
+            raise ArgumentError, "Enum values #{values} must not be empty."
+          end
 
-      def detect_enum_conflict!(enum_name, method_name, klass_method = false)
-        if klass_method && dangerous_class_method?(method_name)
-          raise_conflict_error(enum_name, method_name, type: "class")
-        elsif !klass_method && dangerous_attribute_method?(method_name)
-          raise_conflict_error(enum_name, method_name)
-        elsif !klass_method && method_defined_within?(method_name, _enum_methods_module, Module)
-          raise_conflict_error(enum_name, method_name, source: "another enum")
+          if values.keys.any?(&:blank?)
+            raise ArgumentError, "Enum values #{values} must not contain a blank name."
+          end
+
+          values = values.transform_values do |value|
+            value.is_a?(Symbol) ? value.name : value
+          end
+
+          values.each_value do |value|
+            case value
+            when String, Integer, Float, true, false, nil
+              # noop
+            else
+              raise ArgumentError, "Enum values #{values} must be only booleans, integers, floats, symbols or strings, got: #{value.class}"
+            end
+          end
+
+        when Array
+          if values.empty?
+            raise ArgumentError, "Enum values #{values} must not be empty."
+          end
+
+          unless values.all?(Symbol) || values.all?(String)
+            raise ArgumentError, "Enum values #{values} must only contain symbols or strings."
+          end
+
+          if values.any?(&:blank?)
+            raise ArgumentError, "Enum values #{values} must not contain a blank name."
+          end
+        else
+          raise ArgumentError, "Enum values #{values} must be either a non-empty hash or an array."
+        end
+
+        values
+      end
+
+      def assert_valid_enum_options(options)
+        invalid_keys = options.keys & %i[_prefix _suffix _scopes _default _instance_methods]
+        unless invalid_keys.empty?
+          raise ArgumentError, "invalid option(s): #{invalid_keys.map(&:inspect).join(", ")}. Valid options are: :prefix, :suffix, :scopes, :default, :instance_methods, and :validate."
         end
       end
 
-      def raise_conflict_error(enum_name, method_name, type: "instance", source: "Active Record")
+      ENUM_CONFLICT_MESSAGE = \
+        "You tried to define an enum named \"%{enum}\" on the model \"%{klass}\", but " \
+        "this will generate %{type} method \"%{method}\", which is already defined " \
+        "by %{source}."
+      private_constant :ENUM_CONFLICT_MESSAGE
+
+      def detect_enum_conflict!(enum_name, method_name, klass_method = false)
+        if klass_method && dangerous_class_method?(method_name)
+          raise_conflict_error(enum_name, method_name, "a class")
+        elsif klass_method && method_defined_within?(method_name, Relation)
+          raise_conflict_error(enum_name, method_name, "a class", source: Relation.name)
+        elsif klass_method && method_name.to_sym == :id
+          raise_conflict_error(enum_name, method_name, "an instance")
+        elsif !klass_method && dangerous_attribute_method?(method_name)
+          raise_conflict_error(enum_name, method_name, "an instance")
+        elsif !klass_method && method_defined_within?(method_name, _enum_methods_module, Module)
+          raise_conflict_error(enum_name, method_name, "an instance", source: "another enum")
+        end
+      end
+
+      def raise_conflict_error(enum_name, method_name, type, source: "Active Record")
         raise ArgumentError, ENUM_CONFLICT_MESSAGE % {
           enum: enum_name,
           klass: name,
@@ -236,6 +409,19 @@ module ActiveRecord
           method: method_name,
           source: source
         }
+      end
+
+      def detect_negative_enum_conditions!(method_names)
+        return unless logger
+
+        method_names.select { |m| m.start_with?("not_") }.each do |potential_not|
+          inverted_form = potential_not.sub("not_", "")
+          if method_names.include?(inverted_form)
+            logger.warn "Enum element '#{potential_not}' in #{self.name} uses the prefix 'not_'." \
+              " This has caused a conflict with auto generated negative scopes." \
+              " Avoid using enum elements starting with 'not' where the positive form is also an element."
+          end
+        end
       end
   end
 end

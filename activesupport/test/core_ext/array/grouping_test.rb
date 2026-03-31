@@ -1,18 +1,9 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../../abstract_unit"
 require "active_support/core_ext/array"
 
 class GroupingTest < ActiveSupport::TestCase
-  def setup
-    # In Ruby < 2.4, test we avoid Integer#/ (redefined by mathn)
-    Fixnum.send :private, :/ unless 0.class == Integer
-  end
-
-  def teardown
-    Fixnum.send :public, :/ unless 0.class == Integer
-  end
-
   def test_in_groups_of_with_perfect_fit
     groups = []
     ("a".."i").to_a.in_groups_of(3) do |group|
@@ -94,10 +85,27 @@ class GroupingTest < ActiveSupport::TestCase
       (1..7).to_a.in_groups(3, false)
   end
 
-  def test_in_groups_invalid_argument
+  def test_in_groups_of_invalid_argument
     assert_raises(ArgumentError) { [].in_groups_of(0) }
     assert_raises(ArgumentError) { [].in_groups_of(-1) }
     assert_raises(ArgumentError) { [].in_groups_of(nil) }
+  end
+
+  def test_in_groups_invalid_argument
+    assert_raises(ArgumentError) { [].in_groups(0) }
+    assert_raises(ArgumentError) { [].in_groups(-1) }
+    assert_raises(ArgumentError) { [].in_groups(nil) }
+  end
+
+  def test_in_groups_of_with_float
+    result = [1, 2, 3, 4, 5].in_groups_of(2.9)
+    assert_equal [[1, 2], [3, 4], [5]], result
+  end
+
+  def test_in_groups_with_float
+    result = [1, 2, 3, 4, 5].in_groups(2.9)
+    assert_equal 2, result.size
+    assert_equal [[1, 2, 3], [4, 5, nil]], result
   end
 end
 
@@ -116,7 +124,7 @@ class SplitTest < ActiveSupport::TestCase
   def test_split_with_block
     a = (1..10).to_a
     assert_equal [[1, 2], [4, 5], [7, 8], [10]], a.split { |i| i % 3 == 0 }
-    assert_equal [1, 2, 3, 4, 5, 6, 7, 8, 9 , 10], a
+    assert_equal [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], a
   end
 
   def test_split_with_edge_values

@@ -1,18 +1,17 @@
 # frozen_string_literal: true
 
-require "active_support/concern"
-require_relative "actions/create_migration"
+require "rails/generators/actions/create_migration"
 
 module Rails
   module Generators
     # Holds common methods for migrations. It assumes that migrations have the
     # [0-9]*_name format and can be used by other frameworks (like Sequel)
-    # just by implementing the next migration version method.
+    # just by implementing the +next_migration_number+ method.
     module Migration
       extend ActiveSupport::Concern
       attr_reader :migration_number, :migration_file_name, :migration_class_name
 
-      module ClassMethods #:nodoc:
+      module ClassMethods # :nodoc:
         def migration_lookup_at(dirname)
           Dir.glob("#{dirname}/[0-9]*_*.rb")
         end
@@ -46,10 +45,10 @@ module Rails
       end
 
       # Creates a migration template at the given destination. The difference
-      # to the default template method is that the migration version is appended
+      # to the default template method is that the migration number is prepended
       # to the destination file name.
       #
-      # The migration version, migration file name, migration class name are
+      # The migration number, migration file name, migration class name are
       # available as instance variables in the template to be rendered.
       #
       #   migration_template "migration.rb", "db/migrate/add_foo_to_bar.rb"
@@ -57,14 +56,14 @@ module Rails
         source = File.expand_path(find_in_source_paths(source.to_s))
 
         set_migration_assigns!(destination)
-        context = instance_eval("binding")
 
         dir, base = File.split(destination)
         numbered_destination = File.join(dir, ["%migration_number%", base].join("_"))
 
-        create_migration numbered_destination, nil, config do
-          ERB.new(::File.binread(source), nil, "-", "@output_buffer").result(context)
+        file = create_migration numbered_destination, nil, config do
+          ERB.new(::File.binread(source), trim_mode: "-", eoutvar: "@output_buffer").result(binding)
         end
+        Rails::Generators.add_generated_file(file)
       end
     end
   end

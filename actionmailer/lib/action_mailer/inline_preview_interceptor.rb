@@ -3,8 +3,10 @@
 require "base64"
 
 module ActionMailer
+  # = Action Mailer \InlinePreviewInterceptor
+  #
   # Implements a mailer preview interceptor that converts image tag src attributes
-  # that use inline cid: style urls to data: style urls so that they are visible
+  # that use inline +cid:+ style URLs to +data:+ style URLs so that they are visible
   # when previewing an HTML email in a web browser.
   #
   # This interceptor is enabled by default. To disable it, delete it from the
@@ -17,15 +19,15 @@ module ActionMailer
 
     include Base64
 
-    def self.previewing_email(message) #:nodoc:
+    def self.previewing_email(message) # :nodoc:
       new(message).transform!
     end
 
-    def initialize(message) #:nodoc:
+    def initialize(message) # :nodoc:
       @message = message
     end
 
-    def transform! #:nodoc:
+    def transform! # :nodoc:
       return message if html_part.blank?
 
       html_part.body = html_part.decoded.gsub(PATTERN) do |match|
@@ -40,9 +42,7 @@ module ActionMailer
     end
 
     private
-      def message
-        @message
-      end
+      attr_reader :message
 
       def html_part
         @html_part ||= message.html_part

@@ -1,83 +1,158 @@
 # frozen_string_literal: true
 
+require "pathname"
 require "active_support"
+require "rails/command/helpers/editor"
+require "rails/command/environment_argument"
 
 module Rails
   module Command
     class CredentialsCommand < Rails::Command::Base # :nodoc:
-      no_commands do
-        def help
-          say "Usage:\n  #{self.class.banner}"
-          say ""
-          say self.class.desc
-        end
-      end
+      include Helpers::Editor
+      include EnvironmentArgument
 
+      require_relative "credentials_command/diffing"
+      include Diffing
+
+      desc "edit", "Open the decrypted credentials in `$VISUAL` or `$EDITOR` for editing"
       def edit
-        require_application_and_environment!
+        load_environment_config!
+        load_generators
 
-        ensure_editor_available || (return)
-        ensure_master_key_has_been_added
+        if environment_specified?
+          @content_path = "config/credentials/#{environment}.yml.enc" unless config.overridden?(:content_path)
+          @key_path = "config/credentials/#{environment}.key" unless config.overridden?(:key_path)
+        end
+
+        ensure_encryption_key_has_been_added
         ensure_credentials_have_been_added
+        ensure_diffing_driver_is_configured
 
         change_credentials_in_system_editor
-
-        say "New credentials encrypted and saved."
-      rescue Interrupt
-        say "Aborted changing credentials: nothing saved."
-      rescue ActiveSupport::EncryptedFile::MissingKeyError => error
-        say error.message
       end
 
+      desc "show", "Show the decrypted credentials"
       def show
-        require_application_and_environment!
-        say Rails.application.credentials.read.presence ||
-          "No credentials have been added yet. Use bin/rails credentials:edit to change that."
+        load_environment_config!
+
+        say credentials.read.presence || missing_credentials!
+      end
+
+      desc "diff", "Enroll/disenroll in decrypted diffs of credentials using git"
+      option :enroll, type: :boolean, default: false,
+        desc: "Enroll project in credentials file diffing with `git diff`"
+      option :disenroll, type: :boolean, default: false,
+        desc: "Disenroll project from credentials file diffing"
+      def diff(content_path = nil)
+        if @content_path = content_path
+          self.environment = extract_environment_from_path(content_path)
+          load_environment_config!
+
+          say credentials.read.presence || credentials.content_path.read
+        else
+          disenroll_project_from_credentials_diffing if options[:disenroll]
+          enroll_project_in_credentials_diffing if options[:enroll]
+        end
+      rescue ActiveSupport::MessageEncryptor::InvalidMessage
+        say credentials.content_path.read
+      end
+
+      desc "fetch PATH", "Fetch a value in the decrypted credentials"
+      def fetch(path)
+        load_environment_config!
+
+        if (yaml = credentials.read)
+          begin
+            value = YAML.load(yaml)
+            value = path.split(".").inject(value) do |doc, key|
+              doc.fetch(key)
+            end
+            say value.to_s
+          rescue KeyError, NoMethodError
+            say_error "Invalid or missing credential path: #{path}"
+            exit 1
+          end
+        else
+          missing_credentials!
+        end
       end
 
       private
-        def ensure_editor_available
-          if ENV["EDITOR"].to_s.empty?
-            say "No $EDITOR to open credentials in. Assign one like this:"
-            say ""
-            say %(EDITOR="mate --wait" bin/rails credentials:edit)
-            say ""
-            say "For editors that fork and exit immediately, it's important to pass a wait flag,"
-            say "otherwise the credentials will be saved immediately with no chance to edit."
-
-            false
-          else
-            true
-          end
+        def config
+          Rails.application.config.credentials
         end
 
-        def ensure_master_key_has_been_added
-          master_key_generator.add_master_key_file
+        def content_path
+          @content_path ||= relative_path(config.content_path)
+        end
+
+        def key_path
+          @key_path ||= relative_path(config.key_path)
+        end
+
+        def credentials
+          @credentials ||= Rails.application.encrypted(content_path, key_path: key_path)
+        end
+
+        def ensure_encryption_key_has_been_added
+          return if credentials.key?
+
+          require "rails/generators/rails/encryption_key_file/encryption_key_file_generator"
+
+          encryption_key_file_generator = Rails::Generators::EncryptionKeyFileGenerator.new
+          encryption_key_file_generator.add_key_file(key_path)
         end
 
         def ensure_credentials_have_been_added
-          credentials_generator.add_credentials_file_silently
+          require "rails/generators/rails/credentials/credentials_generator"
+
+          Rails::Generators::CredentialsGenerator.new(
+            [content_path, key_path],
+            skip_secret_key_base: environment_specified? && %w[development test].include?(environment),
+            quiet: true
+          ).invoke_all
         end
 
         def change_credentials_in_system_editor
-          Rails.application.credentials.change do |tmp_path|
-            system("#{ENV["EDITOR"]} #{tmp_path}")
+          using_system_editor do
+            say "Editing #{content_path}..."
+            credentials.change { |tmp_path| system_editor(tmp_path) }
+            say "File encrypted and saved."
+            warn_if_credentials_are_invalid
           end
+        rescue ActiveSupport::EncryptedFile::MissingKeyError => error
+          say error.message
+        rescue ActiveSupport::MessageEncryptor::InvalidMessage
+          say "Couldn't decrypt #{content_path}. Perhaps you passed the wrong key?"
         end
 
-
-        def master_key_generator
-          require_relative "../../generators"
-          require_relative "../../generators/rails/master_key/master_key_generator"
-
-          Rails::Generators::MasterKeyGenerator.new
+        def warn_if_credentials_are_invalid
+          credentials.validate!
+        rescue ActiveSupport::EncryptedConfiguration::InvalidContentError => error
+          say "WARNING: #{error.message}", :red
+          say ""
+          say "Your application will not be able to load '#{content_path}' until the error has been fixed.", :red
         end
 
-        def credentials_generator
-          require_relative "../../generators"
-          require_relative "../../generators/rails/credentials/credentials_generator"
+        def missing_credentials!
+          if !credentials.key?
+            say_error "Missing '#{key_path}' to decrypt credentials. See `#{executable(:help)}`."
+          else
+            say_error "File '#{content_path}' does not exist. Use `#{executable(:edit)}` to change that."
+          end
+          exit 1
+        end
 
-          Rails::Generators::CredentialsGenerator.new
+        def relative_path(path)
+          Rails.root.join(path).relative_path_from(Rails.root).to_s
+        end
+
+        def extract_environment_from_path(path)
+          available_environments.find { |env| path.end_with?("#{env}.yml.enc") } || extract_custom_environment(path)
+        end
+
+        def extract_custom_environment(path)
+          path =~ %r{config/credentials/(.+)\.yml\.enc} && $1
         end
     end
   end

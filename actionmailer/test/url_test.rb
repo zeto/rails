@@ -8,11 +8,16 @@ end
 
 AppRoutes = ActionDispatch::Routing::RouteSet.new
 
-class ActionMailer::Base
-  include AppRoutes.url_helpers
+AppRoutes.draw do
+  get "/welcome" => "foo#bar", as: "welcome"
+  get "/dummy_model" => "foo#baz", as: "dummy_model"
+  get "/welcome/greeting", to: "welcome#greeting"
+  get "/a/b(/:id)", to: "a#b"
 end
 
 class UrlTestMailer < ActionMailer::Base
+  include AppRoutes.url_helpers
+
   default_url_options[:host] = "www.basecamphq.com"
 
   configure do |c|
@@ -36,7 +41,7 @@ end
 class ActionMailerUrlTest < ActionMailer::TestCase
   class DummyModel
     def self.model_name
-      OpenStruct.new(route_key: "dummy_model")
+      Struct.new(:route_key, :name).new("dummy_model", nil)
     end
 
     def persisted?
@@ -50,10 +55,6 @@ class ActionMailerUrlTest < ActionMailer::TestCase
     def to_model
       self
     end
-  end
-
-  def encode(text, charset = "UTF-8")
-    quoted_printable(text, charset)
   end
 
   def new_mail(charset = "UTF-8")
@@ -80,14 +81,6 @@ class ActionMailerUrlTest < ActionMailer::TestCase
   def test_url_for
     UrlTestMailer.delivery_method = :test
 
-    AppRoutes.draw do
-      ActiveSupport::Deprecation.silence do
-        get ":controller(/:action(/:id))"
-        get "/welcome" => "foo#bar", as: "welcome"
-        get "/dummy_model" => "foo#baz", as: "dummy_model"
-      end
-    end
-
     # string
     assert_url_for "http://foo/", "http://foo/"
 
@@ -105,18 +98,11 @@ class ActionMailerUrlTest < ActionMailer::TestCase
     assert_url_for "/dummy_model", DummyModel
 
     # array
-    assert_url_for "/dummy_model" , [DummyModel]
+    assert_url_for "/dummy_model", [DummyModel]
   end
 
   def test_signed_up_with_url
     UrlTestMailer.delivery_method = :test
-
-    AppRoutes.draw do
-      ActiveSupport::Deprecation.silence do
-        get ":controller(/:action(/:id))"
-        get "/welcome" => "foo#bar", as: "welcome"
-      end
-    end
 
     expected = new_mail
     expected.to      = @recipient

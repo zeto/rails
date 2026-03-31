@@ -1,44 +1,76 @@
 # frozen_string_literal: true
 
 module ActiveJob
+  # Raised during job payload deserialization when it references an uninitialized job class.
+  class UnknownJobClassError < NameError
+    def initialize(job_class_name)
+      super("Failed to instantiate job, class `#{job_class_name}` doesn't exist", job_class_name)
+    end
+  end
+
+  # = Active Job \Core
+  #
   # Provides general behavior that will be included into every Active Job
   # object that inherits from ActiveJob::Base.
   module Core
     extend ActiveSupport::Concern
 
-    included do
-      # Job arguments
-      attr_accessor :arguments
-      attr_writer :serialized_arguments
+    # Job arguments
+    attr_accessor :arguments
+    attr_writer :serialized_arguments
 
-      # Timestamp when the job should be performed
-      attr_accessor :scheduled_at
+    # Time when the job should be performed
+    attr_accessor :scheduled_at
 
-      # Job Identifier
-      attr_accessor :job_id
+    # Job Identifier
+    attr_accessor :job_id
 
-      # Queue in which the job will reside.
-      attr_writer :queue_name
+    # Queue in which the job will reside.
+    attr_writer :queue_name
 
-      # Priority that the job will have (lower is more priority).
-      attr_writer :priority
+    # Priority that the job will have (lower is more priority).
+    attr_writer :priority
 
-      # ID optionally provided by adapter
-      attr_accessor :provider_job_id
+    # ID optionally provided by adapter
+    attr_accessor :provider_job_id
 
-      # Number of times this job has been executed (which increments on every retry, like after an exception).
-      attr_accessor :executions
+    # Number of times this job has been executed (which increments on every retry, like after an exception).
+    attr_accessor :executions
 
-      # I18n.locale to be used during the job.
-      attr_accessor :locale
+    # Hash that contains the number of times this job handled errors for each specific retry_on declaration.
+    # Keys are the string representation of the exceptions listed in the retry_on declaration,
+    # while its associated value holds the number of executions where the corresponding retry_on
+    # declaration handled one of its listed exceptions.
+    attr_accessor :exception_executions
+
+    # I18n.locale to be used during the job.
+    attr_accessor :locale
+
+    # Timezone to be used during the job.
+    attr_accessor :timezone
+
+    # Track when a job was enqueued
+    attr_accessor :enqueued_at
+
+    # Track whether the adapter received the job successfully.
+    attr_writer :successfully_enqueued # :nodoc:
+
+    def successfully_enqueued?
+      @successfully_enqueued
     end
+
+    # Track any exceptions raised by the backend so callers can inspect the errors.
+    attr_accessor :enqueue_error
 
     # These methods will be included into any Active Job object, adding
     # helpers for de/serialization and creation of job instances.
     module ClassMethods
       # Creates a new job instance from a hash created with +serialize+
       def deserialize(job_data)
-        job = job_data["job_class"].constantize.new
+        job_class = job_data["job_class"].safe_constantize
+        raise UnknownJobClassError, job_data["job_class"] unless job_class
+
+        job = job_class.new
         job.deserialize(job_data)
         job
       end
@@ -72,12 +104,16 @@ module ActiveJob
       @arguments  = arguments
       @job_id     = SecureRandom.uuid
       @queue_name = self.class.queue_name
+      @scheduled_at = nil
       @priority   = self.class.priority
       @executions = 0
+      @exception_executions = {}
+      @timezone   = Time.zone&.name
     end
+    ruby2_keywords(:initialize)
 
     # Returns a hash with the job data that can safely be passed to the
-    # queueing adapter.
+    # queuing adapter.
     def serialize
       {
         "job_class"  => self.class.name,
@@ -85,9 +121,13 @@ module ActiveJob
         "provider_job_id" => provider_job_id,
         "queue_name" => queue_name,
         "priority"   => priority,
-        "arguments"  => serialize_arguments(arguments),
+        "arguments"  => serialize_arguments_if_needed(arguments),
         "executions" => executions,
-        "locale"     => I18n.locale.to_s
+        "exception_executions" => exception_executions,
+        "locale"     => locale || I18n.locale.to_s,
+        "timezone"   => timezone,
+        "enqueued_at" => Time.now.utc.iso8601(9),
+        "scheduled_at" => scheduled_at ? scheduled_at.utc.iso8601(9) : nil,
       }
     end
 
@@ -97,17 +137,23 @@ module ActiveJob
     # ==== Examples
     #
     #    class DeliverWebhookJob < ActiveJob::Base
+    #      attr_writer :attempt_number
+    #
+    #      def attempt_number
+    #        @attempt_number ||= 0
+    #      end
+    #
     #      def serialize
-    #        super.merge('attempt_number' => (@attempt_number || 0) + 1)
+    #        super.merge('attempt_number' => attempt_number + 1)
     #      end
     #
     #      def deserialize(job_data)
     #        super
-    #        @attempt_number = job_data['attempt_number']
+    #        self.attempt_number = job_data['attempt_number']
     #      end
     #
-    #      rescue_from(TimeoutError) do |exception|
-    #        raise exception if @attempt_number > 5
+    #      rescue_from(Timeout::Error) do |exception|
+    #        raise exception if attempt_number > 5
     #        retry_job(wait: 10)
     #      end
     #    end
@@ -118,23 +164,57 @@ module ActiveJob
       self.priority             = job_data["priority"]
       self.serialized_arguments = job_data["arguments"]
       self.executions           = job_data["executions"]
+      self.exception_executions = job_data["exception_executions"]
       self.locale               = job_data["locale"] || I18n.locale.to_s
+      self.timezone             = job_data["timezone"] || Time.zone&.name
+      self.enqueued_at          = deserialize_time(job_data["enqueued_at"]) if job_data["enqueued_at"]
+      self.scheduled_at         = deserialize_time(job_data["scheduled_at"]) if job_data["scheduled_at"]
+    end
+
+    # Configures the job with the given options.
+    def set(options = {}) # :nodoc:
+      self.scheduled_at = options[:wait].seconds.from_now if options[:wait]
+      self.scheduled_at = options[:wait_until] if options[:wait_until]
+      self.queue_name   = self.class.queue_name_from_part(options[:queue]) if options[:queue]
+      self.priority     = options[:priority].to_i if options[:priority]
+
+      self
     end
 
     private
+      def serialize_arguments_if_needed(arguments)
+        if arguments_serialized?
+          @serialized_arguments
+        else
+          serialize_arguments(arguments)
+        end
+      end
+
       def deserialize_arguments_if_needed
-        if defined?(@serialized_arguments) && @serialized_arguments.present?
+        if arguments_serialized?
           @arguments = deserialize_arguments(@serialized_arguments)
           @serialized_arguments = nil
         end
       end
 
-      def serialize_arguments(serialized_args)
-        Arguments.serialize(serialized_args)
+      def serialize_arguments(arguments)
+        Arguments.serialize(arguments)
       end
 
       def deserialize_arguments(serialized_args)
         Arguments.deserialize(serialized_args)
+      end
+
+      def arguments_serialized?
+        @serialized_arguments
+      end
+
+      def deserialize_time(time)
+        if time.is_a?(Time)
+          time
+        else
+          Time.iso8601(time)
+        end
       end
   end
 end

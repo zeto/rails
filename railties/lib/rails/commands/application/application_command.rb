@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-require_relative "../../generators"
-require_relative "../../generators/rails/app/app_generator"
+require "rails/generators"
+require "rails/generators/rails/app/app_generator"
 
 module Rails
   module Generators
@@ -17,6 +17,8 @@ module Rails
   module Command
     class ApplicationCommand < Base # :nodoc:
       hide_command!
+
+      self.bin = "rails"
 
       def help
         perform # Punt help output to the generator.

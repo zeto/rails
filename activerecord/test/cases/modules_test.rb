@@ -24,7 +24,7 @@ class ModulesTest < ActiveRecord::TestCase
   teardown do
     # reinstate the constants that we undefined in the setup
     @undefined_consts.each do |constant, value|
-      Object.send :const_set, constant, value unless value.nil?
+      Object.const_set constant, value unless value.nil?
     end
 
     ActiveRecord::Base.store_full_sti_class = true
@@ -32,7 +32,7 @@ class ModulesTest < ActiveRecord::TestCase
 
   def test_module_spanning_associations
     firm = MyApplication::Business::Firm.first
-    assert !firm.clients.empty?, "Firm should have clients"
+    assert_not firm.clients.empty?, "Firm should have clients"
     assert_nil firm.class.table_name.match("::"), "Firm shouldn't have the module appear in its table name"
   end
 
@@ -155,7 +155,7 @@ class ModulesTest < ActiveRecord::TestCase
     ActiveRecord::Base.store_full_sti_class = true
 
     collection = Shop::Collection.first
-    assert !collection.products.empty?, "Collection should have products"
+    assert_not collection.products.empty?, "Collection should have products"
     assert_nothing_raised { collection.destroy }
   ensure
     ActiveRecord::Base.store_full_sti_class = old
@@ -166,7 +166,7 @@ class ModulesTest < ActiveRecord::TestCase
     ActiveRecord::Base.store_full_sti_class = true
 
     product = Shop::Product.first
-    assert !product.variants.empty?, "Product should have variants"
+    assert_not product.variants.empty?, "Product should have variants"
     assert_nothing_raised { product.destroy }
   ensure
     ActiveRecord::Base.store_full_sti_class = old

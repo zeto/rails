@@ -1,29 +1,40 @@
 # frozen_string_literal: true
 
-require_relative "../http/request"
-require "active_support/core_ext/uri"
+# :markup: markdown
+
 require "active_support/core_ext/array/extract_options"
 require "rack/utils"
 require "action_controller/metal/exceptions"
-require_relative "endpoint"
+require "action_dispatch/routing/endpoint"
 
 module ActionDispatch
   module Routing
     class Redirect < Endpoint # :nodoc:
       attr_reader :status, :block
 
-      def initialize(status, block)
+      def initialize(status, block, source_location)
         @status = status
         @block  = block
+        @source_location = source_location
       end
 
       def redirect?; true; end
 
       def call(env)
-        serve Request.new env
+        ActiveSupport::Notifications.instrument("redirect.action_dispatch") do |payload|
+          request = Request.new(env)
+          response = build_response(request)
+
+          payload[:status] = @status
+          payload[:location] = response.headers["Location"]
+          payload[:request] = request
+          payload[:source_location] = @source_location if @source_location
+
+          response.to_a
+        end
       end
 
-      def serve(req)
+      def build_response(req)
         uri = URI.parse(path(req.path_parameters, req))
 
         unless uri.host
@@ -40,15 +51,15 @@ module ActionDispatch
 
         req.commit_flash
 
-        body = %(<html><body>You are being <a href="#{ERB::Util.unwrapped_html_escape(uri.to_s)}">redirected</a>.</body></html>)
+        body = ""
 
         headers = {
           "Location" => uri.to_s,
-          "Content-Type" => "text/html",
+          "Content-Type" => "text/html; charset=#{ActionDispatch::Response.default_charset}",
           "Content-Length" => body.length.to_s
         }
 
-        [ status, headers, [body] ]
+        ActionDispatch::Response.new(status, headers, body)
       end
 
       def path(params, request)
@@ -61,19 +72,19 @@ module ActionDispatch
 
       private
         def relative_path?(path)
-          path && !path.empty? && path[0] != "/"
+          path && !path.empty? && !path.start_with?("/")
         end
 
         def escape(params)
-          Hash[params.map { |k, v| [k, Rack::Utils.escape(v)] }]
+          params.transform_values { |v| Rack::Utils.escape(v) }
         end
 
         def escape_fragment(params)
-          Hash[params.map { |k, v| [k, Journey::Router::Utils.escape_fragment(v)] }]
+          params.transform_values { |v| Journey::Router::Utils.escape_fragment(v) }
         end
 
         def escape_path(params)
-          Hash[params.map { |k, v| [k, Journey::Router::Utils.escape_path(v)] }]
+          params.transform_values { |v| Journey::Router::Utils.escape_path(v) }
         end
     end
 
@@ -139,62 +150,71 @@ module ActionDispatch
     module Redirection
       # Redirect any path to another path:
       #
-      #   get "/stories" => redirect("/posts")
+      #     get "/stories" => redirect("/posts")
       #
-      # This will redirect the user, while ignoring certain parts of the request, including query string, etc.
-      # <tt>/stories</tt>, <tt>/stories?foo=bar</tt>, etc all redirect to <tt>/posts</tt>.
+      # This will redirect the user, while ignoring certain parts of the request,
+      # including query string, etc. `/stories`, `/stories?foo=bar`, etc all redirect
+      # to `/posts`.
+      #
+      # The redirect will use a `301 Moved Permanently` status code by default. This
+      # can be overridden with the `:status` option:
+      #
+      #     get "/stories" => redirect("/posts", status: 307)
       #
       # You can also use interpolation in the supplied redirect argument:
       #
-      #   get 'docs/:article', to: redirect('/wiki/%{article}')
+      #     get 'docs/:article', to: redirect('/wiki/%{article}')
       #
-      # Note that if you return a path without a leading slash then the URL is prefixed with the
-      # current SCRIPT_NAME environment variable. This is typically '/' but may be different in
-      # a mounted engine or where the application is deployed to a subdirectory of a website.
+      # Note that if you return a path without a leading slash then the URL is
+      # prefixed with the current SCRIPT_NAME environment variable. This is typically
+      # '/' but may be different in a mounted engine or where the application is
+      # deployed to a subdirectory of a website.
       #
       # Alternatively you can use one of the other syntaxes:
       #
-      # The block version of redirect allows for the easy encapsulation of any logic associated with
-      # the redirect in question. Either the params and request are supplied as arguments, or just
-      # params, depending of how many arguments your block accepts. A string is required as a
-      # return value.
+      # The block version of redirect allows for the easy encapsulation of any logic
+      # associated with the redirect in question. Either the params and request are
+      # supplied as arguments, or just params, depending of how many arguments your
+      # block accepts. A string is required as a return value.
       #
-      #   get 'jokes/:number', to: redirect { |params, request|
-      #     path = (params[:number].to_i.even? ? "wheres-the-beef" : "i-love-lamp")
-      #     "http://#{request.host_with_port}/#{path}"
-      #   }
+      #     get 'jokes/:number', to: redirect { |params, request|
+      #       path = (params[:number].to_i.even? ? "wheres-the-beef" : "i-love-lamp")
+      #       "http://#{request.host_with_port}/#{path}"
+      #     }
       #
-      # Note that the +do end+ syntax for the redirect block wouldn't work, as Ruby would pass
-      # the block to +get+ instead of +redirect+. Use <tt>{ ... }</tt> instead.
+      # Note that the `do end` syntax for the redirect block wouldn't work, as Ruby
+      # would pass the block to `get` instead of `redirect`. Use `{ ... }` instead.
       #
-      # The options version of redirect allows you to supply only the parts of the URL which need
-      # to change, it also supports interpolation of the path similar to the first example.
+      # The options version of redirect allows you to supply only the parts of the URL
+      # which need to change, it also supports interpolation of the path similar to
+      # the first example.
       #
-      #   get 'stores/:name',       to: redirect(subdomain: 'stores', path: '/%{name}')
-      #   get 'stores/:name(*all)', to: redirect(subdomain: 'stores', path: '/%{name}%{all}')
-      #   get '/stories', to: redirect(path: '/posts')
+      #     get 'stores/:name',       to: redirect(subdomain: 'stores', path: '/%{name}')
+      #     get 'stores/:name(*all)', to: redirect(subdomain: 'stores', path: '/%{name}%{all}')
+      #     get '/stories', to: redirect(path: '/posts')
       #
-      # This will redirect the user, while changing only the specified parts of the request,
-      # for example the +path+ option in the last example.
-      # <tt>/stories</tt>, <tt>/stories?foo=bar</tt>, redirect to <tt>/posts</tt> and <tt>/posts?foo=bar</tt> respectively.
+      # This will redirect the user, while changing only the specified parts of the
+      # request, for example the `path` option in the last example. `/stories`,
+      # `/stories?foo=bar`, redirect to `/posts` and `/posts?foo=bar` respectively.
       #
-      # Finally, an object which responds to call can be supplied to redirect, allowing you to reuse
-      # common redirect routes. The call method must accept two arguments, params and request, and return
-      # a string.
+      # Finally, an object which responds to call can be supplied to redirect,
+      # allowing you to reuse common redirect routes. The call method must accept two
+      # arguments, params and request, and return a string.
       #
-      #   get 'accounts/:name' => redirect(SubdomainRedirector.new('api'))
+      #     get 'accounts/:name' => redirect(SubdomainRedirector.new('api'))
       #
       def redirect(*args, &block)
-        options = args.extract_options!
-        status  = options.delete(:status) || 301
-        path    = args.shift
+        options         = args.extract_options!
+        status          = options.delete(:status) || 301
+        path            = args.shift
+        source_location = caller[0] if ActionDispatch.verbose_redirect_logs
 
-        return OptionRedirect.new(status, options) if options.any?
-        return PathRedirect.new(status, path) if String === path
+        return OptionRedirect.new(status, options, source_location) if options.any?
+        return PathRedirect.new(status, path, source_location) if String === path
 
         block = path if path.respond_to? :call
         raise ArgumentError, "redirection argument not supported" unless block
-        Redirect.new status, block
+        Redirect.new status, block, source_location
       end
     end
   end

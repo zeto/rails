@@ -1,9 +1,5 @@
 # frozen_string_literal: true
 
-require "active_support/core_ext/array"
-require "active_support/core_ext/hash/except"
-require "active_support/core_ext/kernel/singleton_class"
-
 module ActiveRecord
   # = Active Record \Named \Scopes
   module Scoping
@@ -23,30 +19,35 @@ module ActiveRecord
         #
         # You can define a scope that applies to all finders using
         # {default_scope}[rdoc-ref:Scoping::Default::ClassMethods#default_scope].
-        def all
-          if current_scope
-            current_scope.clone
+        def all(all_queries: nil)
+          scope = current_scope
+
+          if scope
+            if self == scope.model
+              scope.clone
+            else
+              relation.merge!(scope)
+            end
           else
-            default_scoped
+            default_scoped(all_queries: all_queries)
           end
         end
 
         def scope_for_association(scope = relation) # :nodoc:
-          current_scope = self.current_scope
-
-          if current_scope && current_scope.empty_scope?
+          if current_scope&.empty_scope?
             scope
           else
             default_scoped(scope)
           end
         end
 
-        def default_scoped(scope = relation) # :nodoc:
-          build_default_scope(scope) || scope
+        # Returns a scope for the model with default scopes.
+        def default_scoped(scope = relation, all_queries: nil)
+          build_default_scope(scope, all_queries: all_queries) || scope
         end
 
         def default_extensions # :nodoc:
-          if scope = current_scope || build_default_scope
+          if scope = scope_for_association || build_default_scope
             scope.extensions
           else
             []
@@ -70,10 +71,6 @@ module ActiveRecord
         # The above calls to #scope define class methods <tt>Shirt.red</tt> and
         # <tt>Shirt.dry_clean_only</tt>. <tt>Shirt.red</tt>, in effect,
         # represents the query <tt>Shirt.where(color: 'red')</tt>.
-        #
-        # You should always pass a callable object to the scopes defined
-        # with #scope. This ensures that the scope is re-evaluated each
-        # time it is called.
         #
         # Note that this is simply 'syntactic sugar' for defining an actual
         # class method:
@@ -165,33 +162,39 @@ module ActiveRecord
               "a class method with the same name."
           end
 
-          valid_scope_name?(name)
+          if method_defined_within?(name, Relation)
+            raise ArgumentError, "You tried to define a scope named \"#{name}\" " \
+              "on the model \"#{self.name}\", but ActiveRecord::Relation already defined " \
+              "an instance method with the same name."
+          end
+
           extension = Module.new(&block) if block
 
           if body.respond_to?(:to_proc)
-            singleton_class.send(:define_method, name) do |*args|
-              scope = all
-              scope = scope.instance_exec(*args, &body) || scope
+            singleton_class.define_method(name) do |*args|
+              scope = all._exec_scope(*args, &body)
               scope = scope.extending(extension) if extension
               scope
             end
           else
-            singleton_class.send(:define_method, name) do |*args|
-              scope = all
-              scope = scope.scoping { body.call(*args) || scope }
+            singleton_class.define_method(name) do |*args|
+              scope = body.call(*args) || all
               scope = scope.extending(extension) if extension
               scope
             end
           end
+          singleton_class.send(:ruby2_keywords, name)
+
+          generate_relation_method(name)
         end
 
         private
-
-          def valid_scope_name?(name)
-            if respond_to?(name, true) && logger
-              logger.warn "Creating scope :#{name}. " \
-                "Overwriting existing method #{self.name}.#{name}."
-            end
+          def singleton_method_added(name)
+            super
+            # Most Kernel extends are both singleton and instance methods so
+            # respond_to is a fast check, but we don't want to define methods
+            # only on the module (ex. Module#name)
+            generate_relation_method(name) if Kernel.respond_to?(name) && (Kernel.method_defined?(name) || Kernel.private_method_defined?(name)) && !ActiveRecord::Relation.method_defined?(name)
           end
       end
     end

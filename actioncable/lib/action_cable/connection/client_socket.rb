@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 require "websocket/driver"
 
 module ActionCable
@@ -21,7 +23,7 @@ module ActionCable
         return true if env["HTTP_X_FORWARDED_PROTO"] == "https"
         return true if env["rack.url_scheme"] == "https"
 
-        return false
+        false
       end
 
       CONNECTING = 0
@@ -43,7 +45,7 @@ module ActionCable
 
         @ready_state = CONNECTING
 
-        # The driver calls +env+, +url+, and +write+
+        # The driver calls `env`, `url`, and `write`
         @driver = ::WebSocket::Driver.rack(self, protocols: protocols)
 
         @driver.on(:open)    { |e| open }
@@ -83,7 +85,7 @@ module ActionCable
         when Numeric then @driver.text(message.to_s)
         when String  then @driver.text(message)
         when Array   then @driver.binary(message)
-          else false
+        else false
         end
       end
 

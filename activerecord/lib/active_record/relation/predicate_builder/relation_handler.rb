@@ -4,8 +4,17 @@ module ActiveRecord
   class PredicateBuilder
     class RelationHandler # :nodoc:
       def call(attribute, value)
+        if value.eager_loading?
+          value = value.send(:apply_join_dependency)
+        end
+
         if value.select_values.empty?
-          value = value.select(value.arel_attribute(value.klass.primary_key))
+          model = value.model
+          if model.composite_primary_key?
+            raise ArgumentError, "Cannot map composite primary key #{model.primary_key} to #{attribute.name}"
+          else
+            value = value.select(value.table[model.primary_key])
+          end
         end
 
         attribute.in(value.arel)

@@ -18,7 +18,7 @@ module ActiveRecord
 
       def setup
         super
-        @connection = ActiveRecord::Base.connection
+        @connection = ActiveRecord::Base.lease_connection
         connection.create_table :test_models do |t|
           t.timestamps null: true
         end
@@ -34,7 +34,6 @@ module ActiveRecord
       end
 
       private
-
         delegate(*CONNECTION_METHODS, to: :connection)
     end
   end

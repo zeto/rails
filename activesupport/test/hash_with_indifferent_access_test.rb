@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
-require "active_support/core_ext/hash"
+require_relative "abstract_unit"
 require "bigdecimal"
+require "yaml"
+require "active_support/core_ext/hash"
 require "active_support/core_ext/string/access"
-require "active_support/ordered_hash"
 require "active_support/core_ext/object/conversions"
 require "active_support/core_ext/object/deep_dup"
 require "active_support/inflections"
@@ -57,6 +57,13 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     assert_equal @symbols, @mixed.with_indifferent_access.symbolize_keys
   end
 
+  def test_to_options_for_hash_with_indifferent_access
+    assert_instance_of Hash, @symbols.with_indifferent_access.to_options
+    assert_equal @symbols, @symbols.with_indifferent_access.to_options
+    assert_equal @symbols, @strings.with_indifferent_access.to_options
+    assert_equal @symbols, @mixed.with_indifferent_access.to_options
+  end
+
   def test_deep_symbolize_keys_for_hash_with_indifferent_access
     assert_instance_of Hash, @nested_symbols.with_indifferent_access.deep_symbolize_keys
     assert_equal @nested_symbols, @nested_symbols.with_indifferent_access.deep_symbolize_keys
@@ -89,6 +96,17 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
   def test_symbolize_keys_preserves_integer_keys_for_hash_with_indifferent_access
     assert_equal @integers, @integers.with_indifferent_access.symbolize_keys
     assert_raise(NoMethodError) { @integers.with_indifferent_access.dup.symbolize_keys! }
+  end
+
+  def test_stringify_keys_stringifies_integer_keys_for_hash_with_indifferent_access
+    assert_equal({ "0" => 1, "1" => 2 }, @integers.with_indifferent_access.stringify_keys)
+    assert_equal({ "ints" => { "0" => 1, "1" => 2 } }, { ints: @integers }.with_indifferent_access.deep_stringify_keys)
+  end
+
+  def test_stringify_keys_stringifies_non_string_keys_for_hash_with_indifferent_access
+    object = Object.new
+    hash = { object => 1 }
+    assert_equal({ object.to_s => 1 }, hash.with_indifferent_access.stringify_keys)
   end
 
   def test_deep_symbolize_keys_preserves_integer_keys_for_hash_with_indifferent_access
@@ -169,8 +187,6 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
   end
 
   def test_indifferent_fetch_values
-    skip unless Hash.method_defined?(:fetch_values)
-
     @mixed = @mixed.with_indifferent_access
 
     assert_equal [1, 2], @mixed.fetch_values("a", "b")
@@ -226,22 +242,40 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     hash[:a] = "a"
     hash["b"] = "b"
 
-    updated_with_strings = hash.update(@strings)
-    updated_with_symbols = hash.update(@symbols)
-    updated_with_mixed = hash.update(@mixed)
+    assert_equal(hash.object_id, hash.update(@strings).object_id)
 
-    assert_equal 1, updated_with_strings[:a]
-    assert_equal 1, updated_with_strings["a"]
-    assert_equal 2, updated_with_strings["b"]
+    hash.update(@symbols)
+    hash.update(@mixed)
+    hash.update(@mixed.with_indifferent_access)
 
-    assert_equal 1, updated_with_symbols[:a]
-    assert_equal 2, updated_with_symbols["b"]
-    assert_equal 2, updated_with_symbols[:b]
+    assert_equal(["a", "b"], hash.keys)
 
-    assert_equal 1, updated_with_mixed[:a]
-    assert_equal 2, updated_with_mixed["b"]
+    assert_equal 1, hash[:a]
+    assert_equal 1, hash["a"]
+    assert_equal 2, hash[:b]
+    assert_equal 2, hash["b"]
+  end
 
-    assert [updated_with_strings, updated_with_symbols, updated_with_mixed].all? { |h| h.keys.size == 2 }
+  def test_update_with_block
+    h1 = { "a" => 1, "b" => "x" }.with_indifferent_access
+    h2 = { a: 2, b: "y" }
+
+    merged_hash = h1.update(h2) { |k, v1, v2| [k, v1, v2].join }
+
+    assert_equal(["a", "b"], merged_hash.keys)
+    assert_equal("a12", merged_hash[:a])
+    assert_equal("bxy", merged_hash[:b])
+  end
+
+  def test_update_with_multiple_arguments
+    hash = HashWithIndifferentAccess.new
+    hash.update(
+      { "a" => 1 }.with_indifferent_access,
+      { "b" => 2 }
+    )
+
+    assert_equal 1, hash["a"]
+    assert_equal 2, hash["b"]
   end
 
   def test_update_with_to_hash_conversion
@@ -269,6 +303,14 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     assert_equal 2, hash["b"]
   end
 
+  def test_merging_with_multiple_arguments
+    hash = HashWithIndifferentAccess.new
+    merged = hash.merge({ "a" => 1 }, { "b" => 2 })
+
+    assert_equal 1, merged["a"]
+    assert_equal 2, merged["b"]
+  end
+
   def test_merge_with_to_hash_conversion
     hash = HashWithIndifferentAccess.new
     merged = hash.merge HashByConversion.new(a: 1)
@@ -282,7 +324,7 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     replaced = hash.replace(b: 12)
 
     assert hash.key?("b")
-    assert !hash.key?(:a)
+    assert_not hash.key?(:a)
     assert_equal 12, hash[:b]
     assert_same hash, replaced
   end
@@ -294,7 +336,7 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     replaced = hash.replace(HashByConversion.new(b: 12))
 
     assert hash.key?("b")
-    assert !hash.key?(:a)
+    assert_not hash.key?(:a)
     assert_equal 12, hash[:b]
     assert_same hash, replaced
   end
@@ -404,6 +446,71 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
 
     assert_equal({ "aa" => 1, "bb" => 2 }, hash)
     assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@strings).transform_keys { |k| k.to_sym }
+
+    assert_equal(1, hash[:a])
+    assert_equal(1, hash["a"])
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@strings).transform_keys({ "a" => "x", "y" => "z" })
+
+    assert_nil(hash["a"])
+    assert_equal(1, hash["x"])
+    assert_equal(2, hash["b"])
+    assert_nil(hash["y"])
+    assert_nil(hash["z"])
+    assert_equal(["x", "b"], hash.keys) # asserting that order of keys is unchanged
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@strings).transform_keys({ "a" => "A", "q" => "Q" }) { |k| k * 3 }
+
+    assert_nil(hash["a"])
+    assert_equal(1, hash["A"])
+    assert_equal(2, hash["bbb"])
+    assert_nil(hash["q"])
+    assert_nil(hash["Q"])
+    assert_equal(["A", "bbb"], hash.keys) # asserting that order of keys is unchanged
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@integers).transform_keys { |k| k + 1 }
+
+    assert_equal([1, 2], hash.keys)
+
+    repeating_strings = { "a" => 1, "aa" => 2, "aaa" => 3 }
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(repeating_strings).transform_keys { |k| "#{k}a" }
+
+    assert_equal(%w[aa aaa aaaa], hash.keys)
+
+    assert_raise TypeError do
+      hash.transform_keys(nil)
+    end
+
+    hash_with_default = Hash.new(:a)
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default).transform_keys(&:to_s)
+    assert_nil hash.default
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default).transform_keys { |k| k.to_s }
+    assert_nil hash.default
+
+    hash_with_default_proc = Hash.new { |h, k| h[k] = :b }
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default_proc).transform_keys(&:to_s)
+    assert_nil hash.default_proc
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default_proc).transform_keys { |k| k.to_s }
+    assert_nil hash.default_proc
+  end
+
+  def test_indifferent_deep_transform_keys
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@nested_strings).deep_transform_keys { |k| k * 2 }
+
+    assert_equal({ "aa" => { "bb" => { "cc" => 3 } } }, hash)
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@nested_strings).deep_transform_keys { |k| k.to_sym }
+
+    assert_equal(3, hash[:a][:b][:c])
+    assert_equal(3, hash["a"]["b"]["c"])
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
   end
 
   def test_indifferent_transform_keys_bang
@@ -412,6 +519,71 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
 
     assert_equal({ "aa" => 1, "bb" => 2 }, indifferent_strings)
     assert_instance_of ActiveSupport::HashWithIndifferentAccess, indifferent_strings
+
+    indifferent_strings = ActiveSupport::HashWithIndifferentAccess.new(@strings)
+    indifferent_strings.transform_keys! { |k| k.to_sym }
+
+    assert_equal(1, indifferent_strings[:a])
+    assert_equal(1, indifferent_strings["a"])
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, indifferent_strings
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@strings)
+    hash.transform_keys!({ "a" => "x", "y" => "z" })
+
+    assert_nil(hash["a"])
+    assert_equal(1, hash["x"])
+    assert_equal(2, hash["b"])
+    assert_nil(hash["y"])
+    assert_nil(hash["z"])
+    assert_equal(["x", "b"], hash.keys) # asserting that order of keys is unchanged
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@strings)
+    hash.transform_keys!({ "a" => "A", "q" => "Q" }) { |k| k * 3 }
+
+    assert_nil(hash["a"])
+    assert_equal(1, hash["A"])
+    assert_equal(2, hash["bbb"])
+    assert_nil(hash["q"])
+    assert_nil(hash["Q"])
+    assert_equal(["A", "bbb"], hash.keys) # asserting that order of keys is unchanged
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    assert_raise TypeError do
+      hash.transform_keys(nil)
+    end
+
+    hash_with_default = Hash.new(:a)
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default).transform_keys!(&:to_s)
+    assert_equal :a, hash.default
+    assert_equal :a, hash_with_default.default
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default).transform_keys! { |k| k.to_s }
+    assert_equal :a, hash.default
+    assert_equal :a, hash_with_default.default
+
+    hash_with_default_proc = Hash.new { |h, k| h[k] = :b }
+    default_proc = hash_with_default_proc.default_proc
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default_proc).transform_keys!(&:to_s)
+    assert_equal default_proc, hash.default_proc
+    hash = ActiveSupport::HashWithIndifferentAccess.new(hash_with_default_proc).transform_keys! { |k| k.to_s }
+    assert_equal default_proc, hash.default_proc
+  end
+
+  def test_indifferent_deep_transform_keys_bang
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@nested_strings)
+    hash.deep_transform_keys! { |k| k * 2 }
+
+    assert_equal({ "aa" => { "bb" => { "cc" => 3 } } }, hash)
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
+
+    hash = ActiveSupport::HashWithIndifferentAccess.new(@nested_strings)
+    hash.deep_transform_keys! { |k| k.to_sym }
+
+    assert_equal(3, hash[:a][:b][:c])
+    assert_equal(3, hash["a"]["b"]["c"])
+    assert_instance_of ActiveSupport::HashWithIndifferentAccess, hash
   end
 
   def test_indifferent_transform_values
@@ -427,6 +599,14 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
 
     assert_equal({ "a" => 2, "b" => 4 }, indifferent_strings)
     assert_instance_of ActiveSupport::HashWithIndifferentAccess, indifferent_strings
+  end
+
+  def test_indifferent_assoc
+    indifferent_strings = ActiveSupport::HashWithIndifferentAccess.new(@strings)
+    key, value = indifferent_strings.assoc(:a)
+
+    assert_equal("a", key)
+    assert_equal(1, value)
   end
 
   def test_indifferent_compact
@@ -460,7 +640,14 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     assert_equal @strings, roundtrip
     assert_equal "1234", roundtrip.default
 
-    # Ensure nested hashes are not HashWithIndiffereneAccess
+    # Should preserve the default proc
+    mixed_with_default = @mixed.dup
+    _proc = ->(h, k) { 1 }
+    mixed_with_default.default_proc = _proc
+    roundtrip = mixed_with_default.with_indifferent_access.to_hash
+    assert_equal _proc, roundtrip.default_proc
+
+    # Ensure nested hashes are not HashWithIndifferentAccess
     new_to_hash = @nested_mixed.with_indifferent_access.to_hash
     assert_not new_to_hash.instance_of?(HashWithIndifferentAccess)
     assert_not new_to_hash["a"].instance_of?(HashWithIndifferentAccess)
@@ -562,7 +749,6 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
   end
 
   def test_nested_dig_indifferent_access
-    skip if RUBY_VERSION < "2.3.0"
     data = { "this" => { "views" => 1234 } }.with_indifferent_access
     assert_equal 1234, data.dig(:this, :views)
   end
@@ -596,7 +782,7 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
   def test_assorted_keys_not_stringified
     original = { Object.new => 2, 1 => 2, [] => true }
     indiff = original.with_indifferent_access
-    assert(!indiff.keys.any? { |k| k.kind_of? String }, "A key was converted to a string!")
+    assert_not(indiff.keys.any? { |k| k.kind_of? String }, "A key was converted to a string!")
   end
 
   def test_deep_merge_on_indifferent_access
@@ -660,6 +846,17 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
 
     assert_equal "bender", slice[:login]
     assert_equal "bender", slice["login"]
+  end
+
+  def test_indifferent_without
+    original = { a: "x", b: "y", c: 10 }.with_indifferent_access
+    expected = { c: 10 }.with_indifferent_access
+
+    [["a", "b"], [:a, :b]].each do |keys|
+      # Should return a new hash without the given keys.
+      assert_equal expected, original.without(*keys), keys.inspect
+      assert_not_equal expected, original
+    end
   end
 
   def test_indifferent_extract
@@ -737,13 +934,8 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
 
     yaml_output = klass.new.to_yaml
 
-    # `hash-with-ivars` was introduced in 2.0.9 (https://git.io/vyUQW)
-    if Gem::Version.new(Psych::VERSION) >= Gem::Version.new("2.0.9")
-      assert_includes yaml_output, "hash-with-ivars"
-      assert_includes yaml_output, "@foo: bar"
-    else
-      assert_includes yaml_output, "hash"
-    end
+    assert_includes yaml_output, "hash-with-ivars"
+    assert_includes yaml_output, "@foo: bar"
   end
 
   def test_should_use_default_proc_for_unknown_key
@@ -799,5 +991,42 @@ class HashWithIndifferentAccessTest < ActiveSupport::TestCase
     hash_wia = hash.with_indifferent_access
     assert_equal 3, hash_wia[:foo]
     assert_equal 3, hash_wia[:bar]
+  end
+
+  def test_should_copy_the_default_when_converting_non_hash_to_hash_with_indifferent_access
+    non_hash = Object.new
+
+    def non_hash.to_hash
+      h = { foo: :bar }
+      h.default = :baz
+      h
+    end
+
+    hash_wia = HashWithIndifferentAccess.new(non_hash)
+    assert_equal :bar, hash_wia[:foo]
+    assert_equal :baz, hash_wia[:missing]
+  end
+
+  def test_should_copy_the_default_proc_when_converting_non_hash_to_hash_with_indifferent_access
+    non_hash = Object.new
+
+    def non_hash.to_hash
+      h = { foo: :bar }
+      h.default_proc = ->(hash, key) { hash[key] = :baz }
+      h
+    end
+
+    hash_wia = HashWithIndifferentAccess.new(non_hash)
+    assert_equal :bar, hash_wia[:foo]
+    assert_equal :baz, hash_wia[:missing]
+  end
+
+  def test_indifferent_to_proc
+    @strings = @strings.with_indifferent_access
+    proc = @strings.to_proc
+
+    assert_equal 1, proc["a"]
+    assert_equal 1, proc[:a]
+    assert_nil proc[:no_such]
   end
 end

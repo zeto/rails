@@ -1,31 +1,38 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../abstract_unit"
 require "active_support/core_ext/module"
 
 Somewhere = Struct.new(:street, :city) do
   attr_accessor :name
+
+  def self.country
+    yield
+  end
 end
 
 Someone = Struct.new(:name, :place) do
+  def self.table_name
+    "some_table"
+  end
+
   delegate :street, :city, :to_f, to: :place
   delegate :name=, to: :place, prefix: true
   delegate :upcase, to: "place.city"
   delegate :table_name, to: :class
   delegate :table_name, to: :class, prefix: true
-
-  def self.table_name
-    "some_table"
-  end
-
+  delegate :country, to: Somewhere
   self::FAILED_DELEGATE_LINE = __LINE__ + 1
   delegate :foo, to: :place
 
   self::FAILED_DELEGATE_LINE_2 = __LINE__ + 1
   delegate :bar, to: :place, allow_nil: true
 
-  private
+  def kw_send(method:)
+    public_send(method)
+  end
 
+  private
     def private_name
       "Private"
     end
@@ -49,6 +56,16 @@ Event = Struct.new(:case) do
   delegate :foo, to: :case
 end
 
+class BasicEvent < BasicObject
+  delegate :foo, to: :case
+
+  attr_reader :case
+
+  def initialize(kase)
+    @case = kase
+  end
+end
+
 Tester = Struct.new(:client) do
   delegate :name, to: :client, prefix: false
 
@@ -60,20 +77,16 @@ Product = Struct.new(:name) do
   delegate :name, to: :type, prefix: true
 
   def manufacturer
-    @manufacturer ||= begin
-      nil.unknown_method
-    end
+    @manufacturer ||= nil.unknown_method
   end
 
   def type
-    @type ||= begin
-      nil.type_name
-    end
+    @type ||= nil.type_name
   end
 end
 
 module ExtraMissing
-  def method_missing(sym, *args)
+  def method_missing(sym, ...)
     if sym == :extra_missing
       42
     else
@@ -89,7 +102,25 @@ end
 DecoratedTester = Struct.new(:client) do
   include ExtraMissing
 
+  def call_name
+    name
+  end
+
   delegate_missing_to :client
+end
+
+class DecoratedMissingAllowNil
+  delegate_missing_to :case, allow_nil: true
+
+  def call_name
+    name
+  end
+
+  attr_reader :case
+
+  def initialize(kase)
+    @case = kase
+  end
 end
 
 class DecoratedReserved
@@ -99,6 +130,34 @@ class DecoratedReserved
 
   def initialize(kase)
     @case = kase
+  end
+end
+
+class Maze
+  attr_accessor :cavern, :passages
+end
+
+class Cavern
+  delegate_missing_to :target
+
+  attr_reader :maze
+
+  def initialize(maze)
+    @maze = maze
+  end
+
+  def target
+    @maze.passages = :twisty
+  end
+end
+
+class BasicCavern < BasicObject
+  delegate_missing_to :target
+
+  attr_reader :target
+
+  def initialize(target)
+    @target = target
   end
 end
 
@@ -144,6 +203,28 @@ class SideEffect
 end
 
 class ModuleTest < ActiveSupport::TestCase
+  class ArityTester
+    class << self
+      def zero; end
+      def zero_with_block(&bl); end
+      def zero_with_implicit_block; yield end
+      def one(a) end
+      def one_with_block(a) end
+      def two(a, b) end
+      def opt(a, b, c, d = nil) end
+      def kwargs(a:, b:) end
+      def kwargs_with_block(a:, b:, c:, &block) end
+      def opt_kwargs(a:, b: 3) end
+      def opt_kwargs_with_block(a:, b:, c:, d: "", &block) end
+    end
+  end
+
+  module ArityTesterModule
+    class << self
+      def zero; end
+    end
+  end
+
   def setup
     @david = Someone.new("David", Somewhere.new("Paulina", "Chicago"))
   end
@@ -237,6 +318,12 @@ class ModuleTest < ActiveSupport::TestCase
     end
   end
 
+  def test_delegation_with_implicit_block
+    assert_nothing_raised do
+      @david.country {  }
+    end
+  end
+
   def test_delegation_with_allow_nil
     rails = Project.new("Rails", Someone.new("David"))
     assert_equal "David", rails.name
@@ -247,7 +334,7 @@ class ModuleTest < ActiveSupport::TestCase
     assert_nil rails.name
   end
 
-  # Ensures with check for nil, not for a falseish target.
+  # Ensures with check for nil, not for a falsy target.
   def test_delegation_with_allow_nil_and_false_value
     project = Project.new(false, false)
     assert_raise(NoMethodError) { project.name }
@@ -347,15 +434,23 @@ class ModuleTest < ActiveSupport::TestCase
 
   def test_delegation_with_method_arguments
     has_block = HasBlock.new(Block.new)
-    assert has_block.hello?
+    assert_predicate has_block, :hello?
   end
 
   def test_delegate_missing_to_with_method
     assert_equal "David", DecoratedTester.new(@david).name
   end
 
+  def test_delegate_missing_to_calling_on_self
+    assert_equal "David", DecoratedTester.new(@david).call_name
+  end
+
   def test_delegate_missing_to_with_reserved_methods
     assert_equal "David", DecoratedReserved.new(@david).name
+  end
+
+  def test_delegate_missing_to_with_keyword_methods
+    assert_equal "David", DecoratedReserved.new(@david).kw_send(method: "name")
   end
 
   def test_delegate_missing_to_does_not_delegate_to_private_methods
@@ -363,7 +458,7 @@ class ModuleTest < ActiveSupport::TestCase
       DecoratedReserved.new(@david).private_name
     end
 
-    assert_match(/undefined method `private_name' for/, e.message)
+    assert_match(/undefined method [`']private_name' for/, e.message)
   end
 
   def test_delegate_missing_to_does_not_delegate_to_fake_methods
@@ -371,7 +466,7 @@ class ModuleTest < ActiveSupport::TestCase
       DecoratedReserved.new(@david).my_fake_method
     end
 
-    assert_match(/undefined method `my_fake_method' for/, e.message)
+    assert_match(/undefined method [`']my_fake_method' for/, e.message)
   end
 
   def test_delegate_missing_to_raises_delegation_error_if_target_nil
@@ -382,10 +477,18 @@ class ModuleTest < ActiveSupport::TestCase
     assert_equal "name delegated to client, but client is nil", e.message
   end
 
+  def test_delegate_missing_to_returns_nil_if_allow_nil_and_nil_target
+    assert_nil DecoratedMissingAllowNil.new(nil).name
+  end
+
+  def test_delegate_missing_with_allow_nil_when_called_on_self
+    assert_nil DecoratedMissingAllowNil.new(nil).call_name
+  end
+
   def test_delegate_missing_to_affects_respond_to
-    assert DecoratedTester.new(@david).respond_to?(:name)
-    assert_not DecoratedTester.new(@david).respond_to?(:private_name)
-    assert_not DecoratedTester.new(@david).respond_to?(:my_fake_method)
+    assert_respond_to DecoratedTester.new(@david), :name
+    assert_not_respond_to DecoratedTester.new(@david), :private_name
+    assert_not_respond_to DecoratedTester.new(@david), :my_fake_method
 
     assert DecoratedTester.new(@david).respond_to?(:name, true)
     assert_not DecoratedTester.new(@david).respond_to?(:private_name, true)
@@ -396,6 +499,33 @@ class ModuleTest < ActiveSupport::TestCase
     assert_equal 42, DecoratedTester.new(@david).extra_missing
 
     assert_respond_to DecoratedTester.new(@david), :extra_missing
+  end
+
+  def test_delegate_missing_to_does_not_interfere_with_marshallization
+    maze = Maze.new
+    maze.cavern = Cavern.new(maze)
+
+    array = [maze, nil]
+    serialized_array = Marshal.dump(array)
+    deserialized_array = Marshal.load(serialized_array)
+
+    assert_nil deserialized_array[1]
+  end
+
+  def test_delegate_to_missing_raises_delegation_error_on_basic_object
+    cavern = BasicCavern.new(nil)
+
+    assert_raises(Module::DelegationError) do
+      cavern.some_method
+    end
+  end
+
+  def test_delegate_raises_delegation_error_on_basic_object
+    cavern = BasicEvent.new(nil)
+
+    assert_raises(Module::DelegationError) do
+      cavern.foo
+    end
   end
 
   def test_delegate_with_case
@@ -414,8 +544,8 @@ class ModuleTest < ActiveSupport::TestCase
 
     place = location.new(Somewhere.new("Such street", "Sad city"))
 
-    assert_not place.respond_to?(:street)
-    assert_not place.respond_to?(:city)
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
 
     assert place.respond_to?(:street, true) # Asking for private method
     assert place.respond_to?(:city, true)
@@ -432,12 +562,156 @@ class ModuleTest < ActiveSupport::TestCase
 
     place = location.new(Somewhere.new("Such street", "Sad city"))
 
-    assert_not place.respond_to?(:street)
-    assert_not place.respond_to?(:city)
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
 
-    assert_not place.respond_to?(:the_street)
+    assert_not_respond_to place, :the_street
     assert place.respond_to?(:the_street, true)
-    assert_not place.respond_to?(:the_city)
+    assert_not_respond_to place, :the_city
     assert place.respond_to?(:the_city, true)
+  end
+
+  def test_private_delegate_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, :city, to: :@place, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_not_respond_to place, :street
+    assert_not_respond_to place, :city
+
+    assert place.respond_to?(:street, true) # Asking for private method
+    assert place.respond_to?(:city, true)
+  end
+
+  def test_some_public_some_private_delegate_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, to: :@place)
+      delegate(:city, to: :@place, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_respond_to place, :street
+    assert_not_respond_to place, :city
+
+    assert place.respond_to?(:city, true) # Asking for private method
+  end
+
+  def test_private_delegate_prefixed_with_private_option
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+
+      delegate(:street, :city, to: :@place, prefix: :the, private: true)
+    end
+
+    place = location.new(Somewhere.new("Such street", "Sad city"))
+
+    assert_not_respond_to place, :the_street
+    assert place.respond_to?(:the_street, true)
+    assert_not_respond_to place, :the_city
+    assert place.respond_to?(:the_city, true)
+  end
+
+  def test_delegate_with_private_option_returns_names_of_delegate_methods
+    location = Class.new do
+      def initialize(place)
+        @place = place
+      end
+    end
+
+    assert_equal [:street, :city],
+      location.delegate(:street, :city, to: :@place, private: true)
+
+    assert_equal [:the_street, :the_city],
+      location.delegate(:street, :city, to: :@place, prefix: :the, private: true)
+  end
+
+  def test_module_nesting_is_empty
+    # Ensure constant resolution is done from top level namespace and not ActiveSupport
+    require "json"
+    c = Class.new do
+      singleton_class.delegate :parse, to: ::JSON
+    end
+    assert_equal [1], c.parse("[1]")
+  end
+
+  def test_delegation_unreacheable_module
+    anonymous_class = Class.new
+    error = assert_raises ArgumentError do
+      Class.new do
+        delegate :something, to: anonymous_class
+      end
+    end
+    assert_includes error.message, "Can't delegate to anonymous class or module"
+
+    anonymous_class.singleton_class.define_method(:name) { "FakeName" }
+    error = assert_raises ArgumentError do
+      Class.new do
+        delegate :something, to: anonymous_class
+      end
+    end
+    assert_includes error.message, "Can't delegate to detached class or module: FakeName"
+  end
+
+  def test_delegation_arity_to_module
+    c = Class.new do
+      delegate :zero, :one, :two, to: ArityTester
+    end
+    assert_equal 0, c.instance_method(:zero).arity
+    assert_equal 1, c.instance_method(:one).arity
+    assert_equal 2, c.instance_method(:two).arity
+
+    e = Class.new do
+      delegate :zero, to: ArityTesterModule
+    end
+
+    assert_equal 0, e.instance_method(:zero).arity
+    assert_nothing_raised do
+      e.new.zero
+    end
+  end
+
+  def test_delegation_arity_to_self_class
+    d = Class.new(ArityTester) do
+      delegate :zero, :zero_with_block, :zero_with_implicit_block, :one, :one_with_block, :two, :opt,
+        :kwargs, :kwargs_with_block, :opt_kwargs, :opt_kwargs_with_block, to: :class
+    end
+
+    assert_equal 0, d.instance_method(:zero).arity
+    assert_equal 0, d.instance_method(:zero_with_block).arity
+    assert_equal 0, d.instance_method(:zero_with_implicit_block).arity
+    assert_equal 1, d.instance_method(:one).arity
+    assert_equal 1, d.instance_method(:one_with_block).arity
+    assert_equal 2, d.instance_method(:two).arity
+    assert_equal(-1, d.instance_method(:opt).arity)
+    assert_equal(-1, d.instance_method(:kwargs).arity)
+    assert_equal(-1, d.instance_method(:kwargs_with_block).arity)
+    assert_equal(-1, d.instance_method(:opt_kwargs).arity)
+    assert_equal(-1, d.instance_method(:opt_kwargs_with_block).arity)
+    assert_nothing_raised do
+      d.new.zero
+      d.new.zero_with_block
+      d.new.zero_with_implicit_block { }
+      d.new.one(1)
+      d.new.one_with_block(1)
+      d.new.two(1, 2)
+      d.new.opt(1, 2, 3)
+      d.new.kwargs(a: 1, b: 2)
+      d.new.kwargs_with_block(a: 1, b: 2, c: 3)
+      d.new.opt_kwargs(a: 1)
+      d.new.opt_kwargs_with_block(a: 1, b: 2, c: 3)
+    end
   end
 end

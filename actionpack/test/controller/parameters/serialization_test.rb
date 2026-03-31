@@ -2,7 +2,6 @@
 
 require "abstract_unit"
 require "action_controller/metal/strong_parameters"
-require "active_support/core_ext/string/strip"
 
 class ParametersSerializationTest < ActiveSupport::TestCase
   setup do
@@ -14,7 +13,7 @@ class ParametersSerializationTest < ActiveSupport::TestCase
     ActionController::Parameters.permit_all_parameters = @old_permitted_parameters
   end
 
-  test "yaml serialization" do
+  test "YAML serialization" do
     params = ActionController::Parameters.new(key: :value)
     yaml_dump = YAML.dump(params)
     assert_match("--- !ruby/object:ActionController::Parameters", yaml_dump)
@@ -22,34 +21,37 @@ class ParametersSerializationTest < ActiveSupport::TestCase
     assert_match("permitted: false", yaml_dump)
   end
 
-  test "yaml deserialization" do
+  test "YAML deserialization" do
     params = ActionController::Parameters.new(key: :value)
-    roundtripped = YAML.load(YAML.dump(params))
+    payload = YAML.dump(params)
+    roundtripped = YAML.unsafe_load(payload)
 
     assert_equal params, roundtripped
-    assert_not roundtripped.permitted?
+    assert_not_predicate roundtripped, :permitted?
   end
 
-  test "yaml backwardscompatible with psych 2.0.8 format" do
-    params = YAML.load <<-end_of_yaml.strip_heredoc
+  test "YAML backwardscompatible with psych 2.0.8 format" do
+    payload = <<~end_of_yaml
       --- !ruby/hash:ActionController::Parameters
       key: :value
     end_of_yaml
+    params = YAML.unsafe_load(payload)
 
     assert_equal :value, params[:key]
-    assert_not params.permitted?
+    assert_not_predicate params, :permitted?
   end
 
-  test "yaml backwardscompatible with psych 2.0.9+ format" do
-    params = YAML.load(<<-end_of_yaml.strip_heredoc)
+  test "YAML backwardscompatible with psych 2.0.9+ format" do
+    payload = <<~end_of_yaml
       --- !ruby/hash-with-ivars:ActionController::Parameters
       elements:
         key: :value
       ivars:
         :@permitted: false
     end_of_yaml
+    params = YAML.unsafe_load(payload)
 
     assert_equal :value, params[:key]
-    assert_not params.permitted?
+    assert_not_predicate params, :permitted?
   end
 end

@@ -44,7 +44,7 @@ module ActionDispatch
       @hash["foo"] = "bar"
       @hash.delete "foo"
 
-      assert !@hash.key?("foo")
+      assert_not @hash.key?("foo")
       assert_nil @hash["foo"]
     end
 
@@ -53,7 +53,7 @@ module ActionDispatch
       assert_equal({ "foo" => "bar" }, @hash.to_hash)
 
       @hash.to_hash["zomg"] = "aaron"
-      assert !@hash.key?("zomg")
+      assert_not @hash.key?("zomg")
       assert_equal({ "foo" => "bar" }, @hash.to_hash)
     end
 
@@ -82,7 +82,7 @@ module ActionDispatch
 
     def test_from_session_value_on_json_serializer
       decrypted_data = "{ \"session_id\":\"d98bdf6d129618fc2548c354c161cfb5\", \"flash\":{\"discard\":[\"farewell\"], \"flashes\":{\"greeting\":\"Hello\",\"farewell\":\"Goodbye\"}} }"
-      session = ActionDispatch::Cookies::JsonSerializer.load(decrypted_data)
+      session = ActiveSupport::Messages::SerializerWithFallback[:json].load(decrypted_data)
       hash = Flash::FlashHash.from_session_value(session["flash"])
 
       assert_equal({ "greeting" => "Hello" }, hash.to_hash)
@@ -92,11 +92,11 @@ module ActionDispatch
     end
 
     def test_empty?
-      assert @hash.empty?
+      assert_empty @hash
       @hash["zomg"] = "bears"
-      assert !@hash.empty?
+      assert_not_empty @hash
       @hash.clear
-      assert @hash.empty?
+      assert_empty @hash
     end
 
     def test_each

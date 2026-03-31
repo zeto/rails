@@ -1,21 +1,22 @@
 # frozen_string_literal: true
 
-require_relative "type/helpers"
-require_relative "type/value"
+require "active_model/type/helpers"
+require "active_model/type/serialize_cast_value"
+require "active_model/type/value"
 
-require_relative "type/big_integer"
-require_relative "type/binary"
-require_relative "type/boolean"
-require_relative "type/date"
-require_relative "type/date_time"
-require_relative "type/decimal"
-require_relative "type/float"
-require_relative "type/immutable_string"
-require_relative "type/integer"
-require_relative "type/string"
-require_relative "type/time"
+require "active_model/type/big_integer"
+require "active_model/type/binary"
+require "active_model/type/boolean"
+require "active_model/type/date"
+require "active_model/type/date_time"
+require "active_model/type/decimal"
+require "active_model/type/float"
+require "active_model/type/immutable_string"
+require "active_model/type/integer"
+require "active_model/type/string"
+require "active_model/type/time"
 
-require_relative "type/registry"
+require "active_model/type/registry"
 
 module ActiveModel
   module Type
@@ -24,13 +25,18 @@ module ActiveModel
     class << self
       attr_accessor :registry # :nodoc:
 
-      # Add a new type to the registry, allowing it to be get through ActiveModel::Type#lookup
-      def register(type_name, klass = nil, **options, &block)
-        registry.register(type_name, klass, **options, &block)
+      # Add a new type to the registry, allowing it to be referenced as a
+      # symbol by {attribute}[rdoc-ref:Attributes::ClassMethods#attribute].
+      def register(type_name, klass = nil, &block)
+        registry.register(type_name, klass, &block)
       end
 
-      def lookup(*args, **kwargs) # :nodoc:
-        registry.lookup(*args, **kwargs)
+      def lookup(...) # :nodoc:
+        registry.lookup(...)
+      end
+
+      def default_value # :nodoc:
+        @default_value ||= Value.new
       end
     end
 

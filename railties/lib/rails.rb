@@ -1,18 +1,16 @@
 # frozen_string_literal: true
 
-require_relative "rails/ruby_version_check"
-
 require "pathname"
 
 require "active_support"
-require "active_support/dependencies/autoload"
+require "active_support/rails"
 require "active_support/core_ext/kernel/reporting"
-require "active_support/core_ext/module/delegation"
 require "active_support/core_ext/array/extract_options"
-require "active_support/core_ext/object/blank"
 
-require_relative "rails/application"
-require_relative "rails/version"
+require "rails/version"
+require "rails/deprecator"
+require "rails/application"
+require "rails/backtrace_cleaner"
 
 require "active_support/railtie"
 require "action_dispatch/railtie"
@@ -23,39 +21,42 @@ silence_warnings do
   Encoding.default_internal = Encoding::UTF_8
 end
 
+# :include: ../README.rdoc
 module Rails
   extend ActiveSupport::Autoload
+  extend ActiveSupport::Benchmarkable
 
   autoload :Info
   autoload :InfoController
   autoload :MailersController
   autoload :WelcomeController
+  autoload :DevtoolsController
+
+  eager_autoload do
+    autoload :HealthController
+    autoload :PwaController
+  end
 
   class << self
-    @application = @app_class = nil
-
     attr_writer :application
     attr_accessor :app_class, :cache, :logger
     def application
       @application ||= (app_class.instance if app_class)
     end
 
+    alias :app :application
     delegate :initialize!, :initialized?, to: :application
 
-    # The Configuration instance used to configure the Rails environment
+    # The Configuration instance used to configure the \Rails environment
     def configuration
       application.config
     end
 
     def backtrace_cleaner
-      @backtrace_cleaner ||= begin
-        # Relies on Active Support, so we have to lazy load to postpone definition until Active Support has been loaded
-        require_relative "rails/backtrace_cleaner"
-        Rails::BacktraceCleaner.new
-      end
+      @backtrace_cleaner ||= Rails::BacktraceCleaner.new
     end
 
-    # Returns a Pathname object of the current Rails project,
+    # Returns a Pathname object of the current \Rails project,
     # otherwise it returns +nil+ if there is no project:
     #
     #   Rails.root
@@ -64,33 +65,51 @@ module Rails
       application && application.config.root
     end
 
-    # Returns the current Rails environment.
+    # Returns the current \Rails environment.
     #
     #   Rails.env # => "development"
     #   Rails.env.development? # => true
     #   Rails.env.production? # => false
+    #   Rails.env.local? # => true              true for "development" and "test", false for anything else
     def env
-      @_env ||= ActiveSupport::StringInquirer.new(ENV["RAILS_ENV"].presence || ENV["RACK_ENV"].presence || "development")
+      @_env ||= ActiveSupport::EnvironmentInquirer.new(ENV["RAILS_ENV"].presence || ENV["RACK_ENV"].presence || "development")
     end
 
-    # Sets the Rails environment.
+    # Sets the \Rails environment.
     #
     #   Rails.env = "staging" # => "staging"
     def env=(environment)
-      @_env = ActiveSupport::StringInquirer.new(environment)
+      @_env = ActiveSupport::EnvironmentInquirer.new(environment)
     end
 
-    # Returns all Rails groups for loading based on:
+    # Returns the ActiveSupport::ErrorReporter of the current \Rails project,
+    # otherwise it returns +nil+ if there is no project.
     #
-    # * The Rails environment;
+    #   Rails.error.handle(IOError) do
+    #     # ...
+    #   end
+    #   Rails.error.report(error)
+    def error
+      ActiveSupport.error_reporter
+    end
+
+    # Returns the ActiveSupport::EventReporter of the current \Rails project,
+    # otherwise it returns +nil+ if there is no project.
+    #
+    #   Rails.event.notify("my_event", { message: "Hello, world!" })
+    def event
+      ActiveSupport.event_reporter
+    end
+
+    # Returns all \Rails groups for loading based on:
+    #
+    # * The \Rails environment;
     # * The environment variable RAILS_GROUPS;
     # * The optional envs given as argument and the hash with group dependencies;
     #
-    #   groups assets: [:development, :test]
-    #
-    #   # Returns
-    #   # => [:default, "development", :assets] for Rails.env == "development"
-    #   # => [:default, "production"]           for Rails.env == "production"
+    #  Rails.groups assets: [:development, :test]
+    #  # => [:default, "development", :assets] for Rails.env == "development"
+    #  # => [:default, "production"]           for Rails.env == "production"
     def groups(*groups)
       hash = groups.extract_options!
       env = Rails.env
@@ -103,12 +122,16 @@ module Rails
     end
 
     # Returns a Pathname object of the public folder of the current
-    # Rails project, otherwise it returns +nil+ if there is no project:
+    # \Rails project, otherwise it returns +nil+ if there is no project:
     #
     #   Rails.public_path
     #     # => #<Pathname:/Users/someuser/some/path/project/public>
     def public_path
       application && Pathname.new(application.paths["public"].first)
+    end
+
+    def autoloaders
+      application.autoloaders
     end
   end
 end

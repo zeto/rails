@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
-require "active_support/ordered_hash"
+require_relative "../../abstract_unit"
 require "active_support/core_ext/object/to_query"
 require "active_support/core_ext/string/output_safety"
+require "uri"
 
 class ToQueryTest < ActiveSupport::TestCase
   def test_simple_conversion
@@ -49,7 +49,7 @@ class ToQueryTest < ActiveSupport::TestCase
   end
 
   def test_empty_array
-    assert_equal "person%5B%5D=", [].to_query("person")
+    assert_equal "person%5B%5D", [].to_query("person")
   end
 
   def test_nested_empty_hash
@@ -59,7 +59,7 @@ class ToQueryTest < ActiveSupport::TestCase
       a: 1, b: { c: 3, d: {} }
     assert_query_equal "",
       a: { b: { c: {} } }
-    assert_query_equal "b%5Bc%5D=false&b%5Be%5D=&b%5Bf%5D=&p=12",
+    assert_query_equal "b%5Bc%5D=false&b%5Be%5D&b%5Bf%5D=&p=12",
       p: 12, b: { c: false, e: nil, f: "" }
     assert_query_equal "b%5Bc%5D=3&b%5Bf%5D=",
       b: { c: 3, k: {}, f: "" }
@@ -75,6 +75,20 @@ class ToQueryTest < ActiveSupport::TestCase
   def test_hash_sorted_lexicographically
     hash = { type: "human", name: "Nakshay" }
     assert_equal "name=Nakshay&type=human", hash.to_query
+  end
+
+  def test_hash_not_sorted_lexicographically_for_nested_structure
+    params = {
+      "foo" => {
+        "contents" => [
+          { "name" => "gorby", "id" => "123" },
+          { "name" => "puff", "d" => "true" }
+        ]
+      }
+    }
+    expected = "foo[contents][][name]=gorby&foo[contents][][id]=123&foo[contents][][name]=puff&foo[contents][][d]=true"
+
+    assert_equal expected, URI.decode_www_form_component(params.to_query)
   end
 
   private

@@ -25,21 +25,41 @@ class GeneratorsTest < Rails::Generators::TestCase
 
   def test_invoke_when_generator_is_not_found
     name = :unknown
-    output = capture(:stdout) { Rails::Generators.invoke name }
-    assert_match "Could not find generator '#{name}'", output
-    assert_match "`rails generate --help`", output
+    output = capture(:stdout) {
+      assert_raises SystemExit do
+        Rails::Generators.invoke name
+      end
+    }
+    assert_match "Could not find generator '#{name}'.", output
+    assert_match "`bin/rails generate --help`", output
+    assert_no_match "Did you mean", output
   end
 
   def test_generator_suggestions
     name = :migrationz
-    output = capture(:stdout) { Rails::Generators.invoke name }
-    assert_match "Maybe you meant 'migration'", output
+    output = capture(:stdout) {
+      assert_raises SystemExit do
+        Rails::Generators.invoke name
+      end
+    }
+    assert_match "Did you mean?  migration", output
   end
 
-  def test_generator_multiple_suggestions
+  def test_generator_suggestions_except_en_locale
+    orig_available_locales = I18n.available_locales
+    orig_default_locale = I18n.default_locale
+    I18n.available_locales = :ja
+    I18n.default_locale = :ja
     name = :tas
-    output = capture(:stdout) { Rails::Generators.invoke name }
-    assert_match "Maybe you meant 'task', 'job' or", output
+    output = capture(:stdout) {
+      assert_raises SystemExit do
+        Rails::Generators.invoke name
+      end
+    }
+    assert_match "Did you mean?  task", output
+  ensure
+    I18n.available_locales = orig_available_locales
+    I18n.default_locale = orig_default_locale
   end
 
   def test_help_when_a_generator_with_required_arguments_is_invoked_without_arguments
@@ -51,7 +71,7 @@ class GeneratorsTest < Rails::Generators::TestCase
     assert File.exist?(File.join(@path, "generators", "model_generator.rb"))
     assert_called_with(Rails::Generators::ModelGenerator, :start, [["Account"], {}]) do
       warnings = capture(:stderr) { Rails::Generators.invoke :model, ["Account"] }
-      assert warnings.empty?
+      assert_empty warnings
     end
   end
 
@@ -144,12 +164,12 @@ class GeneratorsTest < Rails::Generators::TestCase
 
   def test_default_banner_should_show_generator_namespace
     klass = Rails::Generators.find_by_namespace(:foobar)
-    assert_match(/^rails generate foobar:foobar/, klass.banner)
+    assert_match(/^bin\/rails generate foobar:foobar/, klass.banner)
   end
 
   def test_default_banner_should_not_show_rails_generator_namespace
     klass = Rails::Generators.find_by_namespace(:model)
-    assert_match(/^rails generate model/, klass.banner)
+    assert_match(/^bin\/rails generate model/, klass.banner)
   end
 
   def test_no_color_sets_proper_shell
@@ -161,18 +181,18 @@ class GeneratorsTest < Rails::Generators::TestCase
 
   def test_fallbacks_for_generators_on_find_by_namespace
     Rails::Generators.fallbacks[:remarkable] = :test_unit
-    klass = Rails::Generators.find_by_namespace(:plugin, :remarkable)
+    klass = Rails::Generators.find_by_namespace(:integration, :remarkable)
     assert klass
-    assert_equal "test_unit:plugin", klass.namespace
+    assert_equal "test_unit:integration", klass.namespace
   ensure
     Rails::Generators.fallbacks.delete(:remarkable)
   end
 
   def test_fallbacks_for_generators_on_find_by_namespace_with_context
     Rails::Generators.fallbacks[:remarkable] = :test_unit
-    klass = Rails::Generators.find_by_namespace(:remarkable, :rails, :plugin)
+    klass = Rails::Generators.find_by_namespace(:remarkable, :rails, :integration)
     assert klass
-    assert_equal "test_unit:plugin", klass.namespace
+    assert_equal "test_unit:integration", klass.namespace
   ensure
     Rails::Generators.fallbacks.delete(:remarkable)
   end

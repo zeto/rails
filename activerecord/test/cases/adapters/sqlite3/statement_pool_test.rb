@@ -10,12 +10,12 @@ class SQLite3StatementPoolTest < ActiveRecord::SQLite3TestCase
       assert_equal "bar", cache["foo"]
 
       pid = fork {
-        lookup = cache["foo"];
+        lookup = cache["foo"]
         exit!(!lookup)
       }
 
       Process.waitpid pid
-      assert $?.success?, "process should exit successfully"
+      assert_predicate $?, :success?, "process should exit successfully"
     end
   end
 end

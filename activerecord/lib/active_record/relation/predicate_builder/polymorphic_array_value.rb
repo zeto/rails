@@ -3,50 +3,56 @@
 module ActiveRecord
   class PredicateBuilder
     class PolymorphicArrayValue # :nodoc:
-      def initialize(associated_table, values)
-        @associated_table = associated_table
+      def initialize(reflection, values)
+        @reflection = reflection
         @values = values
       end
 
       def queries
+        return [ reflection.join_foreign_key => values ] if values.empty?
+
         type_to_ids_mapping.map do |type, ids|
-          {
-            associated_table.association_foreign_type.to_s => type,
-            associated_table.association_foreign_key.to_s => ids
-          }
+          query = {}
+          query[reflection.join_foreign_type] = type if type
+          query[reflection.join_foreign_key] = ids
+          query
         end
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
-        attr_reader :associated_table, :values
-
       private
+        attr_reader :reflection, :values
+
         def type_to_ids_mapping
           default_hash = Hash.new { |hsh, key| hsh[key] = [] }
-          values.each_with_object(default_hash) { |value, hash| hash[base_class(value).name] << convert_to_id(value) }
+          values.each_with_object(default_hash) do |value, hash|
+            hash[klass(value)&.polymorphic_name] << convert_to_id(value)
+          end
         end
 
         def primary_key(value)
-          associated_table.association_primary_key(base_class(value))
+          reflection.join_primary_key(klass(value))
         end
 
-        def base_class(value)
-          case value
-          when Base
-            value.class.base_class
-          when Relation
-            value.klass.base_class
+        def klass(value)
+          if value.is_a?(Base)
+            value.class
+          elsif value.is_a?(Relation)
+            value.model
           end
         end
 
         def convert_to_id(value)
-          case value
-          when Base
-            value._read_attribute(primary_key(value))
-          when Relation
+          if value.is_a?(Base)
+            primary_key = primary_key(value)
+            if primary_key.is_a?(Array)
+              primary_key.map { |column| value._read_attribute(column) }
+            else
+              value._read_attribute(primary_key)
+            end
+          elsif value.is_a?(Relation)
             value.select(primary_key(value))
+          else
+            value
           end
         end
     end

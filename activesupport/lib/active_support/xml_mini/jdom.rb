@@ -5,7 +5,7 @@ raise "JRuby is required to use the JDOM backend for XmlMini" unless RUBY_PLATFO
 require "jruby"
 include Java
 
-require_relative "../core_ext/object/blank"
+require "active_support/core_ext/object/blank"
 
 java_import javax.xml.parsers.DocumentBuilder unless defined? DocumentBuilder
 java_import javax.xml.parsers.DocumentBuilderFactory unless defined? DocumentBuilderFactory
@@ -15,17 +15,10 @@ java_import org.xml.sax.Attributes unless defined? Attributes
 java_import org.w3c.dom.Node unless defined? Node
 
 module ActiveSupport
-  module XmlMini_JDOM #:nodoc:
+  module XmlMini_JDOM # :nodoc:
     extend self
 
-    CONTENT_KEY = "__content__".freeze
-
-    NODE_TYPE_NAMES = %w{ATTRIBUTE_NODE CDATA_SECTION_NODE COMMENT_NODE DOCUMENT_FRAGMENT_NODE
-    DOCUMENT_NODE DOCUMENT_TYPE_NODE ELEMENT_NODE ENTITY_NODE ENTITY_REFERENCE_NODE NOTATION_NODE
-    PROCESSING_INSTRUCTION_NODE TEXT_NODE}
-
-    node_type_map = {}
-    NODE_TYPE_NAMES.each { |type| node_type_map[Node.send(type)] = type }
+    CONTENT_KEY = "__content__"
 
     # Parse an XML Document string or IO into a simple hash using Java's jdom.
     # data::
@@ -53,7 +46,6 @@ module ActiveSupport
     end
 
     private
-
       # Convert an XML element and merge into the hash
       #
       # hash::
@@ -81,7 +73,7 @@ module ActiveSupport
         if child_nodes.length > 0
           (0...child_nodes.length).each do |i|
             child = child_nodes.item(i)
-            merge_element!(hash, child, depth - 1) unless child.node_type == Node.TEXT_NODE
+            merge_element!(hash, child, depth - 1) unless child.node_type == Node::TEXT_NODE
           end
           merge_texts!(hash, element) unless empty_content?(element)
           hash
@@ -157,7 +149,7 @@ module ActiveSupport
         child_nodes = element.child_nodes
         (0...child_nodes.length).each do |i|
           item = child_nodes.item(i)
-          if item.node_type == Node.TEXT_NODE
+          if item.node_type == Node::TEXT_NODE
             texts << item.get_data
           end
         end
@@ -169,11 +161,11 @@ module ActiveSupport
       # element::
       #   XML element to be checked.
       def empty_content?(element)
-        text = "".dup
+        text = +""
         child_nodes = element.child_nodes
         (0...child_nodes.length).each do |i|
           item = child_nodes.item(i)
-          if item.node_type == Node.TEXT_NODE
+          if item.node_type == Node::TEXT_NODE
             text << item.get_data.strip
           end
         end

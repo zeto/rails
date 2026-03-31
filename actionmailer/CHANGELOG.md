@@ -1,20 +1,18 @@
-*   Add `assert_enqueued_email_with` test helper.
+*   Add `assert_part` and `assert_no_part` to `ActionMailer::TestCase`
 
-        assert_enqueued_email_with ContactMailer, :welcome do
-          ContactMailer.welcome.deliver_later
-        end
+    ```ruby
+    test "assert MyMailer.welcome HTML and text parts" do
+      mail = MyMailer.welcome("Hello, world")
 
-    *Mikkel Malmberg*
+      assert_part :text, mail do |text|
+        assert_includes text, "Hello, world"
+      end
+      assert_part :html, mail do |html|
+        assert_dom html.root, "p", "Hello, world"
+      end
+    end
+    ```
 
-*   Allow Action Mailer classes to configure their delivery job.
+    *Sean Doyle*
 
-        class MyMailer < ApplicationMailer
-          self.delivery_job = MyCustomDeliveryJob
-
-          ...
-        end
-
-    *Matthew Mongeau*
-
-
-Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/actionmailer/CHANGELOG.md) for previous changes.
+Please check [8-1-stable](https://github.com/rails/rails/blob/8-1-stable/actionmailer/CHANGELOG.md) for previous changes.

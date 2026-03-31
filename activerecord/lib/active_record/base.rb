@@ -1,30 +1,18 @@
 # frozen_string_literal: true
 
-require "yaml"
 require "active_support/benchmarkable"
 require "active_support/dependencies"
 require "active_support/descendants_tracker"
 require "active_support/time"
-require "active_support/core_ext/module/attribute_accessors"
-require "active_support/core_ext/array/extract_options"
-require "active_support/core_ext/hash/deep_merge"
-require "active_support/core_ext/hash/slice"
-require "active_support/core_ext/hash/transform_values"
-require "active_support/core_ext/string/behavior"
-require "active_support/core_ext/kernel/singleton_class"
-require "active_support/core_ext/module/introspection"
-require "active_support/core_ext/object/duplicable"
 require "active_support/core_ext/class/subclasses"
-require_relative "attribute_decorators"
-require_relative "define_callbacks"
-require_relative "errors"
-require_relative "log_subscriber"
-require_relative "explain_subscriber"
-require_relative "relation/delegation"
-require_relative "attributes"
-require_relative "type_caster"
+require "active_record/log_subscriber"
+require "active_record/structured_event_subscriber"
+require "active_record/relation/delegation"
+require "active_record/attributes"
+require "active_record/type_caster"
+require "active_record/database_configurations"
 
-module ActiveRecord #:nodoc:
+module ActiveRecord # :nodoc:
   # = Active Record
   #
   # Active Record objects don't specify their attributes directly, but rather infer them from
@@ -149,6 +137,23 @@ module ActiveRecord #:nodoc:
   #   anonymous = User.new(name: "")
   #   anonymous.name? # => false
   #
+  # Query methods will also respect any overrides of default accessors:
+  #
+  #   class User
+  #     # Has admin boolean column
+  #     def admin
+  #       false
+  #     end
+  #   end
+  #
+  #   user.update(admin: true)
+  #
+  #   user.read_attribute(:admin)  # => true, gets the column value
+  #   user[:admin] # => true, also gets the column value
+  #
+  #   user.admin   # => false, due to the getter override
+  #   user.admin?  # => false, due to the getter override
+  #
   # == Accessing attributes before they have been typecasted
   #
   # Sometimes you want to be able to read the raw attribute data without having the column-determined
@@ -228,7 +233,7 @@ module ActiveRecord #:nodoc:
   #
   # Connections are usually created through
   # {ActiveRecord::Base.establish_connection}[rdoc-ref:ConnectionHandling#establish_connection] and retrieved
-  # by ActiveRecord::Base.connection. All classes inheriting from ActiveRecord::Base will use this
+  # by ActiveRecord::Base.lease_connection. All classes inheriting from ActiveRecord::Base will use this
   # connection. But you can also set a class-specific connection. For example, if Course is an
   # ActiveRecord::Base, but resides in a different database, you can just say <tt>Course.establish_connection</tt>
   # and Course and all of its subclasses will use this connection instead.
@@ -251,13 +256,13 @@ module ActiveRecord #:nodoc:
   # * AssociationTypeMismatch - The object assigned to the association wasn't of the type
   #   specified in the association definition.
   # * AttributeAssignmentError - An error occurred while doing a mass assignment through the
-  #   {ActiveRecord::Base#attributes=}[rdoc-ref:AttributeAssignment#attributes=] method.
+  #   {ActiveRecord::Base#attributes=}[rdoc-ref:ActiveModel::AttributeAssignment#attributes=] method.
   #   You can inspect the +attribute+ property of the exception object to determine which attribute
   #   triggered the error.
   # * ConnectionNotEstablished - No connection has been established.
   #   Use {ActiveRecord::Base.establish_connection}[rdoc-ref:ConnectionHandling#establish_connection] before querying.
   # * MultiparameterAssignmentErrors - Collection of errors that occurred during a mass assignment using the
-  #   {ActiveRecord::Base#attributes=}[rdoc-ref:AttributeAssignment#attributes=] method.
+  #   {ActiveRecord::Base#attributes=}[rdoc-ref:ActiveModel::AttributeAssignment#attributes=] method.
   #   The +errors+ property of this exception contains an array of
   #   AttributeAssignmentError
   #   objects that should be inspected to determine which attributes triggered the errors.
@@ -275,7 +280,7 @@ module ActiveRecord #:nodoc:
   # So it's possible to assign a logger to the class through <tt>Base.logger=</tt> which will then be used by all
   # instances in the current object space.
   class Base
-    extend ActiveModel::Naming
+    include ActiveModel::API
 
     extend ActiveSupport::Benchmarkable
     extend ActiveSupport::DescendantsTracker
@@ -285,10 +290,11 @@ module ActiveRecord #:nodoc:
     extend Querying
     extend Translation
     extend DynamicMatchers
+    extend DelegatedType
     extend Explain
     extend Enum
     extend Delegation::DelegateCache
-    extend CollectionCacheKey
+    extend Aggregations::ClassMethods
 
     include Core
     include Persistence
@@ -298,23 +304,20 @@ module ActiveRecord #:nodoc:
     include Scoping
     include Sanitization
     include AttributeAssignment
-    include ActiveModel::Conversion
     include Integration
     include Validations
     include CounterCache
     include Attributes
-    include AttributeDecorators
     include Locking::Optimistic
     include Locking::Pessimistic
-    include DefineCallbacks
+    include Encryption::EncryptableRecord
     include AttributeMethods
     include Callbacks
     include Timestamp
     include Associations
-    include ActiveModel::SecurePassword
+    include SecurePassword
     include AutosaveAssociation
     include NestedAttributes
-    include Aggregations
     include Transactions
     include TouchLater
     include NoTouching
@@ -322,7 +325,12 @@ module ActiveRecord #:nodoc:
     include Serialization
     include Store
     include SecureToken
+    include TokenFor
+    include SignedId
     include Suppressor
+    include Marshalling::Methods
+
+    self.param_delimiter = "_"
   end
 
   ActiveSupport.run_load_hooks(:active_record, Base)

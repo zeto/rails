@@ -25,6 +25,10 @@ module ActionView
 
             content
           end
+
+          def to_s
+            translation
+          end
         end
 
         def initialize(object_name, method_name, template_object, content_or_options = nil, options = nil)
@@ -44,18 +48,11 @@ module ActionView
         def render(&block)
           options = @options.stringify_keys
           tag_value = options.delete("value")
-          name_and_id = options.dup
 
-          if name_and_id["for"]
-            name_and_id["id"] = name_and_id["for"]
-          else
-            name_and_id.delete("id")
-          end
-
-          add_default_name_and_id_for_value(tag_value, name_and_id)
+          add_default_name_and_field_for_value(tag_value, options, "for")
           options.delete("index")
+          options.delete("name")
           options.delete("namespace")
-          options["for"] = name_and_id["id"] unless options.key?("for")
 
           builder = LabelBuilder.new(@template_object, @object_name, @method_name, @object, tag_value)
 
@@ -67,17 +64,12 @@ module ActionView
             render_component(builder)
           end
 
-          label_tag(name_and_id["id"], content, options)
+          label_tag(options["for"], content, options)
         end
 
         private
-
           def render_component(builder)
             builder.translation
-          end
-
-          def skip_default_ids?
-            false # The id is used as the `for` attribute.
           end
       end
     end

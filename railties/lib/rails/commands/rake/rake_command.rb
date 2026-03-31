@@ -9,41 +9,50 @@ module Rails
 
       class << self
         def printing_commands
-          formatted_rake_tasks.map(&:first)
+          rake_tasks.filter_map do |task|
+            if task.comment && task.locations.any?(non_app_file_pattern)
+              [task.name_with_args, task.comment]
+            end
+          end
         end
 
-        def perform(task, *)
-          require_rake
+        def perform(task, args, config)
+          with_rake(task, *args) do |rake|
+            if unrecognized_task = (rake.top_level_tasks - ["default"]).find { |task| !rake.lookup(task[/[^\[]+/]) }
+              @rake_tasks = rake.tasks
+              raise UnrecognizedCommandError.new(unrecognized_task)
+            end
 
-          ARGV.unshift(task) # Prepend the task, so Rake knows how to run it.
+            rake.options.suppress_backtrace_pattern = non_app_file_pattern
 
-          Rake.application.standard_exception_handling do
-            Rake.application.init("rails")
-            Rake.application.load_rakefile
-            Rake.application.top_level
+            rake.standard_exception_handling do
+              ActiveSupport.error_reporter.record(source: "rake_command.rails") do
+                rake.top_level
+              end
+            end
           end
         end
 
         private
-          def rake_tasks
-            require_rake
+          def non_app_file_pattern
+            /\A(?!#{Regexp.quote Rails::Command.root.to_s})/
+          end
 
-            return @rake_tasks if defined?(@rake_tasks)
-
-            require_application_and_environment!
-
+          def with_rake(*args, &block)
+            require "rake"
             Rake::TaskManager.record_task_metadata = true
-            Rake.application.instance_variable_set(:@name, "rails")
-            load_tasks
-            @rake_tasks = Rake.application.tasks.select(&:comment)
+
+            result = nil
+            Rake.with_application do |rake|
+              rake.init(bin, args) unless args.empty?
+              rake.load_rakefile
+              result = block.call(rake)
+            end
+            result
           end
 
-          def formatted_rake_tasks
-            rake_tasks.map { |t| [ t.name_with_args, t.comment ] }
-          end
-
-          def require_rake
-            require "rake" # Defer booting Rake until we know it's needed.
+          def rake_tasks
+            @rake_tasks ||= with_rake(&:tasks)
           end
       end
     end

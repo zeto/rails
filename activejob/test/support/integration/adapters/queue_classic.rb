@@ -14,11 +14,22 @@ module QueueClassicJobsManager
 
   def start_workers
     uri = URI.parse(ENV["QC_DATABASE_URL"])
+    host = uri.host
+    port = uri.port
     user = uri.user || ENV["USER"]
     pass = uri.password
     db   = uri.path[1..-1]
-    %x{#{"PGPASSWORD=\"#{pass}\"" if pass} psql -c 'drop database if exists "#{db}"' -U #{user} -t template1}
-    %x{#{"PGPASSWORD=\"#{pass}\"" if pass} psql -c 'create database "#{db}"' -U #{user} -t template1}
+
+    psql = [].tap do |args|
+      args << "PGPASSWORD=\"#{pass}\"" if pass
+      args << "psql -X -U #{user} -t template1"
+      args << "-h #{host}" if host
+      args << "-p #{port}" if port
+    end.join(" ")
+
+    %x{#{psql} -c 'drop database if exists "#{db}"'}
+    %x{#{psql} -c 'create database "#{db}"'}
+
     QC::Setup.create
 
     QC.default_conn_adapter.disconnect
@@ -29,8 +40,9 @@ module QueueClassicJobsManager
     end
 
   rescue PG::ConnectionBad
-    puts "Cannot run integration tests for queue_classic. To be able to run integration tests for queue_classic you need to install and start postgresql.\n"
-    exit
+    puts "Cannot run integration tests for QueueClassic. To be able to run integration tests for QueueClassic you need to install and start PostgreSQL.\n"
+    status = ENV["BUILDKITE"] ? false : true
+    exit status
   end
 
   def stop_workers

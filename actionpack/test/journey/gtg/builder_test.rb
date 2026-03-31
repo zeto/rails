@@ -8,13 +8,13 @@ module ActionDispatch
       class TestBuilder < ActiveSupport::TestCase
         def test_following_states_multi
           table = tt ["a|a"]
-          assert_equal 1, table.move([0], "a").length
+          assert_equal 1, table.move([0, nil], "a", "a", 0, true).each_slice(2).count
         end
 
         def test_following_states_multi_regexp
           table = tt [":a|b"]
-          assert_equal 1, table.move([0], "fooo").length
-          assert_equal 2, table.move([0], "b").length
+          assert_equal 1, table.move([0, nil], "fooo", "fooo", 0, true).each_slice(2).count
+          assert_equal 2, table.move([0, nil], "b", "b", 0, true).each_slice(2).count
         end
 
         def test_multi_path
@@ -25,9 +25,9 @@ module ActionDispatch
             [2, "b"],
             [2, "/"],
             [1, "c"],
-          ].inject([0]) { |state, (exp, sym)|
-            new = table.move(state, sym)
-            assert_equal exp, new.length
+          ].inject([0, nil]) { |state, (exp, sym)|
+            new = table.move(state, sym, sym, 0, sym != "/")
+            assert_equal exp, new.each_slice(2).count
             new
           }
         end
@@ -40,10 +40,10 @@ module ActionDispatch
             /articles/:id(.:format)
           }
 
-          sim = NFA::Simulator.new table
+          sim = Simulator.new table
 
-          match = sim.match "/articles/new"
-          assert_equal 2, match.memos.length
+          memos = sim.memos "/articles/new"
+          assert_equal 2, memos.length
         end
 
         ##
@@ -54,10 +54,27 @@ module ActionDispatch
             /articles/new(.:format)
           }
 
-          sim = NFA::Simulator.new table
+          sim = Simulator.new table
 
-          match = sim.match "/articles/new"
-          assert_equal 2, match.memos.length
+          memos = sim.memos "/articles/new"
+          assert_equal 2, memos.length
+        end
+
+        def test_catchall
+          table = tt %w{
+            /
+            /*unmatched_route
+          }
+
+          sim = Simulator.new table
+
+          # matches just the /*unmatched_route
+          memos = sim.memos "/test"
+          assert_equal 1, memos.length
+
+          # matches just the /
+          memos = sim.memos "/"
+          assert_equal 1, memos.length
         end
 
         private

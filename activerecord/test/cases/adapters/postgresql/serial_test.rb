@@ -9,7 +9,7 @@ class PostgresqlSerialTest < ActiveRecord::PostgreSQLTestCase
   class PostgresqlSerial < ActiveRecord::Base; end
 
   setup do
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
     @connection.create_table "postgresql_serials", force: true do |t|
       t.serial :seq
       t.integer :serials_id, default: -> { "nextval('postgresql_serials_id_seq')" }
@@ -24,14 +24,14 @@ class PostgresqlSerialTest < ActiveRecord::PostgreSQLTestCase
     column = PostgresqlSerial.columns_hash["seq"]
     assert_equal :integer, column.type
     assert_equal "integer", column.sql_type
-    assert column.serial?
+    assert_predicate column, :serial?
   end
 
   def test_not_serial_column
     column = PostgresqlSerial.columns_hash["serials_id"]
     assert_equal :integer, column.type
     assert_equal "integer", column.sql_type
-    assert_not column.serial?
+    assert_not_predicate column, :serial?
   end
 
   def test_schema_dump_with_shorthand
@@ -51,7 +51,7 @@ class PostgresqlBigSerialTest < ActiveRecord::PostgreSQLTestCase
   class PostgresqlBigSerial < ActiveRecord::Base; end
 
   setup do
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
     @connection.create_table "postgresql_big_serials", force: true do |t|
       t.bigserial :seq
       t.bigint :serials_id, default: -> { "nextval('postgresql_big_serials_id_seq')" }
@@ -66,14 +66,14 @@ class PostgresqlBigSerialTest < ActiveRecord::PostgreSQLTestCase
     column = PostgresqlBigSerial.columns_hash["seq"]
     assert_equal :integer, column.type
     assert_equal "bigint", column.sql_type
-    assert column.serial?
+    assert_predicate column, :serial?
   end
 
   def test_not_bigserial_column
     column = PostgresqlBigSerial.columns_hash["serials_id"]
     assert_equal :integer, column.type
     assert_equal "bigint", column.sql_type
-    assert_not column.serial?
+    assert_not_predicate column, :serial?
   end
 
   def test_schema_dump_with_shorthand
@@ -92,7 +92,7 @@ module SequenceNameDetectionTestCases
     include SchemaDumpingHelper
 
     def setup
-      @connection = ActiveRecord::Base.connection
+      @connection = ActiveRecord::Base.lease_connection
       @connection.create_table :foo_bar, force: true do |t|
         t.serial :baz_id
       end
@@ -111,7 +111,7 @@ module SequenceNameDetectionTestCases
       columns = @connection.columns(:foo)
       columns.each do |column|
         assert_equal :integer, column.type
-        assert column.serial?
+        assert_predicate column, :serial?
       end
     end
 
@@ -127,8 +127,8 @@ module SequenceNameDetectionTestCases
 
     def setup
       @table_name = "long_table_name_to_test_sequence_name_detection_for_serial_cols"
-      @connection = ActiveRecord::Base.connection
-      @connection.create_table @table_name, force: true do |t|
+      @connection = ActiveRecord::Base.lease_connection
+      @connection.create_table @table_name, force: true, _uses_legacy_table_name: true do |t|
         t.serial :seq
         t.bigserial :bigseq
       end
@@ -142,7 +142,7 @@ module SequenceNameDetectionTestCases
       columns = @connection.columns(@table_name)
       columns.each do |column|
         assert_equal :integer, column.type
-        assert column.serial?
+        assert_predicate column, :serial?
       end
     end
 

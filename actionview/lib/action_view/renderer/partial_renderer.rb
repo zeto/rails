@@ -1,36 +1,8 @@
 # frozen_string_literal: true
 
-require "concurrent/map"
-require_relative "partial_renderer/collection_caching"
+require "action_view/renderer/partial_renderer/collection_caching"
 
 module ActionView
-  class PartialIteration
-    # The number of iterations that will be done by the partial.
-    attr_reader :size
-
-    # The current iteration of the partial.
-    attr_reader :index
-
-    def initialize(size)
-      @size  = size
-      @index = 0
-    end
-
-    # Check if this is the first iteration of the partial.
-    def first?
-      index == 0
-    end
-
-    # Check if this is the last iteration of the partial.
-    def last?
-      index == size - 1
-    end
-
-    def iterate! # :nodoc:
-      @index += 1
-    end
-  end
-
   # = Action View Partials
   #
   # There's also a convenience method for rendering sub templates within the current controller that depends on a
@@ -55,7 +27,7 @@ module ActionView
   # This would first render <tt>advertiser/_account.html.erb</tt> with <tt>@buyer</tt> passed in as the local variable +account+, then
   # render <tt>advertiser/_ad.html.erb</tt> and pass the local variable +ad+ to the template for display.
   #
-  # == The :as and :object options
+  # == The +:as+ and +:object+ options
   #
   # By default ActionView::PartialRenderer doesn't have any local variables.
   # The <tt>:object</tt> option can be used to pass an object to the partial. For instance:
@@ -75,6 +47,22 @@ module ActionView
   # This is equivalent to
   #
   #   <%= render partial: "account", locals: { user: @buyer } %>
+  #
+  # == \Rendering variants of a partial
+  #
+  # The <tt>:variants</tt> option can be used to render a different template variant of a partial. For instance:
+  #
+  #   <%= render partial: "account", variants: :mobile %>
+  #
+  # This will render <tt>_account.html+mobile.erb</tt>. This option also accepts multiple variants
+  # like so:
+  #
+  #   <%= render partial: "account", variants: [:desktop, :mobile] %>
+  #
+  # This will look for the following templates and render the first one that exists:
+  # * <tt>_account.html+desktop.erb</tt>
+  # * <tt>_account.html+mobile.erb</tt>
+  # * <tt>_account.html.erb</tt>
   #
   # == \Rendering a collection of partials
   #
@@ -105,9 +93,6 @@ module ActionView
   #
   #   <%= render(partial: "ad", collection: @advertisements) || "There's no ad to be displayed" %>
   #
-  # NOTE: Due to backwards compatibility concerns, the collection can't be one of hashes. Normally you'd also
-  # just keep domain objects, like Active Records, in there.
-  #
   # == \Rendering shared partials
   #
   # Two controllers can share a set of partials and render them like this:
@@ -125,7 +110,7 @@ module ActionView
   #  # <%= render partial: "accounts/account", locals: { account: @account} %>
   #  <%= render partial: @account %>
   #
-  #  # @posts is an array of Post instances, so every post record returns 'posts/post' on +to_partial_path+,
+  #  # @posts is an array of Post instances, so every post record returns 'posts/post' on #to_partial_path,
   #  # that's why we can replace:
   #  # <%= render partial: "posts/post", collection: @posts %>
   #  <%= render partial: @posts %>
@@ -145,7 +130,7 @@ module ActionView
   #  # <%= render partial: "accounts/account", locals: { account: @account} %>
   #  <%= render @account %>
   #
-  #  # @posts is an array of Post instances, so every post record returns 'posts/post' on +to_partial_path+,
+  #  # @posts is an array of Post instances, so every post record returns 'posts/post' on #to_partial_path,
   #  # that's why we can replace:
   #  # <%= render partial: "posts/post", collection: @posts %>
   #  <%= render @posts %>
@@ -248,305 +233,51 @@ module ActionView
   #   </div>
   #
   # As you can see, the <tt>:locals</tt> hash is shared between both the partial and its layout.
-  #
-  # If you pass arguments to "yield" then this will be passed to the block. One way to use this is to pass
-  # an array to layout and treat it as an enumerable.
-  #
-  #   <%# app/views/users/_user.html.erb %>
-  #   <div class="user">
-  #     Budget: $<%= user.budget %>
-  #     <%= yield user %>
-  #   </div>
-  #
-  #   <%# app/views/users/index.html.erb %>
-  #   <%= render layout: @users do |user| %>
-  #     Title: <%= user.title %>
-  #   <% end %>
-  #
-  # This will render the layout for each user and yield to the block, passing the user, each time.
-  #
-  # You can also yield multiple times in one layout and use block arguments to differentiate the sections.
-  #
-  #   <%# app/views/users/_user.html.erb %>
-  #   <div class="user">
-  #     <%= yield user, :header %>
-  #     Budget: $<%= user.budget %>
-  #     <%= yield user, :footer %>
-  #   </div>
-  #
-  #   <%# app/views/users/index.html.erb %>
-  #   <%= render layout: @users do |user, section| %>
-  #     <%- case section when :header -%>
-  #       Title: <%= user.title %>
-  #     <%- when :footer -%>
-  #       Deadline: <%= user.deadline %>
-  #     <%- end -%>
-  #   <% end %>
   class PartialRenderer < AbstractRenderer
     include CollectionCaching
 
-    PREFIXED_PARTIAL_NAMES = Concurrent::Map.new do |h, k|
-      h[k] = Concurrent::Map.new
+    def initialize(lookup_context, options)
+      super(lookup_context)
+      @options = options
+      @locals  = @options[:locals] || {}
+      @details = extract_details(@options)
     end
 
-    def initialize(*)
-      super
-      @context_prefix = @lookup_context.prefixes.first
-    end
+    def render(partial, context, block)
+      template = find_template(partial, template_keys(partial))
 
-    def render(context, options, block)
-      setup(context, options, block)
-      @template = find_partial
-
-      @lookup_context.rendered_format ||= begin
-        if @template && @template.formats.present?
-          @template.formats.first
-        else
-          formats.first
-        end
+      if !block && (layout = @options[:layout])
+        layout = find_template(layout.to_s, template_keys(partial))
       end
 
-      if @collection
-        render_collection
-      else
-        render_partial
-      end
+      render_partial_template(context, @locals, template, layout, block)
     end
 
     private
-
-      def render_collection
-        instrument(:collection, count: @collection.size) do |payload|
-          return nil if @collection.blank?
-
-          if @options.key?(:spacer_template)
-            spacer = find_template(@options[:spacer_template], @locals.keys).render(@view, @locals)
-          end
-
-          cache_collection_render(payload) do
-            @template ? collection_with_template : collection_without_template
-          end.join(spacer).html_safe
-        end
+      def template_keys(_)
+        @locals.keys
       end
 
-      def render_partial
-        instrument(:partial) do |payload|
-          view, locals, block = @view, @locals, @block
-          object, as = @object, @variable
-
-          if !block && (layout = @options[:layout])
-            layout = find_template(layout.to_s, @template_keys)
-          end
-
-          object = locals[as] if object.nil? # Respect object when object is false
-          locals[as] = object if @has_object
-
-          content = @template.render(view, locals) do |*name|
+      def render_partial_template(view, locals, template, layout, block)
+        ActiveSupport::Notifications.instrument(
+          "render_partial.action_view",
+          identifier: template.identifier,
+          layout: layout && layout.virtual_path,
+          locals: locals
+        ) do |payload|
+          content = template.render(view, locals, add_to_stack: !block) do |*name|
             view._layout_for(*name, &block)
           end
 
           content = layout.render(view, locals) { content } if layout
-          payload[:cache_hit] = view.view_renderer.cache_hits[@template.virtual_path]
-          content
+          payload[:cache_hit] = view.view_renderer.cache_hits[template.virtual_path]
+          build_rendered_template(content, template)
         end
-      end
-
-      # Sets up instance variables needed for rendering a partial. This method
-      # finds the options and details and extracts them. The method also contains
-      # logic that handles the type of object passed in as the partial.
-      #
-      # If +options[:partial]+ is a string, then the <tt>@path</tt> instance variable is
-      # set to that string. Otherwise, the +options[:partial]+ object must
-      # respond to +to_partial_path+ in order to setup the path.
-      def setup(context, options, block)
-        @view = context
-        @options = options
-        @block   = block
-
-        @locals  = options[:locals] || {}
-        @details = extract_details(options)
-
-        prepend_formats(options[:formats])
-
-        partial = options[:partial]
-
-        if String === partial
-          @has_object = options.key?(:object)
-          @object     = options[:object]
-          @collection = collection_from_options
-          @path       = partial
-        else
-          @has_object = true
-          @object = partial
-          @collection = collection_from_object || collection_from_options
-
-          if @collection
-            paths = @collection_data = @collection.map { |o| partial_path(o) }
-            @path = paths.uniq.one? ? paths.first : nil
-          else
-            @path = partial_path
-          end
-        end
-
-        if as = options[:as]
-          raise_invalid_option_as(as) unless /\A[a-z_]\w*\z/.match?(as.to_s)
-          as = as.to_sym
-        end
-
-        if @path
-          @variable, @variable_counter, @variable_iteration = retrieve_variable(@path, as)
-          @template_keys = retrieve_template_keys
-        else
-          paths.map! { |path| retrieve_variable(path, as).unshift(path) }
-        end
-
-        self
-      end
-
-      def collection_from_options
-        if @options.key?(:collection)
-          collection = @options[:collection]
-          collection ? collection.to_a : []
-        end
-      end
-
-      def collection_from_object
-        @object.to_ary if @object.respond_to?(:to_ary)
-      end
-
-      def find_partial
-        find_template(@path, @template_keys) if @path
       end
 
       def find_template(path, locals)
         prefixes = path.include?(?/) ? [] : @lookup_context.prefixes
         @lookup_context.find_template(path, prefixes, true, locals, @details)
-      end
-
-      def collection_with_template
-        view, locals, template = @view, @locals, @template
-        as, counter, iteration = @variable, @variable_counter, @variable_iteration
-
-        if layout = @options[:layout]
-          layout = find_template(layout, @template_keys)
-        end
-
-        partial_iteration = PartialIteration.new(@collection.size)
-        locals[iteration] = partial_iteration
-
-        @collection.map do |object|
-          locals[as]        = object
-          locals[counter]   = partial_iteration.index
-
-          content = template.render(view, locals)
-          content = layout.render(view, locals) { content } if layout
-          partial_iteration.iterate!
-          content
-        end
-      end
-
-      def collection_without_template
-        view, locals, collection_data = @view, @locals, @collection_data
-        cache = {}
-        keys  = @locals.keys
-
-        partial_iteration = PartialIteration.new(@collection.size)
-
-        @collection.map do |object|
-          index = partial_iteration.index
-          path, as, counter, iteration = collection_data[index]
-
-          locals[as]        = object
-          locals[counter]   = index
-          locals[iteration] = partial_iteration
-
-          template = (cache[path] ||= find_template(path, keys + [as, counter, iteration]))
-          content = template.render(view, locals)
-          partial_iteration.iterate!
-          content
-        end
-      end
-
-      # Obtains the path to where the object's partial is located. If the object
-      # responds to +to_partial_path+, then +to_partial_path+ will be called and
-      # will provide the path. If the object does not respond to +to_partial_path+,
-      # then an +ArgumentError+ is raised.
-      #
-      # If +prefix_partial_path_with_controller_namespace+ is true, then this
-      # method will prefix the partial paths with a namespace.
-      def partial_path(object = @object)
-        object = object.to_model if object.respond_to?(:to_model)
-
-        path = if object.respond_to?(:to_partial_path)
-          object.to_partial_path
-        else
-          raise ArgumentError.new("'#{object.inspect}' is not an ActiveModel-compatible object. It must implement :to_partial_path.")
-        end
-
-        if @view.prefix_partial_path_with_controller_namespace
-          prefixed_partial_names[path] ||= merge_prefix_into_object_path(@context_prefix, path.dup)
-        else
-          path
-        end
-      end
-
-      def prefixed_partial_names
-        @prefixed_partial_names ||= PREFIXED_PARTIAL_NAMES[@context_prefix]
-      end
-
-      def merge_prefix_into_object_path(prefix, object_path)
-        if prefix.include?(?/) && object_path.include?(?/)
-          prefixes = []
-          prefix_array = File.dirname(prefix).split("/")
-          object_path_array = object_path.split("/")[0..-3] # skip model dir & partial
-
-          prefix_array.each_with_index do |dir, index|
-            break if dir == object_path_array[index]
-            prefixes << dir
-          end
-
-          (prefixes << object_path).join("/")
-        else
-          object_path
-        end
-      end
-
-      def retrieve_template_keys
-        keys = @locals.keys
-        keys << @variable if @has_object || @collection
-        if @collection
-          keys << @variable_counter
-          keys << @variable_iteration
-        end
-        keys
-      end
-
-      def retrieve_variable(path, as)
-        variable = as || begin
-          base = path[-1] == "/".freeze ? "".freeze : File.basename(path)
-          raise_invalid_identifier(path) unless base =~ /\A_?(.*?)(?:\.\w+)*\z/
-          $1.to_sym
-        end
-        if @collection
-          variable_counter = :"#{variable}_counter"
-          variable_iteration = :"#{variable}_iteration"
-        end
-        [variable, variable_counter, variable_iteration]
-      end
-
-      IDENTIFIER_ERROR_MESSAGE = "The partial name (%s) is not a valid Ruby identifier; " \
-                                 "make sure your partial name starts with underscore."
-
-      OPTION_AS_ERROR_MESSAGE  = "The value (%s) of the option `as` is not a valid Ruby identifier; " \
-                                 "make sure it starts with lowercase letter, " \
-                                 "and is followed by any combination of letters, numbers and underscores."
-
-      def raise_invalid_identifier(path)
-        raise ArgumentError.new(IDENTIFIER_ERROR_MESSAGE % (path))
-      end
-
-      def raise_invalid_option_as(as)
-        raise ArgumentError.new(OPTION_AS_ERROR_MESSAGE % (as))
       end
   end
 end

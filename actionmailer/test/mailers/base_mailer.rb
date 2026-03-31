@@ -5,7 +5,7 @@ class BaseMailer < ActionMailer::Base
 
   default to: "system@test.lindsaar.net",
           from: "jose@test.plataformatec.com",
-          reply_to: "mikel@test.lindsaar.net"
+          reply_to: email_address_with_name("mikel@test.lindsaar.net", "Mikel")
 
   def welcome(hash = {})
     headers["X-SPAM"] = "Not SPAM"
@@ -21,6 +21,21 @@ class BaseMailer < ActionMailer::Base
     mail(template_name: "welcome", template_path: path)
   end
 
+  def welcome_without_deliveries(hash = {})
+    mail({ template_name: "welcome" }.merge!(hash))
+    mail.perform_deliveries = false
+  end
+
+  def with_name
+    to = email_address_with_name("sunny@example.com", "Sunny")
+    mail(template_name: "welcome", to: to)
+  end
+
+  def with_blank_name
+    to = email_address_with_name("sunny@example.com", "")
+    mail(template_name: "welcome", to: to)
+  end
+
   def html_only(hash = {})
     mail(hash)
   end
@@ -31,6 +46,12 @@ class BaseMailer < ActionMailer::Base
 
   def inline_attachment
     attachments.inline["logo.png"] = "\312\213\254\232"
+    mail
+  end
+
+  def inline_and_other_attachments
+    attachments.inline["logo.png"] = "\312\213\254\232"
+    attachments["certificate.pdf"] = "This is test File content"
     mail
   end
 
@@ -54,6 +75,10 @@ class BaseMailer < ActionMailer::Base
 
   def implicit_multipart(hash = {})
     attachments["invoice.pdf"] = "This is test File content" if hash.delete(:attachments)
+    mail(hash)
+  end
+
+  def implicit_multipart_formats(hash = {})
     mail(hash)
   end
 
@@ -104,6 +129,13 @@ class BaseMailer < ActionMailer::Base
 
   def implicit_different_template(template_name = "")
     mail(template_name: template_name)
+  end
+
+  def implicit_different_template_with_block(template_name = "")
+    mail(template_name: template_name) do |format|
+      format.text
+      format.html
+    end
   end
 
   def explicit_different_template(template_name = "")

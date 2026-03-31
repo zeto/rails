@@ -2,11 +2,10 @@
 
 require "abstract_unit"
 require "controller/fake_models"
-require "pathname"
 
 class RenderJSTest < ActionController::TestCase
   class TestController < ActionController::Base
-    protect_from_forgery
+    protect_from_forgery with: :null_session
 
     def self.controller_path
       "test"
@@ -26,7 +25,7 @@ class RenderJSTest < ActionController::TestCase
   def test_render_vanilla_js
     get :render_vanilla_js_hello, xhr: true
     assert_equal "alert('hello')", @response.body
-    assert_equal "text/javascript", @response.content_type
+    assert_equal "text/javascript", @response.media_type
   end
 
   def test_should_render_js_partial

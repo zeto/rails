@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
-require "active_support/core_ext/object"
+require_relative "../../abstract_unit"
+require "active_support/core_ext/object/deep_dup"
 
 class DeepDupTest < ActiveSupport::TestCase
   def test_array_deep_dup
@@ -47,7 +47,7 @@ class DeepDupTest < ActiveSupport::TestCase
     object = Object.new
     dup = object.deep_dup
     dup.instance_variable_set(:@a, 1)
-    assert !object.instance_variable_defined?(:@a)
+    assert_not object.instance_variable_defined?(:@a)
     assert dup.instance_variable_defined?(:@a)
   end
 
@@ -55,5 +55,27 @@ class DeepDupTest < ActiveSupport::TestCase
     hash = { Integer => 1 }
     dup = hash.deep_dup
     assert_equal 1, dup.keys.length
+  end
+
+  def test_deep_dup_with_mutable_frozen_key
+    key = { array: [] }.freeze
+    hash = { key => :value }
+
+    dup = hash.deep_dup
+    dup.transform_keys { |k| k[:array] << :array_element }
+
+    assert_not_equal hash.keys, dup.keys
+  end
+
+  def test_named_modules_arent_duped
+    hash = { class: Object, module: Kernel }
+    assert_equal hash, hash.deep_dup
+  end
+
+  def test_anonymous_modules_are_duped
+    hash = { class: Class.new, module: Module.new }
+    duped_hash = hash.deep_dup
+    assert_not_equal hash[:class], duped_hash[:class]
+    assert_not_equal hash[:module], duped_hash[:module]
   end
 end

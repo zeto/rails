@@ -1,10 +1,13 @@
 # frozen_string_literal: true
 
+# = Active Storage \Blob
+#
 # A blob is a record that contains the metadata about a file and a key for where that file resides on the service.
 # Blobs can be created in two ways:
 #
-# 1. Subsequent to the file being uploaded server-side to the service via <tt>create_after_upload!</tt>.
-# 2. Ahead of the file being directly uploaded client-side to the service via <tt>create_before_direct_upload!</tt>.
+# 1. Ahead of the file being uploaded server-side to the service, via <tt>create_and_upload!</tt>. A rewindable
+#    <tt>io</tt> with the file contents must be available at the server for this operation.
+# 2. Ahead of the file being directly uploaded client-side to the service, via <tt>create_before_direct_upload!</tt>.
 #
 # The first option doesn't require any client-side JavaScript integration, and can be used by any other back-end
 # service that deals with files. The second option is faster, since you're not using your own server as a staging
@@ -13,47 +16,103 @@
 # Blobs are intended to be immutable in as-so-far as their reference to a specific file goes. You're allowed to
 # update a blob's metadata on a subsequent pass, but you should not update the key or change the uploaded file.
 # If you need to create a derivative or otherwise change the blob, simply create a new blob and purge the old one.
-class ActiveStorage::Blob < ActiveRecord::Base
-  class UnpreviewableError < StandardError; end
-  class UnrepresentableError < StandardError; end
+#
+# When using a custom +key+, the value is treated as trusted. Using untrusted user input
+# as the key may result in unexpected behavior.
+class ActiveStorage::Blob < ActiveStorage::Record
+  MINIMUM_TOKEN_LENGTH = 28
 
-  self.table_name = "active_storage_blobs"
+  has_secure_token :key, length: MINIMUM_TOKEN_LENGTH
 
-  has_secure_token :key
-  store :metadata, coder: JSON
+  # FIXME: these property should never have been stored in the metadata.
+  # The blob table should be migrated to have dedicated columns for theses.
+  PROTECTED_METADATA = %w(analyzed identified composed)
+  private_constant :PROTECTED_METADATA
+  store :metadata, accessors: [ :analyzed, :identified, :composed ], coder: ActiveRecord::Coders::JSON
 
-  class_attribute :service
+  # Temporary reference to a local io during the upload flow. When set,
+  # +open+ will use this instead of downloading from the service. This
+  # enables analysis and other operations to run on the local file before
+  # uploading, avoiding a download round-trip.
+  attr_accessor :local_io
 
-  has_many :attachments
+  class_attribute :services, default: {}
+  class_attribute :service, instance_accessor: false
 
-  has_one_attached :preview_image
+  ##
+  # :method:
+  #
+  # Returns the associated ActiveStorage::Attachment instances.
+  has_many :attachments, autosave: false
+
+  ##
+  # :singleton-method:
+  #
+  # Returns the blobs that aren't attached to any record.
+  scope :unattached, -> { where.missing(:attachments) }
+
+  after_initialize do
+    self.service_name ||= self.class.service&.name
+  end
+
+  after_update :touch_attachments
+
+  after_update_commit :update_service_metadata, if: -> { content_type_previously_changed? || metadata_previously_changed? }
+
+  before_destroy(prepend: true) do
+    raise ActiveRecord::InvalidForeignKey if attachments.exists?
+  end
+
+  validates :service_name, presence: true
+  validates :checksum, presence: true, unless: :composed
+
+  validate do
+    if service_name_changed? && service_name.present?
+      services.fetch(service_name) do
+        errors.add(:service_name, :invalid)
+      end
+    end
+  end
 
   class << self
-    # You can used the signed ID of a blob to refer to it on the client side without fear of tampering.
+    # You can use the signed ID of a blob to refer to it on the client side without fear of tampering.
     # This is particularly helpful for direct uploads where the client-side needs to refer to the blob
     # that was created ahead of the upload itself on form submission.
     #
     # The signed ID is also used to create stable URLs for the blob through the BlobsController.
-    def find_signed(id)
-      find ActiveStorage.verifier.verify(id, purpose: :blob_id)
+    def find_signed(id, record: nil, purpose: :blob_id)
+      super(id, purpose: purpose)
     end
 
-    # Returns a new, unsaved blob instance after the +io+ has been uploaded to the service.
-    def build_after_upload(io:, filename:, content_type: nil, metadata: nil)
-      new.tap do |blob|
-        blob.filename     = filename
-        blob.content_type = content_type
-        blob.metadata     = metadata
+    # Works like +find_signed+, but will raise an +ActiveSupport::MessageVerifier::InvalidSignature+
+    # exception if the +signed_id+ has either expired, has a purpose mismatch, or has been tampered with.
+    # It will also raise an +ActiveRecord::RecordNotFound+ exception if the valid signed id can't find a record.
+    def find_signed!(id, record: nil, purpose: :blob_id)
+      super(id, purpose: purpose)
+    end
 
-        blob.upload io
+    def build_after_unfurling(key: nil, io:, filename:, content_type: nil, metadata: nil, service_name: nil, identify: true, record: nil) # :nodoc:
+      new(key: key, filename: filename, content_type: content_type, metadata: metadata, service_name: service_name).tap do |blob|
+        blob.unfurl(io, identify: identify)
       end
     end
 
-    # Returns a saved blob instance after the +io+ has been uploaded to the service. Note, the blob is first built,
-    # then the +io+ is uploaded, then the blob is saved. This is done this way to avoid uploading (which may take
-    # time), while having an open database transaction.
-    def create_after_upload!(io:, filename:, content_type: nil, metadata: nil)
-      build_after_upload(io: io, filename: filename, content_type: content_type, metadata: metadata).tap(&:save!)
+    def create_after_unfurling!(key: nil, io:, filename:, content_type: nil, metadata: nil, service_name: nil, identify: true, record: nil) # :nodoc:
+      build_after_unfurling(key: key, io: io, filename: filename, content_type: content_type, metadata: metadata, service_name: service_name, identify: identify).tap(&:save!)
+    end
+
+    # Creates a new blob instance and then uploads the contents of
+    # the given <tt>io</tt> to the service. The blob instance is going to
+    # be saved before the upload begins to prevent the upload clobbering another due to key collisions.
+    # When providing a content type, pass <tt>identify: false</tt> to bypass
+    # automatic content type inference.
+    #
+    # The optional +key+ parameter is treated as trusted. Using untrusted user input
+    # as the key may result in unexpected behavior.
+    def create_and_upload!(key: nil, io:, filename:, content_type: nil, metadata: nil, service_name: nil, identify: true, record: nil)
+      create_after_unfurling!(key: key, io: io, filename: filename, content_type: content_type, metadata: metadata, service_name: service_name, identify: identify).tap do |blob|
+        blob.upload_without_unfurling(io)
+      end
     end
 
     # Returns a saved blob _without_ uploading a file to the service. This blob will point to a key where there is
@@ -61,24 +120,83 @@ class ActiveStorage::Blob < ActiveRecord::Base
     # in order to produce the signed URL for uploading. This signed URL points to the key generated by the blob.
     # Once the form using the direct upload is submitted, the blob can be associated with the right record using
     # the signed ID.
-    def create_before_direct_upload!(filename:, byte_size:, checksum:, content_type: nil, metadata: nil)
-      create! filename: filename, byte_size: byte_size, checksum: checksum, content_type: content_type, metadata: metadata
+    def create_before_direct_upload!(key: nil, filename:, byte_size:, checksum:, content_type: nil, metadata: nil, service_name: nil, record: nil)
+      metadata = filter_metadata(metadata)
+      create! key: key, filename: filename, byte_size: byte_size, checksum: checksum, content_type: content_type, metadata: metadata, service_name: service_name
     end
+
+    # To prevent problems with case-insensitive filesystems, especially in combination
+    # with databases which treat indices as case-sensitive, all blob keys generated are going
+    # to only contain the base-36 character alphabet and will therefore be lowercase. To maintain
+    # the same or higher amount of entropy as in the base-58 encoding used by +has_secure_token+
+    # the number of bytes used is increased to 28 from the standard 24
+    def generate_unique_secure_token(length: MINIMUM_TOKEN_LENGTH)
+      SecureRandom.base36(length)
+    end
+
+    # Customize signed ID purposes for backwards compatibility.
+    def combine_signed_id_purposes(purpose) # :nodoc:
+      purpose.to_s
+    end
+
+    # Customize the default signed ID verifier for backwards compatibility.
+    #
+    # We override the reader (.signed_id_verifier) instead of just calling the writer (.signed_id_verifier=)
+    # to guard against the case where ActiveStorage.verifier isn't yet initialized at load time.
+    def signed_id_verifier # :nodoc:
+      @signed_id_verifier ||= ActiveStorage.verifier
+    end
+
+    def scope_for_strict_loading # :nodoc:
+      if self.strict_loading_by_default? && ActiveStorage.track_variants
+        includes(
+          variant_records: { image_attachment: :blob },
+          preview_image_attachment: { blob: { variant_records: { image_attachment: :blob } } }
+        )
+      else
+        all
+      end
+    end
+
+    # Concatenate multiple blobs into a single "composed" blob.
+    def compose(blobs, key: nil, filename:, content_type: nil, metadata: nil)
+      raise ActiveRecord::RecordNotSaved, "All blobs must be persisted." if blobs.any?(&:new_record?)
+
+      content_type ||= blobs.pluck(:content_type).compact.first
+
+      new(key: key, filename: filename, content_type: content_type, metadata: metadata, byte_size: blobs.sum(&:byte_size)).tap do |combined_blob|
+        combined_blob.compose(blobs.pluck(:key))
+        combined_blob.save!
+      end
+    end
+
+    private
+      def filter_metadata(metadata)
+        if metadata.is_a?(Hash)
+          metadata.without(*PROTECTED_METADATA)
+        else
+          metadata
+        end
+      end
   end
 
+  include Analyzable
+  include Identifiable
+  include Representable
+  include Servable
 
   # Returns a signed ID for this blob that's suitable for reference on the client-side without fear of tampering.
-  # It uses the framework-wide verifier on <tt>ActiveStorage.verifier</tt>, but with a dedicated purpose.
-  def signed_id
-    ActiveStorage.verifier.generate(id, purpose: :blob_id)
+  def signed_id(purpose: :blob_id, expires_in: nil, expires_at: nil)
+    super
   end
 
-  # Returns the key pointing to the file on the service that's associated with this blob. The key is in the
-  # standard secure-token format from Rails. So it'll look like: XTAPjJCJiuDrLk3TmwyJGpUo. This key is not intended
-  # to be revealed directly to the user. Always refer to blobs using the signed_id or a verified form of the key.
+  # Returns the key pointing to the file on the service that's associated with this blob. The key is the
+  # secure-token format from \Rails in lower case. So it'll look like: xtapjjcjiudrlk3tmwyjgpuobabd.
+  # This key is not intended to be revealed directly to the user.
+  # Always refer to blobs using the signed_id or a verified form of the key.
   def key
     # We can't wait until the record is first saved to have a key for it
-    self[:key] ||= self.class.generate_unique_secure_token
+    self[:key] ||= self.class.generate_unique_secure_token(length: MINIMUM_TOKEN_LENGTH)
   end
 
   # Returns an ActiveStorage::Filename instance of the filename that can be
@@ -88,117 +206,54 @@ class ActiveStorage::Blob < ActiveRecord::Base
     ActiveStorage::Filename.new(self[:filename])
   end
 
+  def custom_metadata
+    self[:metadata][:custom] || {}
+  end
+
+  def custom_metadata=(metadata)
+    self[:metadata] = self[:metadata].merge(custom: metadata)
+  end
+
   # Returns true if the content_type of this blob is in the image range, like image/png.
   def image?
-    content_type.start_with?("image")
+    content_type&.start_with?("image")
   end
 
   # Returns true if the content_type of this blob is in the audio range, like audio/mpeg.
   def audio?
-    content_type.start_with?("audio")
+    content_type&.start_with?("audio")
   end
 
   # Returns true if the content_type of this blob is in the video range, like video/mp4.
   def video?
-    content_type.start_with?("video")
+    content_type&.start_with?("video")
   end
 
   # Returns true if the content_type of this blob is in the text range, like text/plain.
   def text?
-    content_type.start_with?("text")
+    content_type&.start_with?("text")
   end
 
-  # Returns an ActiveStorage::Variant instance with the set of +transformations+ provided. This is only relevant for image
-  # files, and it allows any image to be transformed for size, colors, and the like. Example:
-  #
-  #   avatar.variant(resize: "100x100").processed.service_url
-  #
-  # This will create and process a variant of the avatar blob that's constrained to a height and width of 100px.
-  # Then it'll upload said variant to the service according to a derivative key of the blob and the transformations.
-  #
-  # Frequently, though, you don't actually want to transform the variant right away. But rather simply refer to a
-  # specific variant that can be created by a controller on-demand. Like so:
-  #
-  #   <%= image_tag Current.user.avatar.variant(resize: "100x100") %>
-  #
-  # This will create a URL for that specific blob with that specific variant, which the ActiveStorage::VariantsController
-  # can then produce on-demand.
-  def variant(transformations)
-    ActiveStorage::Variant.new(self, ActiveStorage::Variation.wrap(transformations))
-  end
-
-
-  # Returns an ActiveStorage::Preview instance with the set of +transformations+ provided. A preview is an image generated
-  # from a non-image blob. Active Storage comes with built-in previewers for videos and PDF documents. The video previewer
-  # extracts the first frame from a video and the PDF previewer extracts the first page from a PDF document.
-  #
-  #   blob.preview(resize: "100x100").processed.service_url
-  #
-  # Avoid processing previews synchronously in views. Instead, link to a controller action that processes them on demand.
-  # Active Storage provides one, but you may want to create your own (for example, if you need authentication). Here’s
-  # how to use the built-in version:
-  #
-  #   <%= image_tag video.preview(resize: "100x100") %>
-  #
-  # This method raises ActiveStorage::Blob::UnpreviewableError if no previewer accepts the receiving blob. To determine
-  # whether a blob is accepted by any previewer, call ActiveStorage::Blob#previewable?.
-  def preview(transformations)
-    if previewable?
-      ActiveStorage::Preview.new(self, ActiveStorage::Variation.wrap(transformations))
-    else
-      raise UnpreviewableError
-    end
-  end
-
-  # Returns true if any registered previewer accepts the blob. By default, this will return true for videos and PDF documents.
-  def previewable?
-    ActiveStorage.previewers.any? { |klass| klass.accept?(self) }
-  end
-
-
-  # Returns an ActiveStorage::Preview instance for a previewable blob or an ActiveStorage::Variant instance for an image blob.
-  #
-  #   blob.representation(resize: "100x100").processed.service_url
-  #
-  # Raises ActiveStorage::Blob::UnrepresentableError if the receiving blob is neither an image nor previewable. Call
-  # ActiveStorage::Blob#representable? to determine whether a blob is representable.
-  #
-  # See ActiveStorage::Blob#preview and ActiveStorage::Blob#variant for more information.
-  def representation(transformations)
-    case
-    when previewable?
-      preview transformations
-    when image?
-      variant transformations
-    else
-      raise UnrepresentableError
-    end
-  end
-
-  # Returns true if the blob is an image or is previewable.
-  def representable?
-    image? || previewable?
-  end
-
-
-  # Returns the URL of the blob on the service. This URL is intended to be short-lived for security and not used directly
-  # with users. Instead, the +service_url+ should only be exposed as a redirect from a stable, possibly authenticated URL.
-  # Hiding the +service_url+ behind a redirect also gives you the power to change services without updating all URLs. And
-  # it allows permanent URLs that redirect to the +service_url+ to be cached in the view.
-  def service_url(expires_in: service.url_expires_in, disposition: "inline")
-    service.url key, expires_in: expires_in, disposition: disposition, filename: filename, content_type: content_type
+  # Returns the URL of the blob on the service. This returns a permanent URL for public files, and returns a
+  # short-lived URL for private files. Private files are signed, and not for public use. Instead,
+  # the URL should only be exposed as a redirect from a stable, possibly authenticated URL. Hiding the
+  # URL behind a redirect also allows you to change services without updating all URLs.
+  def url(expires_in: ActiveStorage.service_urls_expire_in, disposition: :inline, filename: nil, **options)
+    service.url key, expires_in: expires_in, filename: ActiveStorage::Filename.wrap(filename || self.filename),
+      content_type: content_type_for_serving, disposition: forced_disposition_for_serving || disposition, **options
   end
 
   # Returns a URL that can be used to directly upload a file for this blob on the service. This URL is intended to be
   # short-lived for security and only generated on-demand by the client-side JavaScript responsible for doing the uploading.
-  def service_url_for_direct_upload(expires_in: service.url_expires_in)
-    service.url_for_direct_upload key, expires_in: expires_in, content_type: content_type, content_length: byte_size, checksum: checksum
+  def service_url_for_direct_upload(expires_in: ActiveStorage.service_urls_expire_in)
+    service.url_for_direct_upload key, expires_in: expires_in, content_type: content_type, content_length: byte_size, checksum: checksum, custom_metadata: custom_metadata
   end
 
   # Returns a Hash of headers for +service_url_for_direct_upload+ requests.
   def service_headers_for_direct_upload
-    service.headers_for_direct_upload key, filename: filename, content_type: content_type, content_length: byte_size, checksum: checksum
+    service.headers_for_direct_upload key, filename: filename, content_type: content_type, content_length: byte_size, checksum: checksum, custom_metadata: custom_metadata
   end
+
 
   # Uploads the +io+ to the service on the +key+ for this blob. Blobs are intended to be immutable, so you shouldn't be
   # using this method after a file has already been uploaded to fit with a blob. If you want to create a derivative blob,
@@ -206,15 +261,31 @@ class ActiveStorage::Blob < ActiveRecord::Base
   #
   # Prior to uploading, we compute the checksum, which is sent to the service for transit integrity validation. If the
   # checksum does not match what the service receives, an exception will be raised. We also measure the size of the +io+
-  # and store that in +byte_size+ on the blob record.
+  # and store that in +byte_size+ on the blob record. The content type is automatically extracted from the +io+ unless
+  # you specify a +content_type+ and pass +identify+ as false.
   #
-  # Normally, you do not have to call this method directly at all. Use the factory class methods of +build_after_upload+
-  # and +create_after_upload!+.
-  def upload(io)
-    self.checksum  = compute_checksum_in_chunks(io)
-    self.byte_size = io.size
+  # Normally, you do not have to call this method directly at all. Use the +create_and_upload!+ class method instead.
+  # If you do use this method directly, make sure you are using it on a persisted Blob as otherwise another blob's
+  # data might get overwritten on the service.
+  def upload(io, identify: true)
+    unfurl io, identify: identify
+    upload_without_unfurling io
+  end
 
-    service.upload(key, io, checksum: checksum)
+  def unfurl(io, identify: true) # :nodoc:
+    self.checksum     = service&.compute_checksum(io)
+    self.content_type = extract_content_type(io) if content_type.nil? || identify
+    self.byte_size    = io.size
+    self.identified   = true
+  end
+
+  def upload_without_unfurling(io) # :nodoc:
+    service.upload key, io, checksum: checksum, **service_metadata
+  end
+
+  def compose(keys) # :nodoc:
+    self.composed = true
+    service.compose(keys, key, **service_metadata)
   end
 
   # Downloads the file associated with this blob. If no block is given, the entire file is read into memory and returned.
@@ -223,36 +294,123 @@ class ActiveStorage::Blob < ActiveRecord::Base
     service.download key, &block
   end
 
+  # Downloads a part of the file associated with this blob.
+  def download_chunk(range)
+    service.download_chunk key, range
+  end
 
-  # Deletes the file on the service that's associated with this blob. This should only be done if the blob is going to be
-  # deleted as well or you will essentially have a dead reference. It's recommended to use the +#purge+ and +#purge_later+
+  # Downloads the blob to a temporary file on disk. If a block is given, the file is automatically closed and unlinked
+  # after the block executed. Otherwise the file is returned and you are responsible for closing and unlinking.
+  #
+  # The tempfile's name is prefixed with +ActiveStorage-+ and the blob's ID. Its extension matches that of the blob.
+  #
+  # By default, the tempfile is created in <tt>Dir.tmpdir</tt>. Pass +tmpdir:+ to create it in a different directory:
+  #
+  #   blob.open(tmpdir: "/path/to/tmp") do |file|
+  #     # ...
+  #   end
+  #
+  # Raises ActiveStorage::IntegrityError if the downloaded data does not match the blob's checksum.
+  def open(tmpdir: nil, &block)
+    if local_io
+      open_local_io(tmpdir: tmpdir, &block)
+    else
+      service.open(
+        key,
+        checksum: checksum,
+        verify: !composed,
+        name: [ "ActiveStorage-#{id}-", filename.extension_with_delimiter ],
+        tmpdir: tmpdir,
+        &block
+      )
+    end
+  end
+
+  def mirror_later # :nodoc:
+    service.mirror_later key, checksum: checksum if service.respond_to?(:mirror_later)
+  end
+
+  # Deletes the files on the service associated with the blob. This should only be done if the blob is going to be
+  # deleted as well or you will essentially have a dead reference. It's recommended to use #purge and #purge_later
   # methods in most circumstances.
   def delete
-    service.delete key
+    service.delete(key)
+    service.delete_prefixed("variants/#{key}/") if image?
   end
 
-  # Deletes the file on the service and then destroys the blob record. This is the recommended way to dispose of unwanted
-  # blobs. Note, though, that deleting the file off the service will initiate a HTTP connection to the service, which may
-  # be slow or prevented, so you should not use this method inside a transaction or in callbacks. Use +#purge_later+ instead.
+  # Destroys the blob record and then deletes the file on the service. This is the recommended way to dispose of unwanted
+  # blobs. Note, though, that deleting the file off the service will initiate an HTTP connection to the service, which may
+  # be slow or prevented, so you should not use this method inside a transaction or in callbacks. Use #purge_later instead.
   def purge
-    delete
     destroy
+    delete if previously_persisted?
+  rescue ActiveRecord::InvalidForeignKey
   end
 
-  # Enqueues an ActiveStorage::PurgeJob job that'll call +purge+. This is the recommended way to purge blobs when the call
-  # needs to be made from a transaction, a callback, or any other real-time scenario.
+  # Enqueues an ActiveStorage::PurgeJob to call #purge. This is the recommended way to purge blobs from a transaction,
+  # an Active Record callback, or in any other real-time scenario.
   def purge_later
     ActiveStorage::PurgeJob.perform_later(self)
   end
 
-  private
-    def compute_checksum_in_chunks(io)
-      Digest::MD5.new.tap do |checksum|
-        while chunk = io.read(5.megabytes)
-          checksum << chunk
-        end
+  # Returns an instance of service, which can be configured globally or per attachment
+  def service
+    services.fetch(service_name) if service_name
+  end
 
-        io.rewind
-      end.base64digest
+  private
+    # Opens a local io for reading, yielding a file-like object. If the io
+    # is already a File with a path, yield it directly. Otherwise, copy to
+    # a tempfile first since analyzers need file paths.
+    def open_local_io(tmpdir:)
+      if local_io.respond_to?(:path) && local_io.path && File.exist?(local_io.path)
+        local_io.rewind if local_io.respond_to?(:rewind)
+        yield local_io
+      else
+        Tempfile.open([ "ActiveStorage-#{id}-", filename.extension_with_delimiter ], tmpdir) do |file|
+          file.binmode
+          local_io.rewind if local_io.respond_to?(:rewind)
+          IO.copy_stream(local_io, file)
+          local_io.rewind if local_io.respond_to?(:rewind)
+          file.rewind
+          yield file
+        end
+      end
+    end
+
+    def extract_content_type(io)
+      Marcel::MimeType.for io, name: filename.to_s, declared_type: content_type
+    end
+
+    def web_image?
+      ActiveStorage.web_image_content_types.include?(content_type)
+    end
+
+    def service_metadata
+      if forcibly_serve_as_binary?
+        { content_type: ActiveStorage.binary_content_type, disposition: :attachment, filename: filename, custom_metadata: custom_metadata }
+      elsif !allowed_inline?
+        { content_type: content_type, disposition: :attachment, filename: filename, custom_metadata: custom_metadata }
+      else
+        { content_type: content_type, custom_metadata: custom_metadata }
+      end
+    end
+
+    def touch_attachments
+      attachments.then do |relation|
+        if ActiveStorage.touch_attachment_records
+          relation.includes(:record)
+        else
+          relation
+        end
+      end.each do |attachment|
+        attachment.touch
+      end
+    end
+
+    def update_service_metadata
+      service.update_metadata key, **service_metadata if service_metadata.any?
     end
 end
+
+ActiveSupport.run_load_hooks :active_storage_blob, ActiveStorage::Blob

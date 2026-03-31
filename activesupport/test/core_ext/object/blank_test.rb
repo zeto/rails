@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../../abstract_unit"
 require "active_support/core_ext/object/blank"
 
 class BlankTest < ActiveSupport::TestCase
@@ -22,6 +22,13 @@ class BlankTest < ActiveSupport::TestCase
   def test_blank
     BLANK.each { |v| assert_equal true, v.blank?,  "#{v.inspect} should be blank" }
     NOT.each   { |v| assert_equal false, v.blank?, "#{v.inspect} should not be blank" }
+  end
+
+  def test_blank_with_bundled_string_encodings
+    Encoding.list.reject(&:dummy?).each do |encoding|
+      assert_predicate " ".encode(encoding), :blank?
+      assert_not_predicate "a".encode(encoding), :blank?
+    end
   end
 
   def test_present

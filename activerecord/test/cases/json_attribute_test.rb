@@ -18,15 +18,30 @@ class JsonAttributeTest < ActiveRecord::TestCase
 
   def setup
     super
+    @connection.drop_table("json_data_type", if_exists: true)
     @connection.create_table("json_data_type") do |t|
-      t.text "payload"
-      t.text "settings"
+      t.string "payload"
+      t.string "settings"
     end
+  end
+
+  def test_invalid_json_can_be_updated
+    model = klass.create!
+    @connection.execute("UPDATE #{klass.table_name} SET payload = '---'")
+
+    model.reload
+    assert_equal "---", model.payload_before_type_cast
+    assert_error_reported(JSON::ParserError) do
+      assert_nil model.payload
+    end
+
+    model.update(payload: "no longer invalid")
+    assert_equal("no longer invalid", model.payload)
   end
 
   private
     def column_type
-      :text
+      :string
     end
 
     def klass

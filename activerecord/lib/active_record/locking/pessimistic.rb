@@ -2,10 +2,12 @@
 
 module ActiveRecord
   module Locking
+    # = \Pessimistic \Locking
+    #
     # Locking::Pessimistic provides support for row-level locking using
     # SELECT ... FOR UPDATE and other lock types.
     #
-    # Chain <tt>ActiveRecord::Base#find</tt> to <tt>ActiveRecord::QueryMethods#lock</tt> to obtain an exclusive
+    # Chain <tt>ActiveRecord::Base#find</tt> to ActiveRecord::QueryMethods#lock to obtain an exclusive
     # lock on the selected rows:
     #   # select * from accounts where id=1 for update
     #   Account.lock.find(1)
@@ -14,9 +16,9 @@ module ActiveRecord
     # of your own such as 'LOCK IN SHARE MODE' or 'FOR UPDATE NOWAIT'. Example:
     #
     #   Account.transaction do
-    #     # select * from accounts where name = 'shugo' limit 1 for update
-    #     shugo = Account.where("name = 'shugo'").lock(true).first
-    #     yuko = Account.where("name = 'yuko'").lock(true).first
+    #     # select * from accounts where name = 'shugo' limit 1 for update nowait
+    #     shugo = Account.lock("FOR UPDATE NOWAIT").find_by(name: "shugo")
+    #     yuko = Account.lock("FOR UPDATE NOWAIT").find_by(name: "yuko")
     #     shugo.balance -= 100
     #     shugo.save!
     #     yuko.balance += 100
@@ -42,45 +44,65 @@ module ActiveRecord
     #
     # You can start a transaction and acquire the lock in one go by calling
     # <tt>with_lock</tt> with a block. The block is called from within
-    # a transaction, the object is already locked. Example:
+    # a transaction, the object is already locked, and the transaction is
+    # yielded so you can register callbacks. Example:
     #
     #   account = Account.first
-    #   account.with_lock do
+    #   account.with_lock do |transaction|
     #     # This block is called within a transaction,
     #     # account is already locked.
+    #     transaction.after_commit { puts "hello" }
     #     account.balance -= 100
     #     account.save!
     #   end
     #
     # Database-specific information on row locking:
-    #   MySQL: https://dev.mysql.com/doc/refman/5.7/en/innodb-locking-reads.html
-    #   PostgreSQL: https://www.postgresql.org/docs/current/interactive/sql-select.html#SQL-FOR-UPDATE-SHARE
+    #
+    # [MySQL]
+    #   https://dev.mysql.com/doc/refman/en/innodb-locking-reads.html
+    #
+    # [PostgreSQL]
+    #   https://www.postgresql.org/docs/current/interactive/sql-select.html#SQL-FOR-UPDATE-SHARE
     module Pessimistic
       # Obtain a row lock on this record. Reloads the record to obtain the requested
       # lock. Pass an SQL locking clause to append the end of the SELECT statement
       # or pass true for "FOR UPDATE" (the default, an exclusive row lock). Returns
       # the locked record.
       def lock!(lock = true)
+        if self.class.current_preventing_writes
+          raise ActiveRecord::ReadOnlyError, "Lock query attempted while in readonly mode"
+        end
+
         if persisted?
-          if changed?
-            ActiveSupport::Deprecation.warn(<<-MSG.squish)
-              Locking a record with unpersisted changes is deprecated and will raise an
-              exception in Rails 5.2. Use `save` to persist the changes, or `reload` to
-              discard them explicitly.
+          if has_changes_to_save?
+            raise(<<-MSG.squish)
+              Locking a record with unpersisted changes is not supported. Use
+              `save` to persist the changes, or `reload` to discard them
+              explicitly.
+              Changed attributes: #{changed.map(&:inspect).join(', ')}.
             MSG
           end
+
           reload(lock: lock)
         end
+
         self
       end
 
-      # Wraps the passed block in a transaction, locking the object
-      # before yielding. You can pass the SQL locking clause
-      # as argument (see <tt>lock!</tt>).
-      def with_lock(lock = true)
-        transaction do
+      # Wraps the passed block in a transaction, reloading the object with a
+      # lock before yielding. Yields the current transaction so you can
+      # register callbacks. You can pass the SQL locking clause
+      # as an optional argument (see #lock!).
+      #
+      # You can also pass options like <tt>requires_new:</tt>, <tt>isolation:</tt>,
+      # and <tt>joinable:</tt> to the wrapping transaction (see
+      # ActiveRecord::ConnectionAdapters::DatabaseStatements#transaction).
+      def with_lock(*args)
+        transaction_opts = args.extract_options!
+        lock = args.present? ? args.first : true
+        transaction(**transaction_opts) do |transaction|
           lock!(lock)
-          yield
+          yield transaction
         end
       end
     end

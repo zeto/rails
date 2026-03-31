@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "../abstract_unit"
 require "active_support/time"
-require "core_ext/date_and_time_behavior"
-require "time_zone_test_helpers"
+require_relative "../core_ext/date_and_time_behavior"
+require_relative "../time_zone_test_helpers"
 
 class TimeExtCalculationsTest < ActiveSupport::TestCase
   def date_time_init(year, month, day, hour, minute, second, usec = 0)
@@ -110,17 +110,42 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
   end
 
   def test_sec_fraction
-    time = Time.utc(2016, 4, 23, 0, 0, Rational(1, 10000000000))
-    assert_equal Rational(1, 10000000000), time.sec_fraction
+    time = Time.utc(2016, 4, 23, 0, 0, Rational(1, 1_000_000_000))
+    assert_equal Rational(1, 1_000_000_000), time.sec_fraction
 
-    time = Time.utc(2016, 4, 23, 0, 0, 0.0000000001)
-    assert_equal 0.0000000001.to_r, time.sec_fraction
+    time = Time.utc(2016, 4, 23, 0, 0, 0.000_000_001)
+    assert_kind_of Rational, time.sec_fraction
+    assert_equal 0.000_000_001, time.sec_fraction.to_f
 
-    time = Time.utc(2016, 4, 23, 0, 0, 0, Rational(1, 10000))
-    assert_equal Rational(1, 10000000000), time.sec_fraction
+    time = Time.utc(2016, 4, 23, 0, 0, 0, Rational(1, 1_000))
+    assert_equal Rational(1, 1_000_000_000), time.sec_fraction
 
-    time = Time.utc(2016, 4, 23, 0, 0, 0, 0.0001)
-    assert_equal 0.0001.to_r / 1000000, time.sec_fraction
+    time = Time.utc(2016, 4, 23, 0, 0, 0, 0.001)
+    assert_kind_of Rational, time.sec_fraction
+    assert_equal 0.001.to_r / 1000000, time.sec_fraction.to_f
+  end
+
+  def test_floor
+    time = Time.utc(2016, 4, 23, 0, 0, "0.123456789".to_r)
+
+    assert_equal "0".to_r, time.floor.subsec
+    assert_equal "0.1".to_r, time.floor(1).subsec
+    assert_equal "0.12".to_r, time.floor(2).subsec
+    assert_equal "0.123456789".to_r, time.floor(9).subsec
+    assert_equal "0.123456789".to_r, time.floor(10).subsec
+  end
+
+  def test_ceil
+    time = Time.utc(2016, 4, 30, 23, 59, "59.123456789".to_r)
+
+    assert_equal "0".to_r, time.ceil.subsec
+    assert_equal Time.utc(2016, 5, 1, 0, 0), time.ceil
+
+    assert_equal "0.124".to_r, time.ceil(3).subsec
+    assert_equal "0.12346".to_r, time.ceil(5).subsec
+    assert_equal "0.12345679".to_r, time.ceil(8).subsec
+    assert_equal "0.123456789".to_r, time.ceil(9).subsec
+    assert_equal "0.123456789".to_r.to_f, time.ceil(11).subsec.to_f
   end
 
   def test_beginning_of_day
@@ -176,10 +201,6 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
 
   def test_end_of_minute
     assert_equal Time.local(2005, 2, 4, 19, 30, 59, Rational(999999999, 1000)), Time.local(2005, 2, 4, 19, 30, 10).end_of_minute
-  end
-
-  def test_last_year
-    assert_equal Time.local(2004, 6, 5, 10),  Time.local(2005, 6, 5, 10, 0, 0).last_year
   end
 
   def test_ago
@@ -442,6 +463,128 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     assert_raise(ArgumentError) { Time.new(2005, 2, 22, 15, 15, 45, "+01:00").change(nsec: 1000000000, offset: -28800) }
   end
 
+  def test_change_preserves_offset_for_local_times_around_end_of_dst
+    with_env_tz "US/Eastern" do
+      # DST ended just before 2005-10-30 2:00:00 AM in US/Eastern, and clocks
+      # were rolled back 1 hour.
+      midnight = Time.local(2005, 10, 30, 00, 00, 00)     # 2005-10-30 00:00:00 -0400
+      one_am_1 = Time.local(2005, 10, 30, 00, 59, 59) + 1 # 2005-10-30 01:00:00 -0400
+      one_am_2 = Time.local(2005, 10, 30, 01, 00, 00)     # 2005-10-30 01:00:00 -0500
+      two_am   = Time.local(2005, 10, 30, 02, 00, 00)     # 2005-10-30 02:00:00 -0500
+      assert_operator one_am_1, :<, one_am_2
+
+      assert_equal one_am_1, midnight.change(hour: 1)
+      assert_equal two_am, midnight.change(hour: 2)
+
+      assert_equal midnight, one_am_1.change(hour: 0)
+      assert_equal one_am_1, one_am_1.change(hour: 1)
+      assert_equal one_am_1 + 1, one_am_1.change(sec: 1)
+      assert_equal two_am, one_am_1.change(hour: 2)
+
+      assert_equal midnight, one_am_2.change(hour: 0)
+      assert_equal one_am_2, one_am_2.change(hour: 1)
+      assert_equal one_am_2 + 1, one_am_2.change(sec: 1)
+      assert_equal two_am, one_am_2.change(hour: 2)
+
+      assert_equal one_am_2, two_am.change(hour: 1)
+      assert_equal midnight, two_am.change(hour: 0)
+    end
+  end
+
+  def test_change_preserves_offset_for_zoned_times_around_end_of_dst
+    with_tz_default "US/Eastern" do
+      # DST ended just before 2005-10-30 2:00:00 AM in US/Eastern, and clocks
+      # were rolled back 1 hour.
+      midnight = Time.new(2005, 10, 30, 00, 00, 00, Time.zone)        # 2005-10-30 00:00:00 -0400
+      one_am_1 = Time.new(2005, 10, 30, 01, 00, 00, Time.zone)        # 2005-10-30 01:00:00 -0400
+      one_am_2 = Time.new(2005, 10, 30, 02, 00, 00, Time.zone) - 3600 # 2005-10-30 01:00:00 -0500
+      two_am   = Time.new(2005, 10, 30, 02, 00, 00, Time.zone)        # 2005-10-30 02:00:00 -0500
+      assert_operator one_am_1, :<, one_am_2
+
+      assert_equal one_am_1, midnight.change(hour: 1)
+      assert_equal two_am, midnight.change(hour: 2)
+
+      assert_equal midnight, one_am_1.change(hour: 0)
+      assert_equal one_am_1, one_am_1.change(hour: 1)
+      assert_equal one_am_1 + 1, one_am_1.change(sec: 1)
+      assert_equal two_am, one_am_1.change(hour: 2)
+
+      assert_equal midnight, one_am_2.change(hour: 0)
+      assert_equal one_am_2, one_am_2.change(hour: 1)
+      assert_equal one_am_2 + 1, one_am_2.change(sec: 1)
+      assert_equal two_am, one_am_2.change(hour: 2)
+
+      assert_equal one_am_2, two_am.change(hour: 1)
+      assert_equal midnight, two_am.change(hour: 0)
+    end
+  end
+
+  def test_change_preserves_fractional_seconds_on_zoned_time
+    with_tz_default "US/Eastern" do
+      time = Time.new(2005, 10, 30, 00, 00, 0.99r, Time.zone) + 0
+      time2 = time.change(month: 1)
+
+      assert_equal "2005-10-30 00:00:00.99 -0400", time.inspect
+      assert_equal "2005-01-30 00:00:00.99 -0500", time2.inspect
+    end
+  end
+
+  def test_change_preserves_fractional_hour_offset_for_local_times_around_end_of_dst
+    with_env_tz "Australia/Lord_Howe" do
+      # DST ended just before 2005-03-27 2:00:00 AM in Australia/Lord_Howe, and
+      # clocks were rolled back 30 minutes.
+      one_am     = Time.local(2005, 03, 27, 01, 00, 00)     # 2005-03-27 00:00:00 +1100
+      one30_am_1 = Time.local(2005, 03, 27, 01, 29, 59) + 1 # 2005-03-27 01:30:00 +1100
+      one30_am_2 = Time.local(2005, 03, 27, 01, 30, 00)     # 2005-03-27 01:30:00 +1030
+      two_am     = Time.local(2005, 03, 27, 02, 00, 00)     # 2005-03-27 02:00:00 +1030
+      assert_operator one30_am_1, :<, one30_am_2
+
+      assert_equal one30_am_1, one_am.change(min: 30)
+      assert_equal two_am, one_am.change(hour: 2)
+
+      assert_equal one_am, one30_am_1.change(min: 0)
+      assert_equal one30_am_1, one30_am_1.change(min: 30)
+      assert_equal one30_am_1 + 1, one30_am_1.change(min: 30, sec: 1)
+      assert_equal two_am, one30_am_1.change(hour: 2)
+
+      assert_equal one_am, one30_am_2.change(min: 0)
+      assert_equal one30_am_2, one30_am_2.change(min: 30)
+      assert_equal one30_am_2 + 1, one30_am_2.change(min: 30, sec: 1)
+      assert_equal two_am, one30_am_2.change(hour: 2)
+
+      assert_equal one30_am_2, two_am.change(hour: 1, min: 30)
+      assert_equal one_am, two_am.change(hour: 1)
+    end
+  end
+
+  def test_change_preserves_fractional_hour_offset_for_zoned_times_around_end_of_dst
+    with_tz_default "Australia/Lord_Howe" do
+      # DST ended just before 2005-03-27 2:00:00 AM in Australia/Lord_Howe, and
+      # clocks were rolled back 30 minutes.
+      one_am     = Time.new(2005, 03, 27, 01, 00, 00, Time.zone)        # 2005-03-27 00:00:00 +1100
+      one30_am_1 = Time.new(2005, 03, 27, 01, 30, 00, Time.zone)        # 2005-03-27 01:30:00 +1100
+      one30_am_2 = Time.new(2005, 03, 27, 02, 00, 00, Time.zone) - 1800 # 2005-03-27 01:30:00 +1030
+      two_am     = Time.new(2005, 03, 27, 02, 00, 00, Time.zone)        # 2005-03-27 02:00:00 +1030
+      assert_operator one30_am_1, :<, one30_am_2
+
+      assert_equal one30_am_1, one_am.change(min: 30)
+      assert_equal two_am, one_am.change(hour: 2)
+
+      assert_equal one_am, one30_am_1.change(min: 0)
+      assert_equal one30_am_1, one30_am_1.change(min: 30)
+      assert_equal one30_am_1 + 1, one30_am_1.change(min: 30, sec: 1)
+      assert_equal two_am, one30_am_1.change(hour: 2)
+
+      assert_equal one_am, one30_am_2.change(min: 0)
+      assert_equal one30_am_2, one30_am_2.change(min: 30)
+      assert_equal one30_am_2 + 1, one30_am_2.change(min: 30, sec: 1)
+      assert_equal two_am, one30_am_2.change(hour: 2)
+
+      assert_equal one30_am_2, two_am.change(hour: 1, min: 30)
+      assert_equal one_am, two_am.change(hour: 1)
+    end
+  end
+
   def test_advance
     assert_equal Time.local(2006, 2, 28, 15, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(years: 1)
     assert_equal Time.local(2005, 6, 28, 15, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(months: 4)
@@ -455,13 +598,21 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Time.local(2013, 10, 3, 15, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(years: 7, months: 19, days: 5)
     assert_equal Time.local(2013, 10, 17, 15, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(years: 7, months: 19, weeks: 2, days: 5)
     assert_equal Time.local(2001, 12, 27, 15, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(years: -3, months: -2, days: -1)
-    assert_equal Time.local(2005, 2, 28, 15, 15, 10), Time.local(2004, 2, 29, 15, 15, 10).advance(years: 1) #leap day plus one year
+    assert_equal Time.local(2005, 2, 28, 15, 15, 10), Time.local(2004, 2, 29, 15, 15, 10).advance(years: 1) # leap day plus one year
     assert_equal Time.local(2005, 2, 28, 20, 15, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(hours: 5)
     assert_equal Time.local(2005, 2, 28, 15, 22, 10), Time.local(2005, 2, 28, 15, 15, 10).advance(minutes: 7)
     assert_equal Time.local(2005, 2, 28, 15, 15, 19), Time.local(2005, 2, 28, 15, 15, 10).advance(seconds: 9)
     assert_equal Time.local(2005, 2, 28, 20, 22, 19), Time.local(2005, 2, 28, 15, 15, 10).advance(hours: 5, minutes: 7, seconds: 9)
     assert_equal Time.local(2005, 2, 28, 10, 8, 1), Time.local(2005, 2, 28, 15, 15, 10).advance(hours: -5, minutes: -7, seconds: -9)
     assert_equal Time.local(2013, 10, 17, 20, 22, 19), Time.local(2005, 2, 28, 15, 15, 10).advance(years: 7, months: 19, weeks: 2, days: 5, hours: 5, minutes: 7, seconds: 9)
+
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00"), Time.new(2021, 5, 29, 0, 0, 0, ActiveSupport::TimeZone["Moscow"])
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00").advance(seconds: 60), Time.new(2021, 5, 29, 0, 0, 0, ActiveSupport::TimeZone["Moscow"]).advance(seconds: 60)
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00").advance(days: 3), Time.new(2021, 5, 29, 0, 0, 0, ActiveSupport::TimeZone["Moscow"]).advance(days: 3)
+
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00"), ActiveSupport::TimeZone["Moscow"].local(2021, 5, 29, 0, 0, 0)
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00").advance(seconds: 60), ActiveSupport::TimeZone["Moscow"].local(2021, 5, 29, 0, 0, 0).advance(seconds: 60)
+    assert_equal Time.new(2021, 5, 29, 0, 0, 0, "+03:00").advance(days: 3), ActiveSupport::TimeZone["Moscow"].local(2021, 5, 29, 0, 0, 0).advance(days: 3)
   end
 
   def test_utc_advance
@@ -477,7 +628,7 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Time.utc(2013, 10, 3, 15, 15, 10), Time.utc(2005, 2, 22, 15, 15, 10).advance(years: 7, months: 19, days: 11)
     assert_equal Time.utc(2013, 10, 17, 15, 15, 10), Time.utc(2005, 2, 28, 15, 15, 10).advance(years: 7, months: 19, weeks: 2, days: 5)
     assert_equal Time.utc(2001, 12, 27, 15, 15, 10), Time.utc(2005, 2, 28, 15, 15, 10).advance(years: -3, months: -2, days: -1)
-    assert_equal Time.utc(2005, 2, 28, 15, 15, 10), Time.utc(2004, 2, 29, 15, 15, 10).advance(years: 1) #leap day plus one year
+    assert_equal Time.utc(2005, 2, 28, 15, 15, 10), Time.utc(2004, 2, 29, 15, 15, 10).advance(years: 1) # leap day plus one year
     assert_equal Time.utc(2005, 2, 28, 20, 15, 10), Time.utc(2005, 2, 28, 15, 15, 10).advance(hours: 5)
     assert_equal Time.utc(2005, 2, 28, 15, 22, 10), Time.utc(2005, 2, 28, 15, 15, 10).advance(minutes: 7)
     assert_equal Time.utc(2005, 2, 28, 15, 15, 19), Time.utc(2005, 2, 28, 15, 15, 10).advance(seconds: 9)
@@ -499,7 +650,7 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Time.new(2013, 10, 3, 15, 15, 10, "-08:00"), Time.new(2005, 2, 22, 15, 15, 10, "-08:00").advance(years: 7, months: 19, days: 11)
     assert_equal Time.new(2013, 10, 17, 15, 15, 10, "-08:00"), Time.new(2005, 2, 28, 15, 15, 10, "-08:00").advance(years: 7, months: 19, weeks: 2, days: 5)
     assert_equal Time.new(2001, 12, 27, 15, 15, 10, "-08:00"), Time.new(2005, 2, 28, 15, 15, 10, "-08:00").advance(years: -3, months: -2, days: -1)
-    assert_equal Time.new(2005, 2, 28, 15, 15, 10, "-08:00"), Time.new(2004, 2, 29, 15, 15, 10, "-08:00").advance(years: 1) #leap day plus one year
+    assert_equal Time.new(2005, 2, 28, 15, 15, 10, "-08:00"), Time.new(2004, 2, 29, 15, 15, 10, "-08:00").advance(years: 1) # leap day plus one year
     assert_equal Time.new(2005, 2, 28, 20, 15, 10, "-08:00"), Time.new(2005, 2, 28, 15, 15, 10, "-08:00").advance(hours: 5)
     assert_equal Time.new(2005, 2, 28, 15, 22, 10, "-08:00"), Time.new(2005, 2, 28, 15, 15, 10, "-08:00").advance(minutes: 7)
     assert_equal Time.new(2005, 2, 28, 15, 15, 19, "-08:00"), Time.new(2005, 2, 28, 15, 15, 10, "-08:00").advance(seconds: 9)
@@ -518,6 +669,136 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     assert_equal Time.local(1582, 10, 15, 15, 15, 10), Time.local(1582, 10, 14, 15, 15, 10).advance(days: 1)
     assert_equal Time.local(1582, 10, 5, 15, 15, 10), Time.local(1582, 10, 4, 15, 15, 10).advance(days: 1)
     assert_equal Time.local(1582, 10, 4, 15, 15, 10), Time.local(1582, 10, 5, 15, 15, 10).advance(days: -1)
+    assert_equal Time.local(999, 10, 4, 15, 15, 10), Time.local(1000, 10, 4, 15, 15, 10).advance(years: -1)
+    assert_equal Time.local(1000, 10, 4, 15, 15, 10), Time.local(999, 10, 4, 15, 15, 10).advance(years: 1)
+  end
+
+  def test_advance_preserves_offset_for_local_times_around_end_of_dst
+    with_env_tz "US/Eastern" do
+      # DST ended just before 2005-10-30 2:00:00 AM in US/Eastern, and clocks
+      # were rolled back 1 hour.
+      midnight = Time.local(2005, 10, 30, 00, 00, 00)     # 2005-10-30 00:00:00 -0400
+      one_am_1 = Time.local(2005, 10, 30, 00, 59, 59) + 1 # 2005-10-30 01:00:00 -0400
+      one_am_2 = Time.local(2005, 10, 30, 01, 00, 00)     # 2005-10-30 01:00:00 -0500
+      two_am   = Time.local(2005, 10, 30, 02, 00, 00)     # 2005-10-30 02:00:00 -0500
+      assert_operator one_am_1, :<, one_am_2
+
+      assert_equal one_am_1, midnight.advance(hours: 1)
+      assert_equal one_am_2, midnight.advance(hours: 2)
+      assert_equal two_am, midnight.advance(hours: 3)
+
+      assert_equal midnight, one_am_1.advance(hours: -1)
+      assert_equal one_am_1, one_am_1.advance(seconds: 0)
+      assert_equal one_am_1 + 1, one_am_1.advance(seconds: 1)
+      assert_equal one_am_2, one_am_1.advance(hours: 1)
+      assert_equal two_am, one_am_1.advance(hours: 2)
+
+      assert_equal midnight, one_am_2.advance(hours: -2)
+      assert_equal one_am_1, one_am_2.advance(hours: -1)
+      assert_equal one_am_2, one_am_2.advance(seconds: 0)
+      assert_equal one_am_2 + 1, one_am_2.advance(seconds: 1)
+      assert_equal two_am, one_am_2.advance(hours: 1)
+
+      assert_equal one_am_2, two_am.advance(hours: -1)
+      assert_equal one_am_1, two_am.advance(hours: -2)
+      assert_equal midnight, two_am.advance(hours: -3)
+    end
+  end
+
+  def test_advance_preserves_offset_for_zoned_times_around_end_of_dst
+    with_tz_default "US/Eastern" do
+      # DST ended just before 2005-10-30 2:00:00 AM in US/Eastern, and clocks
+      # were rolled back 1 hour.
+      midnight = Time.new(2005, 10, 30, 00, 00, 00, Time.zone)        # 2005-10-30 00:00:00 -0400
+      one_am_1 = Time.new(2005, 10, 30, 01, 00, 00, Time.zone)        # 2005-10-30 01:00:00 -0400
+      one_am_2 = Time.new(2005, 10, 30, 02, 00, 00, Time.zone) - 3600 # 2005-10-30 01:00:00 -0500
+      two_am   = Time.new(2005, 10, 30, 02, 00, 00, Time.zone)        # 2005-10-30 02:00:00 -0500
+      assert_operator one_am_1, :<, one_am_2
+
+      assert_equal one_am_1, midnight.advance(hours: 1)
+      assert_equal one_am_2, midnight.advance(hours: 2)
+      assert_equal two_am, midnight.advance(hours: 3)
+
+      assert_equal midnight, one_am_1.advance(hours: -1)
+      assert_equal one_am_1, one_am_1.advance(seconds: 0)
+      assert_equal one_am_1 + 1, one_am_1.advance(seconds: 1)
+      assert_equal one_am_2, one_am_1.advance(hours: 1)
+      assert_equal two_am, one_am_1.advance(hours: 2)
+
+      assert_equal midnight, one_am_2.advance(hours: -2)
+      assert_equal one_am_1, one_am_2.advance(hours: -1)
+      assert_equal one_am_2, one_am_2.advance(seconds: 0)
+      assert_equal one_am_2 + 1, one_am_2.advance(seconds: 1)
+      assert_equal two_am, one_am_2.advance(hours: 1)
+
+      assert_equal one_am_2, two_am.advance(hours: -1)
+      assert_equal one_am_1, two_am.advance(hours: -2)
+      assert_equal midnight, two_am.advance(hours: -3)
+    end
+  end
+
+  def test_advance_preserves_fractional_hour_offset_for_local_times_around_end_of_dst
+    with_env_tz "Australia/Lord_Howe" do
+      # DST ended just before 2005-03-27 2:00:00 AM in Australia/Lord_Howe, and
+      # clocks were rolled back 30 minutes.
+      one_am     = Time.local(2005, 03, 27, 01, 00, 00)     # 2005-03-27 00:00:00 +1100
+      one30_am_1 = Time.local(2005, 03, 27, 01, 29, 59) + 1 # 2005-03-27 01:30:00 +1100
+      one30_am_2 = Time.local(2005, 03, 27, 01, 30, 00)     # 2005-03-27 01:30:00 +1030
+      two_am     = Time.local(2005, 03, 27, 02, 00, 00)     # 2005-03-27 02:00:00 +1030
+      assert_operator one30_am_1, :<, one30_am_2
+
+      assert_equal one30_am_1, one_am.advance(minutes: 30)
+      assert_equal one30_am_2, one_am.advance(minutes: 60)
+      assert_equal two_am, one_am.advance(minutes: 90)
+
+      assert_equal one_am, one30_am_1.advance(minutes: -30)
+      assert_equal one30_am_1, one30_am_1.advance(seconds: 0)
+      assert_equal one30_am_1 + 1, one30_am_1.advance(seconds: 1)
+      assert_equal one30_am_2, one30_am_1.advance(minutes: 30)
+      assert_equal two_am, one30_am_1.advance(minutes: 60)
+
+      assert_equal one_am, one30_am_2.advance(minutes: -60)
+      assert_equal one30_am_1, one30_am_2.advance(minutes: -30)
+      assert_equal one30_am_2, one30_am_2.advance(seconds: 0)
+      assert_equal one30_am_2 + 1, one30_am_2.advance(seconds: 1)
+      assert_equal two_am, one30_am_2.advance(minutes: 30)
+
+      assert_equal one30_am_2, two_am.advance(minutes: -30)
+      assert_equal one30_am_1, two_am.advance(minutes: -60)
+      assert_equal one_am, two_am.advance(minutes: -90)
+    end
+  end
+
+  def test_advance_preserves_fractional_hour_offset_for_zoned_times_around_end_of_dst
+    with_tz_default "Australia/Lord_Howe" do
+      # DST ended just before 2005-03-27 2:00:00 AM in Australia/Lord_Howe, and
+      # clocks were rolled back 30 minutes.
+      one_am     = Time.new(2005, 03, 27, 01, 00, 00, Time.zone)        # 2005-03-27 00:00:00 +1100
+      one30_am_1 = Time.new(2005, 03, 27, 01, 30, 00, Time.zone)        # 2005-03-27 01:30:00 +1100
+      one30_am_2 = Time.new(2005, 03, 27, 02, 00, 00, Time.zone) - 1800 # 2005-03-27 01:30:00 +1030
+      two_am     = Time.new(2005, 03, 27, 02, 00, 00, Time.zone)        # 2005-03-27 02:00:00 +1030
+      assert_operator one30_am_1, :<, one30_am_2
+
+      assert_equal one30_am_1, one_am.advance(minutes: 30)
+      assert_equal one30_am_2, one_am.advance(minutes: 60)
+      assert_equal two_am, one_am.advance(minutes: 90)
+
+      assert_equal one_am, one30_am_1.advance(minutes: -30)
+      assert_equal one30_am_1, one30_am_1.advance(seconds: 0)
+      assert_equal one30_am_1 + 1, one30_am_1.advance(seconds: 1)
+      assert_equal one30_am_2, one30_am_1.advance(minutes: 30)
+      assert_equal two_am, one30_am_1.advance(minutes: 60)
+
+      assert_equal one_am, one30_am_2.advance(minutes: -60)
+      assert_equal one30_am_1, one30_am_2.advance(minutes: -30)
+      assert_equal one30_am_2, one30_am_2.advance(seconds: 0)
+      assert_equal one30_am_2 + 1, one30_am_2.advance(seconds: 1)
+      assert_equal two_am, one30_am_2.advance(minutes: 30)
+
+      assert_equal one30_am_2, two_am.advance(minutes: -30)
+      assert_equal one30_am_1, two_am.advance(minutes: -60)
+      assert_equal one_am, two_am.advance(minutes: -90)
+    end
   end
 
   def test_last_week
@@ -548,33 +829,41 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     end
   end
 
-  def test_to_s
+  def test_to_fs
     time = Time.utc(2005, 2, 21, 17, 44, 30.12345678901)
-    assert_equal time.to_default_s,                 time.to_s
-    assert_equal time.to_default_s,                 time.to_s(:doesnt_exist)
-    assert_equal "2005-02-21 17:44:30",             time.to_s(:db)
-    assert_equal "21 Feb 17:44",                    time.to_s(:short)
-    assert_equal "17:44",                           time.to_s(:time)
-    assert_equal "20050221174430",                  time.to_s(:number)
-    assert_equal "20050221174430123456789",         time.to_s(:nsec)
-    assert_equal "20050221174430123456",            time.to_s(:usec)
-    assert_equal "February 21, 2005 17:44",         time.to_s(:long)
-    assert_equal "February 21st, 2005 17:44",       time.to_s(:long_ordinal)
+    assert_equal time.to_s,                         time.to_fs(:doesnt_exist)
+    assert_equal "2005-02-21 17:44:30",             time.to_fs(:db)
+    assert_equal "21 Feb 17:44",                    time.to_fs(:short)
+    assert_equal "17:44",                           time.to_fs(:time)
+    assert_equal "20050221174430",                  time.to_fs(:number)
+    assert_equal "20050221174430123456789",         time.to_fs(:nsec)
+    assert_equal "20050221174430123456",            time.to_fs(:usec)
+    assert_equal "February 21, 2005 17:44",         time.to_fs(:long)
+    assert_equal "February 21st, 2005 17:44",       time.to_fs(:long_ordinal)
     with_env_tz "UTC" do
-      assert_equal "Mon, 21 Feb 2005 17:44:30 +0000", time.to_s(:rfc822)
+      assert_equal "Mon, 21 Feb 2005 17:44:30 +0000", time.to_fs(:rfc822)
+      assert_equal "Mon, 21 Feb 2005 17:44:30 -0000", time.to_fs(:rfc2822)
+      assert_equal "2005-02-21 17:44:30.123456789 +0000", time.to_fs(:inspect)
     end
     with_env_tz "US/Central" do
-      assert_equal "Thu, 05 Feb 2009 14:30:05 -0600", Time.local(2009, 2, 5, 14, 30, 5).to_s(:rfc822)
-      assert_equal "Mon, 09 Jun 2008 04:05:01 -0500", Time.local(2008, 6, 9, 4, 5, 1).to_s(:rfc822)
-      assert_equal "2009-02-05T14:30:05-06:00", Time.local(2009, 2, 5, 14, 30, 5).to_s(:iso8601)
-      assert_equal "2008-06-09T04:05:01-05:00", Time.local(2008, 6, 9, 4, 5, 1).to_s(:iso8601)
-      assert_equal "2009-02-05T14:30:05Z", Time.utc(2009, 2, 5, 14, 30, 5).to_s(:iso8601)
+      assert_equal "Thu, 05 Feb 2009 14:30:05 -0600", Time.local(2009, 2, 5, 14, 30, 5).to_fs(:rfc822)
+      assert_equal "Mon, 09 Jun 2008 04:05:01 -0500", Time.local(2008, 6, 9, 4, 5, 1).to_fs(:rfc822)
+      assert_equal "Thu, 05 Feb 2009 14:30:05 -0600", Time.local(2009, 2, 5, 14, 30, 5).to_fs(:rfc2822)
+      assert_equal "Mon, 09 Jun 2008 04:05:01 -0500", Time.local(2008, 6, 9, 4, 5, 1).to_fs(:rfc2822)
+      assert_equal "2009-02-05T14:30:05-06:00", Time.local(2009, 2, 5, 14, 30, 5).to_fs(:iso8601)
+      assert_equal "2008-06-09T04:05:01-05:00", Time.local(2008, 6, 9, 4, 5, 1).to_fs(:iso8601)
+      assert_equal "2009-02-05T14:30:05Z", Time.utc(2009, 2, 5, 14, 30, 5).to_fs(:iso8601)
+      assert_equal "2009-02-05 14:30:05.000000000 -0600", Time.local(2009, 2, 5, 14, 30, 5).to_fs(:inspect)
+      assert_equal "2008-06-09 04:05:01.000000000 -0500", Time.local(2008, 6, 9, 4, 5, 1).to_fs(:inspect)
     end
+
+    assert_equal "2005-02-21 17:44:30",             time.to_formatted_s(:db)
   end
 
-  def test_custom_date_format
+  def test_to_fs_custom_date_format
     Time::DATE_FORMATS[:custom] = "%Y%m%d%H%M%S"
-    assert_equal "20050221143000", Time.local(2005, 2, 21, 14, 30, 0).to_s(:custom)
+    assert_equal "20050221143000", Time.local(2005, 2, 21, 14, 30, 0).to_fs(:custom)
+  ensure
     Time::DATE_FORMATS.delete(:custom)
   end
 
@@ -664,10 +953,6 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     end
   end
 
-  def test_last_month_on_31st
-    assert_equal Time.local(2004, 2, 29), Time.local(2004, 3, 31).last_month
-  end
-
   def test_xmlschema_is_available
     assert_nothing_raised { Time.now.xmlschema }
   end
@@ -687,6 +972,78 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
       assert_equal true,  Time.utc(2000, 1, 1, 0).today?
       assert_equal true,  Time.utc(2000, 1, 1, 23, 59, 59).today?
       assert_equal false, Time.utc(2000, 1, 2, 0).today?
+    end
+  end
+
+  def test_yesterday_with_time_local
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal true,  Time.local(1999, 12, 31, 23, 59, 59).yesterday?
+      assert_equal false, Time.local(2000, 1, 1, 0).yesterday?
+      assert_equal true,  Time.local(1999, 12, 31).yesterday?
+      assert_equal false, Time.local(2000, 1, 2, 0).yesterday?
+    end
+  end
+
+  def test_yesterday_with_time_utc
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal true,  Time.utc(1999, 12, 31, 23, 59, 59).yesterday?
+      assert_equal false, Time.utc(2000, 1, 1, 0).yesterday?
+      assert_equal true,  Time.utc(1999, 12, 31).yesterday?
+      assert_equal false, Time.utc(2000, 1, 2, 0).yesterday?
+    end
+  end
+
+  def test_prev_day_with_time_local
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal true,  Time.local(1999, 12, 31, 23, 59, 59).prev_day?
+      assert_equal false, Time.local(2000, 1, 1, 0).prev_day?
+      assert_equal true,  Time.local(1999, 12, 31).prev_day?
+      assert_equal false, Time.local(2000, 1, 2, 0).prev_day?
+    end
+  end
+
+  def test_prev_day_with_time_utc
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal true,  Time.utc(1999, 12, 31, 23, 59, 59).prev_day?
+      assert_equal false, Time.utc(2000, 1, 1, 0).prev_day?
+      assert_equal true,  Time.utc(1999, 12, 31).prev_day?
+      assert_equal false, Time.utc(2000, 1, 2, 0).prev_day?
+    end
+  end
+
+  def test_tomorrow_with_time_local
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal false, Time.local(1999, 12, 31, 23, 59, 59).tomorrow?
+      assert_equal true,  Time.local(2000, 1, 2, 0).tomorrow?
+      assert_equal true,  Time.local(2000, 1, 2, 23, 59, 59).tomorrow?
+      assert_equal false, Time.local(2000, 1, 1, 0).tomorrow?
+    end
+  end
+
+  def test_tomorrow_with_time_utc
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal false, Time.utc(1999, 12, 31, 23, 59, 59).tomorrow?
+      assert_equal true,  Time.utc(2000, 1, 2, 0).tomorrow?
+      assert_equal true,  Time.utc(2000, 1, 2, 23, 59, 59).tomorrow?
+      assert_equal false, Time.utc(2000, 1, 1, 0).tomorrow?
+    end
+  end
+
+  def test_next_day_with_time_local
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal false, Time.local(1999, 12, 31, 23, 59, 59).next_day?
+      assert_equal true,  Time.local(2000, 1, 2, 0).next_day?
+      assert_equal true,  Time.local(2000, 1, 2, 23, 59, 59).next_day?
+      assert_equal false, Time.local(2000, 1, 1, 0).next_day?
+    end
+  end
+
+  def test_next_day_with_time_utc
+    Date.stub(:current, Date.new(2000, 1, 1)) do
+      assert_equal false, Time.utc(1999, 12, 31, 23, 59, 59).next_day?
+      assert_equal true,  Time.utc(2000, 1, 2, 0).next_day?
+      assert_equal true,  Time.utc(2000, 1, 2, 23, 59, 59).next_day?
+      assert_equal false, Time.utc(2000, 1, 1, 0).next_day?
     end
   end
 
@@ -745,7 +1102,7 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
   end
 
   def test_acts_like_time
-    assert Time.new.acts_like_time?
+    assert_predicate Time.new, :acts_like_time?
   end
 
   def test_formatted_offset_with_utc
@@ -764,26 +1121,26 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
   end
 
   def test_compare_with_time
-    assert_equal  1, Time.utc(2000) <=> Time.utc(1999, 12, 31, 23, 59, 59, 999)
-    assert_equal  0, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 0)
+    assert_equal 1, Time.utc(2000) <=> Time.utc(1999, 12, 31, 23, 59, 59, 999)
+    assert_equal 0, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 0)
     assert_equal(-1, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 0, 001))
   end
 
   def test_compare_with_datetime
-    assert_equal  1, Time.utc(2000) <=> DateTime.civil(1999, 12, 31, 23, 59, 59)
-    assert_equal  0, Time.utc(2000) <=> DateTime.civil(2000, 1, 1, 0, 0, 0)
+    assert_equal 1, Time.utc(2000) <=> DateTime.civil(1999, 12, 31, 23, 59, 59)
+    assert_equal 0, Time.utc(2000) <=> DateTime.civil(2000, 1, 1, 0, 0, 0)
     assert_equal(-1, Time.utc(2000) <=> DateTime.civil(2000, 1, 1, 0, 0, 1))
   end
 
   def test_compare_with_time_with_zone
-    assert_equal  1, Time.utc(2000) <=> ActiveSupport::TimeWithZone.new(Time.utc(1999, 12, 31, 23, 59, 59), ActiveSupport::TimeZone["UTC"])
-    assert_equal  0, Time.utc(2000) <=> ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1, 0, 0, 0), ActiveSupport::TimeZone["UTC"])
+    assert_equal 1, Time.utc(2000) <=> ActiveSupport::TimeWithZone.new(Time.utc(1999, 12, 31, 23, 59, 59), ActiveSupport::TimeZone["UTC"])
+    assert_equal 0, Time.utc(2000) <=> ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1, 0, 0, 0), ActiveSupport::TimeZone["UTC"])
     assert_equal(-1, Time.utc(2000) <=> ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1, 0, 0, 1), ActiveSupport::TimeZone["UTC"]))
   end
 
   def test_compare_with_string
-    assert_equal   1, Time.utc(2000) <=> Time.utc(1999, 12, 31, 23, 59, 59, 999).to_s
-    assert_equal   0, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 0).to_s
+    assert_equal 1, Time.utc(2000) <=> Time.utc(1999, 12, 31, 23, 59, 59, 999).to_s
+    assert_equal 0, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 0).to_s
     assert_equal(-1, Time.utc(2000) <=> Time.utc(2000, 1, 1, 0, 0, 1, 0).to_s)
     assert_nil Time.utc(2000) <=> "Invalid as Time"
   end
@@ -823,6 +1180,10 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
     rescue TypeError
       assert_raise(TypeError) { assert_equal(Time.utc(2000, 1, 1, 0, 0, 0), Time.at(ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1, 0, 0, 0), ActiveSupport::TimeZone["UTC"]), 0)) }
     end
+  end
+
+  def test_at_with_in_option
+    assert_equal Time.new(1970, 1, 1, 0, 42, 17, "-08:00"), Time.at(31337, in: -28800)
   end
 
   def test_at_with_time_with_zone_returns_local_time
@@ -871,11 +1232,11 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
   end
 
   def test_minus_with_time_with_zone
-    assert_equal  86_400.0, Time.utc(2000, 1, 2) - ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1), ActiveSupport::TimeZone["UTC"])
+    assert_equal 86_400.0, Time.utc(2000, 1, 2) - ActiveSupport::TimeWithZone.new(Time.utc(2000, 1, 1), ActiveSupport::TimeZone["UTC"])
   end
 
   def test_minus_with_datetime
-    assert_equal  86_400.0, Time.utc(2000, 1, 2) - DateTime.civil(2000, 1, 1)
+    assert_equal 86_400.0, Time.utc(2000, 1, 2) - DateTime.civil(2000, 1, 1)
   end
 
   def test_time_created_with_local_constructor_cannot_represent_times_during_hour_skipped_by_dst
@@ -883,7 +1244,7 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
       # On Apr 2 2006 at 2:00AM in US, clocks were moved forward to 3:00AM.
       # Therefore, 2AM EST doesn't exist for this date; Time.local fails over to 3:00AM EDT
       assert_equal Time.local(2006, 4, 2, 3), Time.local(2006, 4, 2, 2)
-      assert Time.local(2006, 4, 2, 2).dst?
+      assert_predicate Time.local(2006, 4, 2, 2), :dst?
     end
   end
 
@@ -955,42 +1316,102 @@ class TimeExtCalculationsTest < ActiveSupport::TestCase
 
     assert_equal "invalid date", exception.message
   end
+
+  def test_prev_day
+    assert_equal date_time_init(2005, 2, 24, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day(-2)
+    assert_equal date_time_init(2005, 2, 23, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day(-1)
+    assert_equal date_time_init(2005, 2, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day(0)
+    assert_equal date_time_init(2005, 2, 21, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day(1)
+    assert_equal date_time_init(2005, 2, 20, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day(2)
+    assert_equal date_time_init(2005, 2, 21, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_day
+    assert_equal date_time_init(2005, 2, 28, 10, 10, 10), date_time_init(2005, 3, 2, 10, 10, 10).prev_day.prev_day
+  end
+
+  def test_next_day
+    assert_equal date_time_init(2005, 2, 20, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day(-2)
+    assert_equal date_time_init(2005, 2, 21, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day(-1)
+    assert_equal date_time_init(2005, 2, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day(0)
+    assert_equal date_time_init(2005, 2, 23, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day(1)
+    assert_equal date_time_init(2005, 2, 24, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day(2)
+    assert_equal date_time_init(2005, 2, 23, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_day
+    assert_equal date_time_init(2005, 3, 2, 10, 10, 10),  date_time_init(2005, 2, 28, 10, 10, 10).next_day.next_day
+  end
+
+  def test_prev_month
+    assert_equal date_time_init(2005, 4, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month(-2)
+    assert_equal date_time_init(2005, 3, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month(-1)
+    assert_equal date_time_init(2005, 2, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month(0)
+    assert_equal date_time_init(2005, 1, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month(1)
+    assert_equal date_time_init(2004, 12, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month(2)
+    assert_equal date_time_init(2005, 1, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month
+    assert_equal date_time_init(2004, 12, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).prev_month.prev_month
+  end
+
+  def test_next_month
+    assert_equal date_time_init(2004, 12, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month(-2)
+    assert_equal date_time_init(2005, 1, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month(-1)
+    assert_equal date_time_init(2005, 2, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month(0)
+    assert_equal date_time_init(2005, 3, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month(1)
+    assert_equal date_time_init(2005, 4, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month(2)
+    assert_equal date_time_init(2005, 3, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month
+    assert_equal date_time_init(2005, 4, 22, 10, 10, 10), date_time_init(2005, 2, 22, 10, 10, 10).next_month.next_month
+  end
+
+  def test_prev_year
+    assert_equal date_time_init(2007, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year(-2)
+    assert_equal date_time_init(2006, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year(-1)
+    assert_equal date_time_init(2005, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year(0)
+    assert_equal date_time_init(2004, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year(1)
+    assert_equal date_time_init(2003, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year(2)
+    assert_equal date_time_init(2004, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year
+    assert_equal date_time_init(2003, 6, 5, 10, 10, 10),  date_time_init(2005, 6, 5, 10, 10, 10).prev_year.prev_year
+  end
+
+  def test_next_year
+    assert_equal date_time_init(2003, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year(-2)
+    assert_equal date_time_init(2004, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year(-1)
+    assert_equal date_time_init(2005, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year(0)
+    assert_equal date_time_init(2006, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year(1)
+    assert_equal date_time_init(2007, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year(2)
+    assert_equal date_time_init(2006, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year
+    assert_equal date_time_init(2007, 6, 5, 10, 10, 10), date_time_init(2005, 6, 5, 10, 10, 10).next_year.next_year
+  end
 end
 
 class TimeExtMarshalingTest < ActiveSupport::TestCase
-  def test_marshaling_with_utc_instance
+  def test_marshalling_with_utc_instance
     t = Time.utc(2000)
-    unmarshaled = Marshal.load(Marshal.dump(t))
-    assert_equal "UTC", unmarshaled.zone
-    assert_equal t, unmarshaled
+    unmarshalled = Marshal.load(Marshal.dump(t))
+    assert_equal "UTC", unmarshalled.zone
+    assert_equal t, unmarshalled
   end
 
-  def test_marshaling_with_local_instance
+  def test_marshalling_with_local_instance
     t = Time.local(2000)
-    unmarshaled = Marshal.load(Marshal.dump(t))
-    assert_equal t.zone, unmarshaled.zone
-    assert_equal t, unmarshaled
+    unmarshalled = Marshal.load(Marshal.dump(t))
+    assert_equal t.zone, unmarshalled.zone
+    assert_equal t, unmarshalled
   end
 
-  def test_marshaling_with_frozen_utc_instance
+  def test_marshalling_with_frozen_utc_instance
     t = Time.utc(2000).freeze
-    unmarshaled = Marshal.load(Marshal.dump(t))
-    assert_equal "UTC", unmarshaled.zone
-    assert_equal t, unmarshaled
+    unmarshalled = Marshal.load(Marshal.dump(t))
+    assert_equal "UTC", unmarshalled.zone
+    assert_equal t, unmarshalled
   end
 
-  def test_marshaling_with_frozen_local_instance
+  def test_marshalling_with_frozen_local_instance
     t = Time.local(2000).freeze
-    unmarshaled = Marshal.load(Marshal.dump(t))
-    assert_equal t.zone, unmarshaled.zone
-    assert_equal t, unmarshaled
+    unmarshalled = Marshal.load(Marshal.dump(t))
+    assert_equal t.zone, unmarshalled.zone
+    assert_equal t, unmarshalled
   end
 
   def test_marshalling_preserves_fractional_seconds
     t = Time.parse("00:00:00.500")
-    unmarshaled = Marshal.load(Marshal.dump(t))
-    assert_equal t.to_f, unmarshaled.to_f
-    assert_equal t, unmarshaled
+    unmarshalled = Marshal.load(Marshal.dump(t))
+    assert_equal t.to_f, unmarshalled.to_f
+    assert_equal t, unmarshalled
   end
 
   def test_last_quarter_on_31st

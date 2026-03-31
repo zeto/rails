@@ -5,7 +5,7 @@ require "cases/helper"
 require "models/topic"
 require "models/person"
 
-class PresenceValidationTest < ActiveModel::TestCase
+class FormatValidationTest < ActiveModel::TestCase
   def teardown
     Topic.clear_validators!
   end
@@ -14,24 +14,24 @@ class PresenceValidationTest < ActiveModel::TestCase
     Topic.validates_format_of(:title, :content, with: /\AValidation\smacros \w+!\z/, message: "is bad data")
 
     t = Topic.new("title" => "i'm incorrect", "content" => "Validation macros rule!")
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
     assert_equal ["is bad data"], t.errors[:title]
-    assert t.errors[:content].empty?
+    assert_empty t.errors[:content]
 
     t.title = "Validation macros rule!"
 
-    assert t.valid?
-    assert t.errors[:title].empty?
+    assert_predicate t, :valid?
+    assert_empty t.errors[:title]
 
     assert_raise(ArgumentError) { Topic.validates_format_of(:title, :content) }
   end
 
   def test_validate_format_with_allow_blank
     Topic.validates_format_of(:title, with: /\AValidation\smacros \w+!\z/, allow_blank: true)
-    assert Topic.new("title" => "Shouldn't be valid").invalid?
-    assert Topic.new("title" => "").valid?
-    assert Topic.new("title" => nil).valid?
-    assert Topic.new("title" => "Validation macros rule!").valid?
+    assert_predicate Topic.new("title" => "Shouldn't be valid"), :invalid?
+    assert_predicate Topic.new("title" => ""), :valid?
+    assert_predicate Topic.new("title" => nil), :valid?
+    assert_predicate Topic.new("title" => "Validation macros rule!"), :valid?
   end
 
   # testing ticket #3142
@@ -39,33 +39,33 @@ class PresenceValidationTest < ActiveModel::TestCase
     Topic.validates_format_of(:title, :content, with: /\A[1-9][0-9]*\z/, message: "is bad data")
 
     t = Topic.new("title" => "72x", "content" => "6789")
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
 
     assert_equal ["is bad data"], t.errors[:title]
-    assert t.errors[:content].empty?
+    assert_empty t.errors[:content]
 
     t.title = "-11"
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
 
     t.title = "03"
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
 
     t.title = "z44"
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
 
     t.title = "5v7"
-    assert t.invalid?, "Shouldn't be valid"
+    assert_predicate t, :invalid?, "Shouldn't be valid"
 
     t.title = "1"
 
-    assert t.valid?
-    assert t.errors[:title].empty?
+    assert_predicate t, :valid?
+    assert_empty t.errors[:title]
   end
 
   def test_validate_format_with_formatted_message
     Topic.validates_format_of(:title, with: /\AValid Title\z/, message: "can't be %{value}")
     t = Topic.new(title: "Invalid title")
-    assert t.invalid?
+    assert_predicate t, :invalid?
     assert_equal ["can't be Invalid title"], t.errors[:title]
   end
 
@@ -114,10 +114,21 @@ class PresenceValidationTest < ActiveModel::TestCase
     t = Topic.new
     t.title = "digit"
     t.content = "Pixies"
-    assert t.invalid?
+    assert_predicate t, :invalid?
 
     t.content = "1234"
-    assert t.valid?
+    assert_predicate t, :valid?
+  end
+
+  def test_validates_format_of_with_lambda_without_arguments
+    Topic.validates_format_of :title, with: lambda { /\A[A-Z]/ }
+
+    t = Topic.new
+    t.title = "lowercase"
+    assert_predicate t, :invalid?
+
+    t.title = "Titleized"
+    assert_predicate t, :valid?
   end
 
   def test_validates_format_of_without_lambda
@@ -126,10 +137,21 @@ class PresenceValidationTest < ActiveModel::TestCase
     t = Topic.new
     t.title = "characters"
     t.content = "1234"
-    assert t.invalid?
+    assert_predicate t, :invalid?
 
     t.content = "Pixies"
-    assert t.valid?
+    assert_predicate t, :valid?
+  end
+
+  def test_validates_format_of_without_lambda_without_arguments
+    Topic.validates_format_of :title, without: lambda { /\d/ }
+
+    t = Topic.new
+    t.title = "With number 123"
+    assert_predicate t, :invalid?
+
+    t.title = "Without number"
+    assert_predicate t, :valid?
   end
 
   def test_validates_format_of_for_ruby_class
@@ -137,12 +159,12 @@ class PresenceValidationTest < ActiveModel::TestCase
 
     p = Person.new
     p.karma = "Pixies"
-    assert p.invalid?
+    assert_predicate p, :invalid?
 
     assert_equal ["is invalid"], p.errors[:karma]
 
     p.karma = "1234"
-    assert p.valid?
+    assert_predicate p, :valid?
   ensure
     Person.clear_validators!
   end

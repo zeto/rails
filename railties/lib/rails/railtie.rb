@@ -1,39 +1,41 @@
 # frozen_string_literal: true
 
-require_relative "initializable"
+require "rails/initializable"
+require "active_support/descendants_tracker"
 require "active_support/inflector"
+require "active_support/inspect_backport"
 require "active_support/core_ext/module/introspection"
-require "active_support/core_ext/module/delegation"
+require "active_support/logger"
 
 module Rails
-  # <tt>Rails::Railtie</tt> is the core of the Rails framework and provides
-  # several hooks to extend Rails and/or modify the initialization process.
+  # +Rails::Railtie+ is the core of the \Rails framework and provides
+  # several hooks to extend \Rails and/or modify the initialization process.
   #
-  # Every major component of Rails (Action Mailer, Action Controller, Active
+  # Every major component of \Rails (Action Mailer, Action Controller, Active
   # Record, etc.) implements a railtie. Each of them is responsible for their
-  # own initialization. This makes Rails itself absent of any component hooks,
-  # allowing other components to be used in place of any of the Rails defaults.
+  # own initialization. This makes \Rails itself absent of any component hooks,
+  # allowing other components to be used in place of any of the \Rails defaults.
   #
-  # Developing a Rails extension does _not_ require implementing a railtie, but
-  # if you need to interact with the Rails framework during or after boot, then
+  # Developing a \Rails extension does _not_ require implementing a railtie, but
+  # if you need to interact with the \Rails framework during or after boot, then
   # a railtie is needed.
   #
   # For example, an extension doing any of the following would need a railtie:
   #
   # * creating initializers
-  # * configuring a Rails framework for the application, like setting a generator
+  # * configuring a \Rails framework for the application, like setting a generator
   # * adding <tt>config.*</tt> keys to the environment
-  # * setting up a subscriber with <tt>ActiveSupport::Notifications</tt>
+  # * setting up a subscriber with ActiveSupport::Notifications
   # * adding Rake tasks
   #
   # == Creating a Railtie
   #
-  # To extend Rails using a railtie, create a subclass of <tt>Rails::Railtie</tt>.
-  # This class must be loaded during the Rails boot process, and is conventionally
-  # called <tt>MyNamespace::Railtie</tt>.
+  # To extend \Rails using a railtie, create a subclass of +Rails::Railtie+.
+  # This class must be loaded during the \Rails boot process, and is conventionally
+  # called +MyNamespace::Railtie+.
   #
   # The following example demonstrates an extension which can be used with or
-  # without Rails.
+  # without \Rails.
   #
   #   # lib/my_gem/railtie.rb
   #   module MyGem
@@ -42,15 +44,15 @@ module Rails
   #   end
   #
   #   # lib/my_gem.rb
-  #   require 'my_gem/railtie' if defined?(Rails)
+  #   require "my_gem/railtie" if defined?(Rails::Railtie)
   #
   # == Initializers
   #
-  # To add an initialization step to the Rails boot process from your railtie, just
+  # To add an initialization step to the \Rails boot process from your railtie, just
   # define the initialization code with the +initializer+ macro:
   #
-  #   class MyRailtie < Rails::Railtie
-  #     initializer "my_railtie.configure_rails_initialization" do
+  #   class MyGem::Railtie < Rails::Railtie
+  #     initializer "my_gem.configure_rails_initialization" do
   #       # some initialization behavior
   #     end
   #   end
@@ -58,9 +60,9 @@ module Rails
   # If specified, the block can also receive the application object, in case you
   # need to access some application-specific configuration, like middleware:
   #
-  #   class MyRailtie < Rails::Railtie
-  #     initializer "my_railtie.configure_rails_initialization" do |app|
-  #       app.middleware.use MyRailtie::Middleware
+  #   class MyGem::Railtie < Rails::Railtie
+  #     initializer "my_gem.configure_rails_initialization" do |app|
+  #       app.middleware.use MyGem::Middleware
   #     end
   #   end
   #
@@ -73,51 +75,69 @@ module Rails
   # Railties can access a config object which contains configuration shared by all
   # railties and the application:
   #
-  #   class MyRailtie < Rails::Railtie
+  #   class MyGem::Railtie < Rails::Railtie
   #     # Customize the ORM
-  #     config.app_generators.orm :my_railtie_orm
+  #     config.app_generators.orm :my_gem_orm
   #
   #     # Add a to_prepare block which is executed once in production
   #     # and before each request in development.
   #     config.to_prepare do
-  #       MyRailtie.setup!
+  #       MyGem.setup!
   #     end
   #   end
   #
   # == Loading Rake Tasks and Generators
   #
-  # If your railtie has Rake tasks, you can tell Rails to load them through the method
+  # If your railtie has Rake tasks, you can tell \Rails to load them through the method
   # +rake_tasks+:
   #
-  #   class MyRailtie < Rails::Railtie
+  #   class MyGem::Railtie < Rails::Railtie
   #     rake_tasks do
-  #       load 'path/to/my_railtie.tasks'
+  #       load "path/to/my_gem.tasks"
   #     end
   #   end
   #
-  # By default, Rails loads generators from your load path. However, if you want to place
+  # By default, \Rails loads generators from your load path. However, if you want to place
   # your generators at a different location, you can specify in your railtie a block which
   # will load them during normal generators lookup:
   #
-  #   class MyRailtie < Rails::Railtie
+  #   class MyGem::Railtie < Rails::Railtie
   #     generators do
-  #       require 'path/to/my_railtie_generator'
+  #       require "path/to/my_gem_generator"
   #     end
   #   end
   #
   # Since filenames on the load path are shared across gems, be sure that files you load
   # through a railtie have unique names.
   #
+  # == Run another program when the \Rails server starts
+  #
+  # In development, it's very usual to have to run another process next to the \Rails Server. In example
+  # you might want to start the Webpack or React server. Or maybe you need to run your job scheduler process
+  # like Sidekiq. This is usually done by opening a new shell and running the program from here.
+  #
+  # \Rails allow you to specify a +server+ block which will get called when a \Rails server starts.
+  # This way, your users don't need to remember to have to open a new shell and run another program, making
+  # this less confusing for everyone.
+  # It can be used like this:
+  #
+  #   class MyGem::Railtie < Rails::Railtie
+  #     server do
+  #       WebpackServer.start
+  #     end
+  #   end
+  #
   # == Application and Engine
   #
   # An engine is nothing more than a railtie with some initializers already set. And since
-  # <tt>Rails::Application</tt> is an engine, the same configuration described here can be
+  # Rails::Application is an engine, the same configuration described here can be
   # used in both.
   #
   # Be sure to look at the documentation of those specific classes for more information.
   class Railtie
     autoload :Configuration, "rails/railtie/configuration"
 
+    extend ActiveSupport::DescendantsTracker
     include Initializable
 
     ABSTRACT_RAILTIES = %w(Rails::Railtie Rails::Engine Rails::Application)
@@ -127,13 +147,7 @@ module Rails
       delegate :config, to: :instance
 
       def subclasses
-        @subclasses ||= []
-      end
-
-      def inherited(base)
-        unless base.abstract_railtie?
-          subclasses << base
-        end
+        super.reject(&:abstract_railtie?).sort
       end
 
       def rake_tasks(&blk)
@@ -150,6 +164,10 @@ module Rails
 
       def generators(&blk)
         register_block_for(:generators, &blk)
+      end
+
+      def server(&blk)
+        register_block_for(:server, &blk)
       end
 
       def abstract_railtie?
@@ -174,20 +192,75 @@ module Rails
         instance.configure(&block)
       end
 
+      def <=>(other) # :nodoc:
+        load_index <=> other.load_index
+      end
+
+      def inherited(subclass)
+        subclass.increment_load_index
+        super
+      end
+
+      def load_hook_guard_message_for(component) # :nodoc:
+        <<~MSG
+          #{component.inspect} was loaded before application initialization.
+          Prematurely executing load hooks will slow down your boot time
+          and could cause conflicts with the load order of your application.
+          Please wrap your code with an on_load hook:
+
+            ActiveSupport.on_load(#{component.inspect}) do
+              # your code here
+            end
+        MSG
+      end
+
+      # Adds a load hook that makes sure the application is initialized before
+      # the a lazy loaded component is loaded. The load hook will avise how to use
+      # load hooks to defer code until the application is fully loaded.
+      def guard_load_hooks(*components)
+        components.each do |component|
+          ActiveSupport.on_load(component) do
+            if Rails.try(:application) && !Rails.configuration.eager_load && !Rails.application.initialized?
+              case Rails.configuration.action_on_early_load_hook
+              when :log
+                (Rails.logger || ActiveSupport::Logger.new($stdout)).warn <<~MSG
+                  #{Railtie.load_hook_guard_message_for(component)}
+
+                  Called from:
+                  #{caller.join("\n")}
+                MSG
+              when :raise
+                raise LoadError, Railtie.load_hook_guard_message_for(component)
+              end
+            end
+          end
+        end
+      end
+
+      protected
+        attr_reader :load_index
+
+        def increment_load_index
+          @@load_counter ||= 0
+          @load_index = (@@load_counter += 1)
+        end
+
       private
         def generate_railtie_name(string)
           ActiveSupport::Inflector.underscore(string).tr("/", "_")
         end
 
         def respond_to_missing?(name, _)
+          return super if abstract_railtie?
+
           instance.respond_to?(name) || super
         end
 
         # If the class method does not have a method, then send the method call
         # to the Railtie instance.
-        def method_missing(name, *args, &block)
-          if instance.respond_to?(name)
-            instance.public_send(name, *args, &block)
+        def method_missing(name, ...)
+          if !abstract_railtie? && instance.respond_to?(name)
+            instance.public_send(name, ...)
           else
             super
           end
@@ -206,13 +279,15 @@ module Rails
 
     delegate :railtie_name, to: :class
 
-    def initialize #:nodoc:
+    def initialize # :nodoc:
       if self.class.abstract_railtie?
         raise "#{self.class.name} is abstract, you cannot instantiate it directly."
       end
     end
 
-    def configure(&block) #:nodoc:
+    ActiveSupport::InspectBackport.apply(self)
+
+    def configure(&block) # :nodoc:
       instance_eval(&block)
     end
 
@@ -223,30 +298,36 @@ module Rails
       @config ||= Railtie::Configuration.new
     end
 
-    def railtie_namespace #:nodoc:
-      @railtie_namespace ||= self.class.parents.detect { |n| n.respond_to?(:railtie_namespace) }
+    def railtie_namespace # :nodoc:
+      @railtie_namespace ||= self.class.module_parents.detect { |n| n.respond_to?(:railtie_namespace) }
     end
 
     protected
-
-      def run_console_blocks(app) #:nodoc:
+      def run_console_blocks(app) # :nodoc:
         each_registered_block(:console) { |block| block.call(app) }
       end
 
-      def run_generators_blocks(app) #:nodoc:
+      def run_generators_blocks(app) # :nodoc:
         each_registered_block(:generators) { |block| block.call(app) }
       end
 
-      def run_runner_blocks(app) #:nodoc:
+      def run_runner_blocks(app) # :nodoc:
         each_registered_block(:runner) { |block| block.call(app) }
       end
 
-      def run_tasks_blocks(app) #:nodoc:
+      def run_tasks_blocks(app) # :nodoc:
         extend Rake::DSL
         each_registered_block(:rake_tasks) { |block| instance_exec(app, &block) }
       end
 
+      def run_server_blocks(app) # :nodoc:
+        each_registered_block(:server) { |block| block.call(app) }
+      end
+
     private
+      def instance_variables_to_inspect
+        [].freeze
+      end
 
       # run `&block` in every registered block in `#register_block_for`
       def each_registered_block(type, &block)

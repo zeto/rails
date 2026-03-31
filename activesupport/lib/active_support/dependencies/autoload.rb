@@ -1,12 +1,14 @@
 # frozen_string_literal: true
 
-require_relative "../inflector/methods"
+require "active_support/inflector/methods"
 
 module ActiveSupport
+  # = Active Support \Autoload
+  #
   # Autoload and eager load conveniences for your library.
   #
   # This module allows you to define autoloads based on
-  # Rails conventions (i.e. no need to define the path
+  # \Rails conventions (i.e. no need to define the path
   # it is automatically guessed based on the filename)
   # and also define a set of constants that needs to be
   # eager loaded:
@@ -25,15 +27,6 @@ module ActiveSupport
   #
   #   MyLib.eager_load!
   module Autoload
-    def self.extended(base) # :nodoc:
-      base.class_eval do
-        @_autoloads = {}
-        @_under_path = nil
-        @_at_path = nil
-        @_eager_autoload = false
-      end
-    end
-
     def autoload(const_name, path = @_at_path)
       unless path
         full = [name, @_under_path, const_name.to_s].compact.join("::")
@@ -41,7 +34,8 @@ module ActiveSupport
       end
 
       if @_eager_autoload
-        @_autoloads[const_name] = path
+        @_eagerloaded_constants ||= []
+        @_eagerloaded_constants << const_name
       end
 
       super const_name, path
@@ -69,11 +63,10 @@ module ActiveSupport
     end
 
     def eager_load!
-      @_autoloads.each_value { |file| require file }
-    end
-
-    def autoloads
-      @_autoloads
+      if @_eagerloaded_constants
+        @_eagerloaded_constants.each { |const_name| const_get(const_name) }
+        @_eagerloaded_constants = nil
+      end
     end
   end
 end

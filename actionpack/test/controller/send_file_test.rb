@@ -5,7 +5,7 @@ require "abstract_unit"
 module TestFileUtils
   def file_name() File.basename(__FILE__) end
   def file_path() __FILE__ end
-  def file_data() @data ||= File.open(file_path, "rb") { |f| f.read } end
+  def file_data() @data ||= File.binread(file_path) end
 end
 
 class SendFileController < ActionController::Base
@@ -144,16 +144,15 @@ class SendFileTest < ActionController::TestCase
       get :test_send_file_headers_bang
 
       assert_equal "image/png", response.content_type
-      assert_equal 'disposition; filename="filename"', response.get_header("Content-Disposition")
+      assert_equal %(disposition; filename="filename"; filename*=UTF-8''filename), response.get_header("Content-Disposition")
       assert_equal "binary", response.get_header("Content-Transfer-Encoding")
-      assert_equal "private", response.get_header("Cache-Control")
     end
   end
 
   def test_send_file_headers_with_disposition_as_a_symbol
     get :test_send_file_headers_with_disposition_as_a_symbol
 
-    assert_equal 'disposition; filename="filename"', response.get_header("Content-Disposition")
+    assert_equal %(disposition; filename="filename"; filename*=UTF-8''filename), response.get_header("Content-Disposition")
   end
 
   def test_send_file_headers_with_mime_lookup_with_symbol
@@ -178,7 +177,7 @@ class SendFileTest < ActionController::TestCase
       "image.jpg" => "image/jpeg",
       "image.tif" => "image/tiff",
       "image.gif" => "image/gif",
-      "movie.mpg" => "video/mpeg",
+      "movie.mp4" => "video/mp4",
       "file.zip" => "application/zip",
       "file.unk" => "application/octet-stream",
       "zip" => "application/octet-stream"
@@ -206,6 +205,22 @@ class SendFileTest < ActionController::TestCase
 
     assert_kind_of String, response.body
     assert_equal file_data, response.body
+  end
+
+  def test_send_file_instrumentation
+    @controller.options = { disposition: :inline }
+
+    assert_notification("send_file.action_controller", path: __FILE__, disposition: :inline) do
+      process("file")
+    end
+  end
+
+  def test_send_data_instrumentation
+    @controller.options = { content_type: "application/x-ruby" }
+
+    assert_notification("send_data.action_controller", content_type: "application/x-ruby") do
+      process("data")
+    end
   end
 
   %w(file data).each do |method|

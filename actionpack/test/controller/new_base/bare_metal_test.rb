@@ -1,11 +1,26 @@
 # frozen_string_literal: true
 
 require "abstract_unit"
+require "active_support/core_ext/array/access"
 
 module BareMetalTest
   class BareController < ActionController::Metal
     def index
       self.response_body = "Hello world"
+    end
+
+    def assign_response_array
+      self.response = [200, { "content-type" => "text/html" }, ["Hello world"]]
+    end
+
+    def assign_response_object
+      self.response = Rack::Response.new("Hello world", 200, { "content-type" => "text/html" })
+    end
+
+    def assign_response_body_proc
+      self.response_body = proc do |stream|
+        stream.close
+      end
     end
   end
 
@@ -13,7 +28,7 @@ module BareMetalTest
     test "response body is a Rack-compatible response" do
       status, headers, body = BareController.action(:index).call(Rack::MockRequest.env_for("/"))
       assert_equal 200, status
-      string = "".dup
+      string = +""
 
       body.each do |part|
         assert part.is_a?(String), "Each part of the body must be a String"
@@ -31,7 +46,43 @@ module BareMetalTest
       controller.set_request!(ActionDispatch::Request.empty)
       controller.set_response!(BareController.make_response!(controller.request))
       controller.index
+
+      assert_predicate controller, :performed?
       assert_equal ["Hello world"], controller.response_body
+    end
+
+    test "can assign response array as part of the controller execution" do
+      controller = BareController.new
+      controller.set_request!(ActionDispatch::Request.empty)
+      controller.assign_response_array
+
+      assert_predicate controller, :performed?
+      assert_equal true, controller.response_body
+      assert_equal 200, controller.response[0]
+      assert_equal "text/html", controller.response[1]["content-type"]
+    end
+
+    test "can assign response object as part of the controller execution" do
+      controller = BareController.new
+      controller.set_request!(ActionDispatch::Request.empty)
+      controller.assign_response_object
+
+      assert_predicate controller, :performed?
+      assert_equal true, controller.response_body
+      assert_equal 200, controller.response.status
+      assert_equal "text/html", controller.response.headers["content-type"]
+    end
+
+    test "can assign response body streamable object as part of the controller execution" do
+      controller = BareController.new
+      controller.set_request!(ActionDispatch::Request.empty)
+      controller.set_response!(BareController.make_response!(controller.request))
+      controller.assign_response_body_proc
+
+      assert_predicate controller, :performed?
+      assert controller.response_body.is_a?(Proc)
+      assert_equal 200, controller.response.status
+      assert_predicate controller.response.headers, :empty?
     end
 
     test "connect a request to controller instance without dispatch" do
@@ -80,6 +131,11 @@ module BareMetalTest
       head 102
     end
 
+    def early_hints
+      self.content_type = "text/html"
+      head 103
+    end
+
     def no_content
       self.content_type = "text/html"
       head 204
@@ -116,6 +172,12 @@ module BareMetalTest
 
     test "head :processing (102) does not return a content-type header" do
       headers = HeadController.action(:processing).call(Rack::MockRequest.env_for("/")).second
+      assert_nil headers["Content-Type"]
+      assert_nil headers["Content-Length"]
+    end
+
+    test "head :early_hints (103) does not return a content-type header" do
+      headers = HeadController.action(:early_hints).call(Rack::MockRequest.env_for("/")).second
       assert_nil headers["Content-Type"]
       assert_nil headers["Content-Length"]
     end

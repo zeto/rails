@@ -2,81 +2,77 @@
 
 module ActiveRecord
   module Tasks # :nodoc:
-    class SQLiteDatabaseTasks # :nodoc:
-      delegate :connection, :establish_connection, to: ActiveRecord::Base
-
-      def initialize(configuration, root = ActiveRecord::Tasks::DatabaseTasks.root)
-        @configuration, @root = configuration, root
+    class SQLiteDatabaseTasks < AbstractTasks # :nodoc:
+      def initialize(db_config, root = ActiveRecord::Tasks::DatabaseTasks.root)
+        @db_config = db_config
+        @root = root
       end
 
       def create
-        raise DatabaseAlreadyExists if File.exist?(configuration["database"])
+        file = ConnectionAdapters::SQLite3Adapter.resolve_path(db_config.database)
+        raise DatabaseAlreadyExists if File.exist?(file)
 
-        establish_connection configuration
+        establish_connection
         connection
       end
 
       def drop
-        require "pathname"
-        path = Pathname.new configuration["database"]
-        file = path.absolute? ? path.to_s : File.join(root, path)
-
+        file = ConnectionAdapters::SQLite3Adapter.resolve_path(db_config.database, root: root)
         FileUtils.rm(file)
+        FileUtils.rm_f(["#{file}-shm", "#{file}-wal"])
       rescue Errno::ENOENT => error
         raise NoDatabaseError.new(error.message)
       end
 
       def purge
+        connection.disconnect!
         drop
       rescue NoDatabaseError
       ensure
         create
-      end
-
-      def charset
-        connection.encoding
+        connection.reconnect!
       end
 
       def structure_dump(filename, extra_flags)
         args = []
         args.concat(Array(extra_flags)) if extra_flags
-        args << configuration["database"]
+        args << db_config.database
 
         ignore_tables = ActiveRecord::SchemaDumper.ignore_tables
         if ignore_tables.any?
+          ignore_tables = connection.data_sources.select { |table| ignore_tables.any? { |pattern| pattern === table } }
           condition = ignore_tables.map { |table| connection.quote(table) }.join(", ")
-          args << "SELECT sql FROM sqlite_master WHERE tbl_name NOT IN (#{condition}) ORDER BY tbl_name, type DESC, name"
+          args << "SELECT sql || ';' FROM sqlite_master WHERE tbl_name NOT IN (#{condition}) ORDER BY tbl_name, type DESC, name"
         else
-          args << ".schema"
+          args << ".schema --nosys"
         end
-        run_cmd("sqlite3", args, filename)
+
+        run_cmd("sqlite3", *args, out: filename)
       end
 
       def structure_load(filename, extra_flags)
-        dbfile = configuration["database"]
-        flags = extra_flags.join(" ") if extra_flags
-        `sqlite3 #{flags} #{dbfile} < "#{filename}"`
+        args = []
+        args.concat(extra_flags) if extra_flags
+        args << db_config.database
+        run_cmd("sqlite3", *args, in: filename)
+      end
+
+      def check_current_protected_environment!(db_config, migration_class)
+        super
+      rescue ActiveRecord::StatementInvalid => e
+        case e.cause
+        when SQLite3::ReadOnlyException
+        else
+          raise e
+        end
       end
 
       private
+        attr_reader :root
 
-        def configuration
-          @configuration
-        end
-
-        def root
-          @root
-        end
-
-        def run_cmd(cmd, args, out)
-          fail run_cmd_error(cmd, args) unless Kernel.system(cmd, *args, out: out)
-        end
-
-        def run_cmd_error(cmd, args)
-          msg = "failed to execute:\n".dup
-          msg << "#{cmd} #{args.join(' ')}\n\n"
-          msg << "Please check the output above for any errors and make sure that `#{cmd}` is installed in your PATH and has proper permissions.\n\n"
-          msg
+        def establish_connection(config = db_config)
+          ActiveRecord::Base.establish_connection(config)
+          connection.connect!
         end
     end
   end

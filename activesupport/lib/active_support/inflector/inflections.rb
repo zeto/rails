@@ -1,14 +1,15 @@
 # frozen_string_literal: true
 
 require "concurrent/map"
-require_relative "../core_ext/array/prepend_and_append"
-require_relative "../core_ext/regexp"
-require_relative "../i18n"
+require "active_support/core_ext/module/delegation"
+require "active_support/i18n"
 
 module ActiveSupport
   module Inflector
     extend self
 
+    # = Active Support \Inflections
+    #
     # A singleton instance of this class is yielded by Inflector.inflections,
     # which can then be used to specify additional inflection rules. If passed
     # an optional locale, rules for other languages can be specified. The
@@ -18,65 +19,92 @@ module ActiveSupport
     #     inflect.plural /^(ox)$/i, '\1\2en'
     #     inflect.singular /^(ox)en/i, '\1'
     #
-    #     inflect.irregular 'octopus', 'octopi'
+    #     inflect.irregular 'cactus', 'cacti'
     #
     #     inflect.uncountable 'equipment'
     #   end
     #
     # New rules are added at the top. So in the example above, the irregular
-    # rule for octopus will now be the first of the pluralization and
+    # rule for cactus will now be the first of the pluralization and
     # singularization rules that is runs. This guarantees that your rules run
     # before any of the rules that may already have been loaded.
     class Inflections
       @__instance__ = Concurrent::Map.new
+      @__en_instance__ = nil
 
-      class Uncountables < Array
+      class Uncountables # :nodoc:
+        include Enumerable
+
+        delegate :each, :pop, :empty?, :to_s, :==, :to_a, :to_ary, to: :@members
+
         def initialize
-          @regex_array = []
-          super
+          @members = []
+          @pattern = nil
         end
 
         def delete(entry)
-          super entry
-          @regex_array.delete(to_regex(entry))
+          @members.delete(entry)
+          @pattern = nil
         end
 
-        def <<(*word)
-          add(word)
+        def <<(word)
+          word = word.downcase
+          @members << word
+          @pattern = nil
+          self
+        end
+
+        def flatten
+          @members.dup
         end
 
         def add(words)
           words = words.flatten.map(&:downcase)
-          concat(words)
-          @regex_array += words.map { |word| to_regex(word) }
+          @members.concat(words)
+          @pattern = nil
           self
         end
 
         def uncountable?(str)
-          @regex_array.any? { |regex| regex.match? str }
-        end
-
-        private
-          def to_regex(string)
-            /\b#{::Regexp.escape(string)}\Z/i
+          if @pattern.nil?
+            members_pattern = Regexp.union(@members.map { |w| /#{Regexp.escape(w)}/i })
+            @pattern = /\b#{members_pattern}\Z/i
           end
+          @pattern.match?(str)
+        end
       end
 
       def self.instance(locale = :en)
+        return @__en_instance__ ||= new if locale == :en
+
         @__instance__[locale] ||= new
       end
 
-      attr_reader :plurals, :singulars, :uncountables, :humans, :acronyms, :acronym_regex
+      def self.instance_or_fallback(locale)
+        return @__en_instance__ ||= new if locale == :en
+
+        I18n.fallbacks[locale].each do |k|
+          return @__en_instance__ if k == :en && @__en_instance__
+          return @__instance__[k] if @__instance__.key?(k)
+        end
+        instance(locale)
+      end
+
+      attr_reader :plurals, :singulars, :uncountables, :humans, :acronyms
+
+      attr_reader :acronyms_camelize_regex, :acronyms_underscore_regex # :nodoc:
 
       def initialize
-        @plurals, @singulars, @uncountables, @humans, @acronyms, @acronym_regex = [], [], Uncountables.new, [], {}, /(?=a)b/
+        @plurals, @singulars, @uncountables, @humans, @acronyms = [], [], Uncountables.new, [], {}
+        define_acronym_regex_patterns
       end
 
       # Private, for the test suite.
       def initialize_dup(orig) # :nodoc:
-        %w(plurals singulars uncountables humans acronyms acronym_regex).each do |scope|
-          instance_variable_set("@#{scope}", orig.send(scope).dup)
+        %w(plurals singulars uncountables humans acronyms).each do |scope|
+          instance_variable_set("@#{scope}", orig.public_send(scope).dup)
         end
+        define_acronym_regex_patterns
       end
 
       # Specifies a new acronym. An acronym must be specified as it will appear
@@ -130,7 +158,7 @@ module ActiveSupport
       #   camelize 'mcdonald'   # => 'McDonald'
       def acronym(word)
         @acronyms[word.downcase] = word
-        @acronym_regex = /#{@acronyms.values.join("|")}/
+        define_acronym_regex_patterns
       end
 
       # Specifies a new pluralization rule and its replacement. The rule can
@@ -158,7 +186,7 @@ module ActiveSupport
       # regular expressions. You simply pass the irregular in singular and
       # plural form.
       #
-      #   irregular 'octopus', 'octopi'
+      #   irregular 'cactus', 'cacti'
       #   irregular 'person', 'people'
       def irregular(singular, plural)
         @uncountables.delete(singular)
@@ -213,18 +241,35 @@ module ActiveSupport
       # Clears the loaded inflections within a given scope (default is
       # <tt>:all</tt>). Give the scope as a symbol of the inflection type, the
       # options are: <tt>:plurals</tt>, <tt>:singulars</tt>, <tt>:uncountables</tt>,
-      # <tt>:humans</tt>.
+      # <tt>:humans</tt>, <tt>:acronyms</tt>.
       #
       #   clear :all
       #   clear :plurals
       def clear(scope = :all)
         case scope
         when :all
-          @plurals, @singulars, @uncountables, @humans = [], [], Uncountables.new, []
-          else
+          clear(:acronyms)
+          clear(:plurals)
+          clear(:singulars)
+          clear(:uncountables)
+          clear(:humans)
+        when :acronyms
+          @acronyms = {}
+          define_acronym_regex_patterns
+        when :uncountables
+          @uncountables = Uncountables.new
+        when :plurals, :singulars, :humans
           instance_variable_set "@#{scope}", []
         end
       end
+
+      private
+        def define_acronym_regex_patterns
+          sorted_acronyms = @acronyms.empty? ? [] : @acronyms.values.sort_by { |a| -a.length }
+          @acronym_regex             = sorted_acronyms.empty? ? /(?=a)b/ : /#{sorted_acronyms.join("|")}/
+          @acronyms_camelize_regex   = /^(?:#{@acronym_regex}(?=\b|[A-Z_])|\w)/
+          @acronyms_underscore_regex = /(?:(?<=([A-Za-z\d]))|\b)(#{@acronym_regex})(?=\b|[^a-z])/
+        end
     end
 
     # Yields a singleton instance of Inflector::Inflections so you can specify
@@ -239,7 +284,7 @@ module ActiveSupport
       if block_given?
         yield Inflections.instance(locale)
       else
-        Inflections.instance(locale)
+        Inflections.instance_or_fallback(locale)
       end
     end
   end

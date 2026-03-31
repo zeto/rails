@@ -18,10 +18,7 @@ class AttributeAssignmentTest < ActiveModel::TestCase
       raise ErrorFromAttributeWriter
     end
 
-    # TODO Change this to private once we've dropped Ruby 2.2 support.
-    # Workaround for Ruby 2.2 "private attribute?" warning.
-    protected
-
+    private
       attr_writer :metadata
   end
 
@@ -52,8 +49,8 @@ class AttributeAssignmentTest < ActiveModel::TestCase
       @parameters
     end
 
-    def stringify_keys
-      dup
+    def each_pair(&block)
+      @parameters.each_pair(&block)
     end
 
     def dup
@@ -71,6 +68,14 @@ class AttributeAssignmentTest < ActiveModel::TestCase
     assert_equal "world", model.description
   end
 
+  test "simple assignment alias" do
+    model = Model.new
+
+    model.attributes = { name: "hello", description: "world" }
+    assert_equal "hello", model.name
+    assert_equal "world", model.description
+  end
+
   test "assign non-existing attribute" do
     model = Model.new
     error = assert_raises(ActiveModel::UnknownAttributeError) do
@@ -79,6 +84,19 @@ class AttributeAssignmentTest < ActiveModel::TestCase
 
     assert_equal model, error.record
     assert_equal "hz", error.attribute
+  end
+
+  test "assign non-existing attribute by overriding #attribute_writer_missing" do
+    model_class = Class.new(Model) do
+      attr_accessor :assigned_attributes
+
+      def attribute_writer_missing(name, value) = @assigned_attributes[name] = value
+    end
+    model = model_class.new(assigned_attributes: {})
+
+    model.assign_attributes unknown: "attribute"
+
+    assert_equal({ "unknown" => "attribute" }, model.assigned_attributes)
   end
 
   test "assign private attribute" do
@@ -95,9 +113,11 @@ class AttributeAssignmentTest < ActiveModel::TestCase
   end
 
   test "an ArgumentError is raised if a non-hash-like object is passed" do
-    assert_raises(ArgumentError) do
+    err = assert_raises(ArgumentError) do
       Model.new(1)
     end
+
+    assert_equal("When assigning attributes, you must pass a hash as an argument, Integer passed.", err.message)
   end
 
   test "forbidden attributes cannot be used for mass assignment" do
@@ -127,5 +147,15 @@ class AttributeAssignmentTest < ActiveModel::TestCase
   test "assigning no attributes should not raise, even if the hash is un-permitted" do
     model = Model.new
     assert_nil model.assign_attributes(ProtectedParams.new({}))
+  end
+
+  test "passing an object with each_pair but without each" do
+    model = Model.new
+    h = { name: "hello", description: "world" }
+    h.instance_eval { undef :each }
+    model.assign_attributes(h)
+
+    assert_equal "hello", model.name
+    assert_equal "world", model.description
   end
 end

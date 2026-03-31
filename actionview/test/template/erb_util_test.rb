@@ -2,6 +2,7 @@
 
 require "abstract_unit"
 require "active_support/json"
+require "active_support/core_ext/erb/util"
 
 class ErbUtilTest < ActiveSupport::TestCase
   include ERB::Util
@@ -12,9 +13,15 @@ class ErbUtilTest < ActiveSupport::TestCase
     end
   end
 
-  ERB::Util::JSON_ESCAPE.each do |given, expected|
+  {
+    "&" => '\u0026',
+    ">" => '\u003e',
+    "<" => '\u003c',
+    "\u2028" => '\u2028',
+    "\u2029" => '\u2029'
+  }.each do |given, expected|
     define_method "test_json_escape_#{expected.gsub(/\W/, '')}" do
-      assert_equal ERB::Util::JSON_ESCAPE[given], json_escape(given)
+      assert_equal expected, json_escape(given)
     end
   end
 
@@ -70,24 +77,24 @@ class ErbUtilTest < ActiveSupport::TestCase
 
   def test_json_escape_returns_unsafe_strings_when_passed_unsafe_strings
     value = json_escape("asdf")
-    assert !value.html_safe?
+    assert_not_predicate value, :html_safe?
   end
 
   def test_json_escape_returns_safe_strings_when_passed_safe_strings
     value = json_escape("asdf".html_safe)
-    assert value.html_safe?
+    assert_predicate value, :html_safe?
   end
 
   def test_html_escape_is_html_safe
     escaped = h("<p>")
     assert_equal "&lt;p&gt;", escaped
-    assert escaped.html_safe?
+    assert_predicate escaped, :html_safe?
   end
 
   def test_html_escape_passes_html_escape_unmodified
     escaped = h("<p>".html_safe)
     assert_equal "<p>", escaped
-    assert escaped.html_safe?
+    assert_predicate escaped, :html_safe?
   end
 
   def test_rest_in_ascii
@@ -102,13 +109,13 @@ class ErbUtilTest < ActiveSupport::TestCase
     assert_equal " &#X27; &#x27; &#x03BB; &#X03bb; &quot; &#39; &lt; &gt; ", html_escape_once(" &#X27; &#x27; &#x03BB; &#X03bb; \" ' < > ")
   end
 
-  def test_html_escape_once_returns_unsafe_strings_when_passed_unsafe_strings
+  def test_html_escape_once_returns_safe_strings_when_passed_unsafe_strings
     value = html_escape_once("1 < 2 &amp; 3")
-    assert !value.html_safe?
+    assert_predicate value, :html_safe?
   end
 
   def test_html_escape_once_returns_safe_strings_when_passed_safe_strings
     value = html_escape_once("1 < 2 &amp; 3".html_safe)
-    assert value.html_safe?
+    assert_predicate value, :html_safe?
   end
 end

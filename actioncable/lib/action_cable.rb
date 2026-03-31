@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 #--
-# Copyright (c) 2015-2017 Basecamp, LLC
+# Copyright (c) 37signals LLC
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -25,30 +25,56 @@
 
 require "active_support"
 require "active_support/rails"
-require_relative "action_cable/version"
+require "zeitwerk"
 
+# We compute lib this way instead of using __dir__ because __dir__ gives a real
+# path, while __FILE__ honors symlinks. If the gem is stored under a symlinked
+# directory, this matters.
+lib = File.dirname(__FILE__)
+
+Zeitwerk::Loader.for_gem.tap do |loader|
+  loader.ignore(
+    "#{lib}/rails", # Contains generators, templates, docs, etc.
+    "#{lib}/action_cable/gem_version.rb",
+    "#{lib}/action_cable/version.rb",
+    "#{lib}/action_cable/deprecator.rb",
+  )
+
+  loader.do_not_eager_load(
+    "#{lib}/action_cable/subscription_adapter", # Adapters are required and loaded on demand.
+    "#{lib}/action_cable/test_helper.rb",
+    Dir["#{lib}/action_cable/**/test_case.rb"]
+  )
+
+  loader.inflector.inflect("postgresql" => "PostgreSQL")
+end.setup
+
+# :markup: markdown
+# :include: ../README.md
 module ActionCable
-  extend ActiveSupport::Autoload
+  require_relative "action_cable/version"
+  require_relative "action_cable/deprecator"
 
   INTERNAL = {
     message_types: {
-      welcome: "welcome".freeze,
-      ping: "ping".freeze,
-      confirmation: "confirm_subscription".freeze,
-      rejection: "reject_subscription".freeze
+      welcome: "welcome",
+      disconnect: "disconnect",
+      ping: "ping",
+      confirmation: "confirm_subscription",
+      rejection: "reject_subscription"
     },
-    default_mount_path: "/cable".freeze,
-    protocols: ["actioncable-v1-json".freeze, "actioncable-unsupported".freeze].freeze
+    disconnect_reasons: {
+      unauthorized: "unauthorized",
+      invalid_request: "invalid_request",
+      server_restart: "server_restart",
+      remote: "remote"
+    },
+    default_mount_path: "/cable",
+    protocols: ["actioncable-v1-json", "actioncable-unsupported"].freeze
   }
 
   # Singleton instance of the server
   module_function def server
     @server ||= ActionCable::Server::Base.new
   end
-
-  autoload :Server
-  autoload :Connection
-  autoload :Channel
-  autoload :RemoteConnections
-  autoload :SubscriptionAdapter
 end

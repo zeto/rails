@@ -4,8 +4,6 @@ require "cases/helper"
 require "support/connection_helper"
 
 class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
-  self.use_transactional_tests = false
-
   include ConnectionHelper
 
   IS_REFERENTIAL_INTEGRITY_SQL = lambda do |sql|
@@ -13,7 +11,7 @@ class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
   end
 
   module MissingSuperuserPrivileges
-    def execute(sql)
+    def execute(sql, name = nil)
       if IS_REFERENTIAL_INTEGRITY_SQL.call(sql)
         super "BROKEN;" rescue nil # put transaction in broken state
         raise ActiveRecord::StatementInvalid, "PG::InsufficientPrivilege"
@@ -24,7 +22,7 @@ class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
   end
 
   module ProgrammerMistake
-    def execute(sql)
+    def execute(sql, name = nil)
       if IS_REFERENTIAL_INTEGRITY_SQL.call(sql)
         raise ArgumentError, "something is not right."
       else
@@ -34,12 +32,12 @@ class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
   end
 
   def setup
-    @connection = ActiveRecord::Base.connection
+    @connection = ActiveRecord::Base.lease_connection
   end
 
   def teardown
     reset_connection
-    if ActiveRecord::Base.connection.is_a?(MissingSuperuserPrivileges)
+    if ActiveRecord::Base.lease_connection.is_a?(MissingSuperuserPrivileges)
       raise "MissingSuperuserPrivileges patch was not removed"
     end
   end
@@ -70,7 +68,7 @@ class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
       end
       assert_equal "Should be re-raised", e.message
     end
-    assert warning.blank?, "expected no warnings but got:\n#{warning}"
+    assert_predicate warning, :blank?, "expected no warnings but got:\n#{warning}"
   end
 
   def test_does_not_break_transactions
@@ -101,12 +99,37 @@ class PostgreSQLReferentialIntegrityTest < ActiveRecord::PostgreSQLTestCase
     @connection.extend ProgrammerMistake
 
     assert_raises ArgumentError do
-      @connection.disable_referential_integrity {}
+      @connection.disable_referential_integrity { }
     end
   end
 
-  private
+  def test_all_foreign_keys_valid_having_foreign_keys_in_multiple_schemas
+    @connection.execute <<~SQL
+      CREATE SCHEMA referential_integrity_test_schema;
 
+      CREATE TABLE referential_integrity_test_schema.nodes (
+        id          BIGSERIAL,
+        parent_id   INT      NOT NULL,
+        PRIMARY KEY(id),
+        CONSTRAINT fk_parent_node FOREIGN KEY(parent_id)
+                                  REFERENCES referential_integrity_test_schema.nodes(id)
+      );
+    SQL
+
+    result = @connection.execute <<~SQL
+      SELECT count(*) AS count
+        FROM information_schema.table_constraints
+       WHERE constraint_schema = 'referential_integrity_test_schema'
+         AND constraint_type = 'FOREIGN KEY';
+    SQL
+
+    assert_equal 1, result.first["count"], "referential_integrity_test_schema should have 1 foreign key"
+    @connection.check_all_foreign_keys_valid!
+  ensure
+    @connection.drop_schema "referential_integrity_test_schema", if_exists: true
+  end
+
+  private
     def assert_transaction_is_not_broken
       assert_equal 1, @connection.select_value("SELECT 1")
     end

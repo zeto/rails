@@ -14,13 +14,14 @@ module Remembered
 
   included do
     after_create :remember
+
   private
     def remember; self.class.remembered << self; end
   end
 
   module ClassMethods
-    def remembered; @@remembered ||= []; end
-    def sample; @@remembered.sample; end
+    def remembered; @remembered ||= []; end
+    def sample; remembered.sample; end
   end
 end
 
@@ -92,7 +93,7 @@ class EagerLoadPolyAssocsTest < ActiveRecord::TestCase
   def test_include_query
     res = ShapeExpression.all.merge!(includes: [ :shape, { paint: :non_poly } ]).to_a
     assert_equal NUM_SHAPE_EXPRESSIONS, res.size
-    assert_queries(0) do
+    assert_no_queries do
       res.each do |se|
         assert_not_nil se.paint.non_poly, "this is the association that was loading incorrectly before the change"
         assert_not_nil se.shape, "just making sure other associations still work"
@@ -105,15 +106,15 @@ class EagerLoadNestedIncludeWithMissingDataTest < ActiveRecord::TestCase
   def setup
     @davey_mcdave = Author.create(name: "Davey McDave")
     @first_post = @davey_mcdave.posts.create(title: "Davey Speaks", body: "Expressive wordage")
-    @first_comment = @first_post.comments.create(body: "Inflamatory doublespeak")
+    @first_comment = @first_post.comments.create(body: "Inflammatory doublespeak")
     @first_categorization = @davey_mcdave.categorizations.create(category: Category.first, post: @first_post)
   end
 
   teardown do
-    @davey_mcdave.destroy
-    @first_post.destroy
     @first_comment.destroy
     @first_categorization.destroy
+    @davey_mcdave.destroy
+    @first_post.destroy
   end
 
   def test_missing_data_in_a_nested_include_should_not_cause_errors_when_constructing_objects

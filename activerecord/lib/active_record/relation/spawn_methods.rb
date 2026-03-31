@@ -2,13 +2,12 @@
 
 require "active_support/core_ext/hash/except"
 require "active_support/core_ext/hash/slice"
-require_relative "merger"
+require "active_record/relation/merger"
 
 module ActiveRecord
   module SpawnMethods
-    # This is overridden by Associations::CollectionProxy
-    def spawn #:nodoc:
-      clone
+    def spawn # :nodoc:
+      already_in_scope?(model.scope_registry) ? model.all : clone
     end
 
     # Merges in the conditions from <tt>other</tt>, if <tt>other</tt> is an ActiveRecord::Relation.
@@ -28,17 +27,20 @@ module ActiveRecord
     #   # => Post.where(published: true).joins(:comments)
     #
     # This is mainly intended for sharing common conditions between multiple associations.
-    def merge(other)
+    #
+    # For conditions that exist in both relations, those from <tt>other</tt> will take precedence.
+    # To find the intersection of two relations, use QueryMethods#and.
+    def merge(other, *rest)
       if other.is_a?(Array)
         records & other
       elsif other
-        spawn.merge!(other)
+        spawn.merge!(other, *rest)
       else
         raise ArgumentError, "invalid argument: #{other.inspect}."
       end
     end
 
-    def merge!(other) # :nodoc:
+    def merge!(other, *rest) # :nodoc:
       if other.is_a?(Hash)
         Relation::HashMerger.new(self, other).merge
       elsif other.is_a?(Relation)
@@ -50,27 +52,26 @@ module ActiveRecord
       end
     end
 
-    # Removes from the query the condition(s) specified in +skips+.
+    # Removes the condition(s) specified in +skips+ from the query.
     #
-    #   Post.order('id asc').except(:order)                  # discards the order condition
-    #   Post.where('id > 10').order('id asc').except(:where) # discards the where condition but keeps the order
+    #   Post.order('id asc').except(:order)                  # removes the order condition
+    #   Post.where('id > 10').order('id asc').except(:where) # removes the where condition but keeps the order
     def except(*skips)
       relation_with values.except(*skips)
     end
 
-    # Removes any condition from the query other than the one(s) specified in +onlies+.
+    # Keeps only the condition(s) specified in +onlies+ in the query, removing all others.
     #
-    #   Post.order('id asc').only(:where)         # discards the order condition
-    #   Post.order('id asc').only(:where, :order) # uses the specified order
+    #   Post.order('id asc').only(:where)         # keeps only the where condition, removes the order
+    #   Post.order('id asc').only(:where, :order) # keeps only the where and order conditions
     def only(*onlies)
       relation_with values.slice(*onlies)
     end
 
     private
-
       def relation_with(values)
-        result = Relation.create(klass, table, predicate_builder, values)
-        result.extend(*extending_values) if extending_values.any?
+        result = spawn
+        result.instance_variable_set(:@values, values)
         result
       end
   end

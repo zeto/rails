@@ -5,12 +5,12 @@ module ActionView
     class Builder
       class_attribute :default_format, default: :xml
 
-      def call(template)
+      def call(template, source)
         require_engine
-        "xml = ::Builder::XmlMarkup.new(:indent => 2);" \
-          "self.output_buffer = xml.target!;" +
-          template.source +
-          ";xml.target!;"
+        # the double assignment is to silence "assigned but unused variable" warnings
+        "xml = xml = ::Builder::XmlMarkup.new(indent: 2, target: output_buffer.raw);" \
+          "#{source};" \
+          "output_buffer.to_s"
       end
 
       private

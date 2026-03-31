@@ -11,12 +11,13 @@ module ActiveRecord
         end
 
         def case_sensitive?
-          collation && !/_ci\z/.match?(collation)
+          collation && !collation.end_with?("_ci")
         end
 
         def auto_increment?
           extra == "auto_increment"
         end
+        alias_method :auto_incremented_by_db?, :auto_increment?
 
         def virtual?
           /\b(?:VIRTUAL|STORED|PERSISTENT)\b/.match?(extra)

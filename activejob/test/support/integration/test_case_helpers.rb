@@ -19,7 +19,6 @@ module TestCaseHelpers
   end
 
   private
-
     def jobs_manager
       JobsManager.current_manager
     end
@@ -28,19 +27,13 @@ module TestCaseHelpers
       jobs_manager.clear_jobs
     end
 
-    def adapter_is?(*adapter_class_symbols)
-      adapter_class_symbols.map(&:to_s).include? ActiveJob::Base.queue_adapter_name
-    end
-
     def wait_for_jobs_to_finish_for(seconds = 60)
-      begin
-        Timeout.timeout(seconds) do
-          while !job_executed do
-            sleep 0.25
-          end
+      Timeout.timeout(seconds) do
+        while !job_executed do
+          sleep 0.25
         end
-      rescue Timeout::Error
       end
+    rescue Timeout::Error
     end
 
     def job_file(id)
@@ -49,6 +42,10 @@ module TestCaseHelpers
 
     def job_executed(id = @id)
       job_file(id).exist?
+    end
+
+    def continuable_job_started(id = @id)
+      job_file("#{id}.started").exist?
     end
 
     def job_data(id)
@@ -61,5 +58,9 @@ module TestCaseHelpers
 
     def job_executed_in_locale(id = @id)
       job_data(id)["locale"]
+    end
+
+    def job_executed_in_timezone(id = @id)
+      job_data(id)["timezone"]
     end
 end

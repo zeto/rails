@@ -15,7 +15,7 @@ module AbstractControllerTests
       self.view_paths = [ActionView::FixtureResolver.new(
         "some/template.erb"             => "hello <%= foo %> bar",
         "layouts/hello.erb"             => "With String <%= yield %>",
-        "layouts/hello_locals.erb"      => "With String <%= yield %>",
+        "layouts/hello_locals.erb"      => "With String <%= foo %> <%= yield %>",
         "layouts/hello_override.erb"    => "With Override <%= yield %>",
         "layouts/overwrite.erb"         => "Overwrite <%= yield %>",
         "layouts/with_false_layout.erb" => "False Layout <%= yield %>",
@@ -40,6 +40,10 @@ module AbstractControllerTests
 
       def index
         render template: "some/template", locals: { foo: "less than 3" }
+      end
+
+      def overwrite_with_default
+        render layout: :default, template: "some/template", locals: { foo: "less than 3" }
       end
     end
 
@@ -140,6 +144,7 @@ module AbstractControllerTests
       def index
         render template: ActionView::Template::Text.new("Hello symbol!")
       end
+
     private
       def hello
         "overwrite"
@@ -278,29 +283,16 @@ module AbstractControllerTests
         assert_equal "Hello blank!", controller.response_body
       end
 
-      test "with locals" do
+      test "when layout is specified as a string, render with locals" do
         controller = WithStringLocals.new
         controller.process(:index)
-        assert_equal "With String hello less than 3 bar", controller.response_body
+        assert_equal "With String less than 3 hello less than 3 bar", controller.response_body
       end
 
-      test "cache should not grow when locals change for a string template" do
-        cache = WithString.view_paths.paths.first.instance_variable_get(:@cache)
-
-        controller = WithString.new
-        controller.process(:index) # heat the cache
-
-        size = cache.size
-
-        10.times do |x|
-          controller = WithString.new
-          controller.define_singleton_method :index do
-            render template: ActionView::Template::Text.new("Hello string!"), locals: { :"x#{x}" => :omg }
-          end
-          controller.process(:index)
-        end
-
-        assert_equal size, cache.size
+      test "when layout is specified as a string, overwriting with :default, render with locals" do
+        controller = WithStringLocals.new
+        controller.process(:overwrite_with_default)
+        assert_equal "With String less than 3 hello less than 3 bar", controller.response_body
       end
 
       test "when layout is specified as a string, render with that layout" do

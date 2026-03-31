@@ -4,7 +4,7 @@ require "cases/helper"
 require "models/person"
 require "models/topic"
 require "models/person_with_validator"
-require "validators/namespace/email_validator"
+require "validators/namespaced/email_validator"
 
 class ValidatesTest < ActiveModel::TestCase
   setup :reset_callbacks
@@ -19,7 +19,7 @@ class ValidatesTest < ActiveModel::TestCase
   def test_validates_with_messages_empty
     Person.validates :title, presence: { message: "" }
     person = Person.new
-    assert !person.valid?, "person should not be valid."
+    assert_not person.valid?, "person should not be valid."
   end
 
   def test_validates_with_built_in_validation
@@ -37,7 +37,7 @@ class ValidatesTest < ActiveModel::TestCase
 
     person = Person.new
     person.title = 123
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_built_in_validation_and_options
@@ -55,63 +55,69 @@ class ValidatesTest < ActiveModel::TestCase
   end
 
   def test_validates_with_namespaced_validator_class
-    Person.validates :karma, 'namespace/email': true
+    Person.validates :karma, 'namespaced/email': true
     person = Person.new
     person.valid?
     assert_equal ["is not an email"], person.errors[:karma]
   end
 
   def test_validates_with_if_as_local_conditions
-    Person.validates :karma, presence: true, email: { unless: :condition_is_true }
+    Person.validates :karma, presence: true, email: { if: :condition_is_false }
     person = Person.new
     person.valid?
     assert_equal ["can't be blank"], person.errors[:karma]
   end
 
   def test_validates_with_if_as_shared_conditions
-    Person.validates :karma, presence: true, email: true, if: :condition_is_true
+    Person.validates :karma, presence: true, email: true, if: :condition_is_false
+    person = Person.new
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_with_unless_as_local_conditions
+    Person.validates :karma, presence: true, email: { unless: :condition_is_true }
     person = Person.new
     person.valid?
-    assert_equal ["can't be blank", "is not an email"], person.errors[:karma].sort
+    assert_equal ["can't be blank"], person.errors[:karma]
   end
 
   def test_validates_with_unless_shared_conditions
     Person.validates :karma, presence: true, email: true, unless: :condition_is_true
     person = Person.new
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_allow_nil_shared_conditions
     Person.validates :karma, length: { minimum: 20 }, email: true, allow_nil: true
     person = Person.new
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_regexp
     Person.validates :karma, format: /positive|negative/
     person = Person.new
-    assert person.invalid?
+    assert_predicate person, :invalid?
     assert_equal ["is invalid"], person.errors[:karma]
     person.karma = "positive"
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_array
     Person.validates :gender, inclusion: %w(m f)
     person = Person.new
-    assert person.invalid?
+    assert_predicate person, :invalid?
     assert_equal ["is not included in the list"], person.errors[:gender]
     person.gender = "m"
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_range
     Person.validates :karma, length: 6..20
     person = Person.new
-    assert person.invalid?
+    assert_predicate person, :invalid?
     assert_equal ["is too short (minimum is 6 characters)"], person.errors[:karma]
     person.karma = "something"
-    assert person.valid?
+    assert_predicate person, :valid?
   end
 
   def test_validates_with_validator_class_and_options
@@ -123,6 +129,10 @@ class ValidatesTest < ActiveModel::TestCase
 
   def test_validates_with_unknown_validator
     assert_raise(ArgumentError) { Person.validates :karma, unknown: true }
+  end
+
+  def test_validates_with_disabled_unknown_validator
+    assert_raise(ArgumentError) { Person.validates :karma, unknown: false }
   end
 
   def test_validates_with_included_validator
@@ -153,7 +163,58 @@ class ValidatesTest < ActiveModel::TestCase
     topic = Topic.new
     topic.title = "What's happening"
     topic.title_confirmation = "Not this"
-    assert !topic.valid?
+    assert_not_predicate topic, :valid?
     assert_equal ["Y U NO CONFIRM"], topic.errors[:title_confirmation]
+  end
+
+  def test_validates_combines_if_from_both_levels
+    Person.validates :title, presence: { if: :condition_is_true }, if: :condition_is_true
+    person = Person.new
+    assert_not person.valid?
+  end
+
+  def test_validates_combines_if_skips_when_top_level_if_is_false
+    Person.validates :title, presence: { if: :condition_is_true }, if: :condition_is_false
+    person = Person.new
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_combines_if_skips_when_per_validator_if_is_false
+    Person.validates :title, presence: { if: :condition_is_false }, if: :condition_is_true
+    person = Person.new
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_combines_unless_from_both_levels
+    Person.validates :title, presence: { unless: :condition_is_false }, unless: :condition_is_false
+    person = Person.new
+    assert_not person.valid?
+  end
+
+  def test_validates_combines_unless_skips_when_top_level_unless_is_true
+    Person.validates :title, presence: { unless: :condition_is_false }, unless: :condition_is_true
+    person = Person.new
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_combines_unless_skips_when_per_validator_unless_is_true
+    Person.validates :title, presence: { unless: :condition_is_true }, unless: :condition_is_false
+    person = Person.new
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_combines_on_from_both_levels
+    Person.validates :title, presence: { on: :create }, on: :update
+    person = Person.new
+    assert_not person.valid?(:create)
+    assert_not person.valid?(:update)
+    assert_predicate person, :valid?
+  end
+
+  def test_validates_per_validator_message_overrides_top_level
+    Topic.validates :title, presence: { message: "inner msg" }, message: "outer msg"
+    topic = Topic.new
+    topic.valid?
+    assert_equal ["inner msg"], topic.errors[:title]
   end
 end

@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require_relative "inline"
+# :markup: markdown
 
 module ActionCable
   module SubscriptionAdapter

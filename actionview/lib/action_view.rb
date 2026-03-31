@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 #--
-# Copyright (c) 2004-2017 David Heinemeier Hansson
+# Copyright (c) David Heinemeier Hansson
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -25,8 +25,10 @@
 
 require "active_support"
 require "active_support/rails"
-require_relative "action_view/version"
+require "action_view/version"
+require "action_view/deprecator"
 
+# :include: ../README.rdoc
 module ActionView
   extend ActiveSupport::Autoload
 
@@ -35,31 +37,34 @@ module ActionView
   eager_autoload do
     autoload :Base
     autoload :Context
-    autoload :CompiledTemplates, "action_view/context"
     autoload :Digestor
     autoload :Helpers
     autoload :LookupContext
     autoload :Layouts
+    autoload :PathRegistry
     autoload :PathSet
     autoload :RecordIdentifier
     autoload :Rendering
     autoload :RoutingUrlFor
     autoload :Template
+    autoload :TemplateDetails
+    autoload :TemplatePath
+    autoload :UnboundTemplate
     autoload :ViewPaths
 
     autoload_under "renderer" do
       autoload :Renderer
       autoload :AbstractRenderer
       autoload :PartialRenderer
+      autoload :CollectionRenderer
+      autoload :ObjectRenderer
       autoload :TemplateRenderer
       autoload :StreamingTemplateRenderer
     end
 
     autoload_at "action_view/template/resolver" do
       autoload :Resolver
-      autoload :PathResolver
-      autoload :OptimizedFileSystemResolver
-      autoload :FallbackFileSystemResolver
+      autoload :FileSystemResolver
     end
 
     autoload_at "action_view/buffers" do
@@ -76,13 +81,18 @@ module ActionView
       autoload :MissingTemplate
       autoload :ActionViewError
       autoload :EncodingError
-      autoload :MissingRequestError
+      autoload :StrictLocalsError
       autoload :TemplateError
+      autoload :SyntaxErrorInTemplate
       autoload :WrongEncodingError
     end
   end
 
+  autoload :CacheExpiry
   autoload :TestCase
+
+  singleton_class.attr_accessor :render_tracker
+  self.render_tracker = :regex
 
   def self.eager_load!
     super

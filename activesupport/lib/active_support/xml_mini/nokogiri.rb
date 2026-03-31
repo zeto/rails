@@ -3,14 +3,14 @@
 begin
   require "nokogiri"
 rescue LoadError => e
-  $stderr.puts "You don't have nokogiri installed in your application. Please add it to your Gemfile and run bundle install"
+  warn "You don't have nokogiri installed in your application. Please add it to your Gemfile and run bundle install"
   raise e
 end
-require_relative "../core_ext/object/blank"
+require "active_support/core_ext/object/blank"
 require "stringio"
 
 module ActiveSupport
-  module XmlMini_Nokogiri #:nodoc:
+  module XmlMini_Nokogiri # :nodoc:
     extend self
 
     # Parse an XML Document string or IO into a simple hash using libxml / nokogiri.
@@ -30,15 +30,15 @@ module ActiveSupport
       end
     end
 
-    module Conversions #:nodoc:
-      module Document #:nodoc:
+    module Conversions # :nodoc:
+      module Document # :nodoc:
         def to_hash
           root.to_hash
         end
       end
 
-      module Node #:nodoc:
-        CONTENT_ROOT = "__content__".freeze
+      module Node # :nodoc:
+        CONTENT_ROOT = "__content__"
 
         # Convert XML document to hash.
         #
@@ -59,7 +59,7 @@ module ActiveSupport
             if c.element?
               c.to_hash(node_hash)
             elsif c.text? || c.cdata?
-              node_hash[CONTENT_ROOT] ||= "".dup
+              node_hash[CONTENT_ROOT] ||= +""
               node_hash[CONTENT_ROOT] << c.content
             end
           end

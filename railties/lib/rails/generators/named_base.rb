@@ -1,15 +1,14 @@
 # frozen_string_literal: true
 
-require "active_support/core_ext/module/introspection"
-require_relative "base"
-require_relative "generated_attribute"
+require "rails/generators/base"
+require "rails/generators/generated_attribute"
 
 module Rails
   module Generators
     class NamedBase < Base
       argument :name, type: :string
 
-      def initialize(args, *options) #:nodoc:
+      def initialize(args, *options) # :nodoc:
         @inside_template = nil
         # Unfreeze name in case it's given as a frozen string
         args[0] = args[0].dup if args[0].is_a?(String) && args[0].frozen?
@@ -23,7 +22,7 @@ module Rails
       no_tasks do
         def template(source, *args, &block)
           inside_template do
-            super
+            Rails::Generators.add_generated_file(super)
           end
         end
 
@@ -32,12 +31,8 @@ module Rails
         end
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
-        attr_reader :file_name
-
       private
+        attr_reader :file_name
 
         # FIXME: We are avoiding to use alias because a bug on thor that make
         # this method public and add it to the task list.
@@ -99,24 +94,20 @@ module Rails
           singular_name == plural_name
         end
 
-        def index_helper # :doc:
-          uncountable? ? "#{plural_route_name}_index" : plural_route_name
+        def index_helper(type: nil) # :doc:
+          [plural_route_name, ("index" if uncountable?), type].compact.join("_")
         end
 
-        def show_helper # :doc:
-          "#{singular_route_name}_url(@#{singular_table_name})"
+        def show_helper(arg = "@#{singular_table_name}", type: :url) # :doc:
+          "#{singular_route_name}_#{type}(#{arg})"
         end
 
-        def edit_helper # :doc:
-          "edit_#{show_helper}"
+        def edit_helper(...) # :doc:
+          "edit_#{show_helper(...)}"
         end
 
-        def new_helper # :doc:
-          "new_#{singular_route_name}_url"
-        end
-
-        def field_id(attribute_name)
-          [singular_table_name, attribute_name].join("_")
+        def new_helper(type: :url) # :doc:
+          "new_#{singular_route_name}_#{type}"
         end
 
         def singular_table_name # :doc:
@@ -136,7 +127,7 @@ module Rails
         end
 
         def route_url # :doc:
-          @route_url ||= class_path.collect { |dname| "/" + dname }.join + "/" + plural_file_name
+          @route_url ||= controller_class_path.collect { |dname| "/" + dname }.join + "/" + plural_file_name
         end
 
         def url_helper_prefix # :doc:
@@ -156,28 +147,28 @@ module Rails
           model_resource_name(prefix: "@")
         end
 
-        def model_resource_name(prefix: "") # :doc:
-          resource_name = "#{prefix}#{singular_table_name}"
-          if controller_class_path.empty?
-            resource_name
-          else
+        def model_resource_name(base_name = singular_table_name, prefix: "") # :doc:
+          resource_name = "#{prefix}#{base_name}"
+          if options[:model_name]
             "[#{controller_class_path.map { |name| ":" + name }.join(", ")}, #{resource_name}]"
+          else
+            resource_name
           end
         end
 
         def singular_route_name # :doc:
-          if controller_class_path.empty?
-            singular_table_name
-          else
+          if options[:model_name]
             "#{controller_class_path.join('_')}_#{singular_table_name}"
+          else
+            singular_table_name
           end
         end
 
         def plural_route_name # :doc:
-          if controller_class_path.empty?
-            plural_table_name
-          else
+          if options[:model_name]
             "#{controller_class_path.join('_')}_#{plural_table_name}"
+          else
+            plural_table_name
           end
         end
 
@@ -211,7 +202,7 @@ module Rails
         end
 
         # Add a class collisions name to be checked on class initialization. You
-        # can supply a hash with a :prefix or :suffix to be tested.
+        # can supply a hash with a +:prefix+ or +:suffix+ to be tested.
         #
         # ==== Examples
         #
@@ -222,7 +213,7 @@ module Rails
         #
         def self.check_class_collision(options = {}) # :doc:
           define_method :check_class_collision do
-            name = if respond_to?(:controller_class_name) # for ScaffoldBase
+            name = if respond_to?(:controller_class_name, true) # for ResourceHelpers
               controller_class_name
             else
               class_name

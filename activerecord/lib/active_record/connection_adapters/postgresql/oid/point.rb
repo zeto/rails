@@ -7,7 +7,7 @@ module ActiveRecord
     module PostgreSQL
       module OID # :nodoc:
         class Point < Type::Value # :nodoc:
-          include Type::Helpers::Mutable
+          include ActiveModel::Type::Helpers::Mutable
 
           def type
             :point
@@ -18,13 +18,17 @@ module ActiveRecord
             when ::String
               return if value.blank?
 
-              if value[0] == "(" && value[-1] == ")"
+              if value.start_with?("(") && value.end_with?(")")
                 value = value[1...-1]
               end
               x, y = value.split(",")
               build_point(x, y)
             when ::Array
               build_point(*value)
+            when ::Hash
+              return if value.blank?
+
+              build_point(*values_array_from_hash(value))
             else
               value
             end
@@ -36,6 +40,8 @@ module ActiveRecord
               "(#{number_for_point(value.x)},#{number_for_point(value.y)})"
             when ::Array
               serialize(build_point(*value))
+            when ::Hash
+              serialize(build_point(*values_array_from_hash(value)))
             else
               super
             end
@@ -50,13 +56,16 @@ module ActiveRecord
           end
 
           private
-
             def number_for_point(number)
-              number.to_s.gsub(/\.0$/, "")
+              number.to_s.delete_suffix(".0")
             end
 
             def build_point(x, y)
               ActiveRecord::Point.new(Float(x), Float(y))
+            end
+
+            def values_array_from_hash(value)
+              [value.values_at(:x, "x").compact.first, value.values_at(:y, "y").compact.first]
             end
         end
       end

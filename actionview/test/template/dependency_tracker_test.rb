@@ -14,11 +14,18 @@ class FakeTemplate
 
   def initialize(source, handler = Neckbeard)
     @source, @handler = source, handler
+    if handler == :erb
+      @handler = ActionView::Template::Handlers::ERB.new
+    end
+  end
+
+  def type
+    ["text/html"]
   end
 end
 
-Neckbeard = lambda { |template| template.source }
-Bowtie = lambda { |template| template.source }
+Neckbeard = lambda { |template, source| source }
+Bowtie = lambda { |template, source| source }
 
 class DependencyTrackerTest < ActionView::TestCase
   def tracker
@@ -48,71 +55,91 @@ class DependencyTrackerTest < ActionView::TestCase
   end
 end
 
-class ERBTrackerTest < Minitest::Test
-  def make_tracker(name, template)
-    ActionView::DependencyTracker::ERBTracker.new(name, template)
-  end
-
+# Tests run with both ERBTracker and RubyTracker
+module SharedTrackerTests
   def test_dependency_of_erb_template_with_number_in_filename
-    template = FakeTemplate.new("<%# render 'messages/message123' %>", :erb)
+    template = FakeTemplate.new("<%= render 'messages/message123' %>", :erb)
     tracker = make_tracker("messages/_message123", template)
 
     assert_equal ["messages/message123"], tracker.dependencies
   end
 
   def test_dependency_of_template_partial_with_layout
-    template = FakeTemplate.new("<%# render partial: 'messages/show', layout: 'messages/layout' %>", :erb)
+    template = FakeTemplate.new("<%= render partial: 'messages/show', layout: 'messages/layout' %>", :erb)
     tracker = make_tracker("multiple/_dependencies", template)
 
-    assert_equal ["messages/layout", "messages/show"], tracker.dependencies
+    assert_equal ["messages/layout", "messages/show"], tracker.dependencies.sort
   end
 
   def test_dependency_of_template_layout_standalone
-    template = FakeTemplate.new("<%# render layout: 'messages/layout' do %>", :erb)
+    template = FakeTemplate.new("<%= render layout: 'messages/layout' do %>", :erb)
     tracker = make_tracker("messages/layout", template)
 
     assert_equal ["messages/layout"], tracker.dependencies
   end
 
   def test_finds_dependency_in_correct_directory
-    template = FakeTemplate.new("<%# render(message.topic) %>", :erb)
+    template = FakeTemplate.new("<%= render(message.topic) %>", :erb)
     tracker = make_tracker("messages/_message", template)
 
     assert_equal ["topics/topic"], tracker.dependencies
   end
 
   def test_finds_dependency_in_correct_directory_with_underscore
-    template = FakeTemplate.new("<%# render(message_type.messages) %>", :erb)
+    template = FakeTemplate.new("<%= render(message_type.messages) %>", :erb)
     tracker = make_tracker("message_types/_message_type", template)
 
     assert_equal ["messages/message"], tracker.dependencies
   end
 
   def test_dependency_of_erb_template_with_no_spaces_after_render
-    template = FakeTemplate.new("<%# render'messages/message' %>", :erb)
+    template = FakeTemplate.new("<%= render'messages/message' %>", :erb)
     tracker = make_tracker("messages/_message", template)
 
     assert_equal ["messages/message"], tracker.dependencies
   end
 
   def test_finds_no_dependency_when_render_begins_the_name_of_an_identifier
-    template = FakeTemplate.new("<%# rendering 'it useless' %>", :erb)
+    template = FakeTemplate.new("<%= rendering 'it useless' %>", :erb)
     tracker = make_tracker("resources/_resource", template)
 
     assert_equal [], tracker.dependencies
   end
 
   def test_finds_no_dependency_when_render_ends_the_name_of_another_method
-    template = FakeTemplate.new("<%# surrender 'to reason' %>", :erb)
+    template = FakeTemplate.new("<%= surrender 'to reason' %>", :erb)
     tracker = make_tracker("resources/_resource", template)
 
     assert_equal [], tracker.dependencies
   end
 
+  def test_finds_no_dependency_when_render_is_not_a_ruby_call
+    template = FakeTemplate.new("<div class='render foo'>", :erb)
+    tracker = make_tracker("resources/_resource", template)
+
+    assert_equal [], tracker.dependencies
+  end
+
+  def test_find_dependencies_and_respect_erb_tag_boundaries
+    template = FakeTemplate.new("<p>Hello</p> <% link_to abc %> <%= render 'single/quote' %>", :erb)
+    tracker = make_tracker("resources/_resource", template)
+
+    assert_equal ["single/quote"], tracker.dependencies
+  end
+
+  def test_find_all_dependencies_and_respect_erb_tag_boundaries
+    template = FakeTemplate.new("<p>Hello</p> <%=
+      render object: @all_posts,
+             partial: 'posts' %> <% link_to abc %> <%= render 'single/quote' %>", :erb)
+    tracker = make_tracker("resources/_resource", template)
+
+    assert_equal ["resources/posts", "single/quote"], tracker.dependencies
+  end
+
   def test_finds_dependency_on_multiline_render_calls
-    template = FakeTemplate.new("<%#
-      render :object => @all_posts,
-             :partial => 'posts' %>", :erb)
+    template = FakeTemplate.new("<%=
+      render object: @all_posts,
+             partial: 'posts' %>", :erb)
 
     tracker = make_tracker("some/_little_posts", template)
 
@@ -121,21 +148,21 @@ class ERBTrackerTest < Minitest::Test
 
   def test_finds_multiple_unrelated_odd_dependencies
     template = FakeTemplate.new("
-      <%# render('shared/header', title: 'Title') %>
+      <%= render('application/header', title: 'Title') %>
       <h2>Section title</h2>
-      <%# render@section %>
+      <%= render@section %>
     ", :erb)
 
     tracker = make_tracker("multiple/_dependencies", template)
 
-    assert_equal ["shared/header", "sections/section"], tracker.dependencies
+    assert_equal ["application/header", "sections/section"], tracker.dependencies
   end
 
   def test_finds_dependencies_for_all_kinds_of_identifiers
     template = FakeTemplate.new("
-      <%# render $globals %>
-      <%# render @instance_variables %>
-      <%# render @@class_variables %>
+      <%= render $globals %>
+      <%= render @instance_variables %>
+      <%= render @@class_variables %>
     ", :erb)
 
     tracker = make_tracker("identifiers/_all", template)
@@ -148,14 +175,14 @@ class ERBTrackerTest < Minitest::Test
   end
 
   def test_finds_dependencies_on_method_chains
-    template = FakeTemplate.new("<%# render @parent.child.grandchildren %>", :erb)
+    template = FakeTemplate.new("<%= render @parent.child.grandchildren %>", :erb)
     tracker = make_tracker("method/_chains", template)
 
     assert_equal ["grandchildren/grandchild"], tracker.dependencies
   end
 
   def test_finds_dependencies_with_special_characters
-    template = FakeTemplate.new("<%# render @pokémon, partial: 'ピカチュウ' %>", :erb)
+    template = FakeTemplate.new("<%= render partial: 'ピカチュウ', object: @pokémon %>", :erb)
     tracker = make_tracker("special/_characters", template)
 
     assert_equal ["special/ピカチュウ"], tracker.dependencies
@@ -163,8 +190,8 @@ class ERBTrackerTest < Minitest::Test
 
   def test_finds_dependencies_with_quotes_within
     template = FakeTemplate.new(%{
-      <%# render "single/quote's" %>
-      <%# render 'double/quote"s' %>
+      <%= render "single/quote's" %>
+      <%= render 'double/quote"s' %>
     }, :erb)
 
     tracker = make_tracker("quotes/_single_and_double", template)
@@ -191,5 +218,107 @@ class ERBTrackerTest < Minitest::Test
       "events/event",
       "comments/comment"
     ], tracker.dependencies
+  end
+
+  def test_finds_dependencies_with_bare_assoc_hash_on_constant
+    template = FakeTemplate.new(%{
+      <%= render SomeConstant.message(this: "that") %>
+    }, :erb)
+
+    tracker = make_tracker("assoc_hash/const", template)
+
+    assert_equal [
+      "messages/message",
+    ], tracker.dependencies
+  end
+
+  def test_dependencies_with_interpolation
+    template = FakeTemplate.new(%q{
+      <%= render "double/#{quote}" %>
+      <%= render 'single/#{quote}' %>
+    }, :erb)
+    tracker = make_tracker("interpolation/_string", template)
+
+    assert_equal ["single/\#{quote}"], tracker.dependencies
+  end
+
+  def test_dependencies_with_interpolation_are_resolved_with_view_paths
+    view_paths = ActionView::PathSet.new([File.expand_path("../fixtures/digestor", __dir__)])
+
+    template = FakeTemplate.new(%q{
+      <%= render "events/#{quote}" %>
+    }, :erb)
+
+    tracker = make_tracker("interpolation/_string", template, view_paths)
+
+    assert_equal ["events/_completed", "events/_event", "events/index"], tracker.dependencies
+  end
+
+  def test_dependencies_with_interpolation_non_trailing
+    view_paths = ActionView::PathSet.new([File.expand_path("../fixtures/digestor", __dir__)])
+
+    template = FakeTemplate.new(%q{
+      <%= render "#{type}/comments" %>
+    }, :erb)
+
+    tracker = make_tracker("interpolation/_string", template, view_paths)
+
+    assert_equal [ "*/comments" ], tracker.dependencies
+  end
+
+  def test_dependencies_with_interpolation_expr
+    view_paths = ActionView::PathSet.new([File.expand_path("../fixtures/digestor", __dir__)])
+
+    template = FakeTemplate.new(%q{
+      <%= render "orders/#{variable || "default"}" %>
+    }, :erb)
+
+    tracker = make_tracker("interpolation/_string", template, view_paths)
+
+    # unsupported
+    assert_equal [], tracker.dependencies
+  end
+end
+
+class ERBTrackerTest < ActiveSupport::TestCase
+  include SharedTrackerTests
+
+  def make_tracker(name, template, view_paths = nil)
+    ActionView::DependencyTracker::ERBTracker.new(name, template, view_paths)
+  end
+end
+
+class RubyTrackerTest < Minitest::Test
+  include SharedTrackerTests
+
+  def make_tracker(name, template, view_paths = nil)
+    ActionView::DependencyTracker::RubyTracker.new(name, template, view_paths)
+  end
+
+  def test_dependencies_skip_unknown_options
+    template = FakeTemplate.new(%{
+      <%= render partial: "unknown_render_call", unknown_render_option: "yes" %>
+    }, :erb)
+    tracker = make_tracker("interpolation/_string", template)
+
+    assert_equal [], tracker.dependencies
+  end
+
+  def test_dependencies_finds_spacer_templates
+    template = FakeTemplate.new(%{
+      <%= render partial: "messages/message", collection: books, spacer_template: "messages/message_spacer" %>
+    }, :erb)
+    tracker = make_tracker("messages/show", template)
+
+    assert_equal ["messages/message_spacer", "messages/message"], tracker.dependencies
+  end
+
+  def test_dependencies_skip_commented_out_renders
+    template = FakeTemplate.new(%{
+      <%# render "messages/legacy_message" %>
+    }, :erb)
+    tracker = make_tracker("messages/show", template)
+
+    assert_equal [], tracker.dependencies
   end
 end

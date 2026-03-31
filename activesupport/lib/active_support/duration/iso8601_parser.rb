@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require "strscan"
-require_relative "../core_ext/regexp"
 
 module ActiveSupport
   class Duration
@@ -14,14 +13,14 @@ module ActiveSupport
       class ParsingError < ::ArgumentError; end
 
       PERIOD_OR_COMMA = /\.|,/
-      PERIOD = ".".freeze
-      COMMA = ",".freeze
+      PERIOD = "."
+      COMMA = ","
 
-      SIGN_MARKER = /\A\-|\+|/
+      SIGN_MARKER = /\A-|\+|/
       DATE_MARKER = /P/
       TIME_MARKER = /T/
-      DATE_COMPONENT = /(\-?\d+(?:[.,]\d+)?)(Y|M|D|W)/
-      TIME_COMPONENT = /(\-?\d+(?:[.,]\d+)?)(H|M|S)/
+      DATE_COMPONENT = /(-?\d+(?:[.,]\d+)?)(Y|M|D|W)/
+      TIME_COMPONENT = /(-?\d+(?:[.,]\d+)?)(H|M|S)/
 
       DATE_TO_PART = { "Y" => :years, "M" => :months, "W" => :weeks, "D" => :days }
       TIME_TO_PART = { "H" => :hours, "M" => :minutes, "S" => :seconds }
@@ -81,7 +80,6 @@ module ActiveSupport
       end
 
       private
-
         def finished?
           scanner.eos?
         end
@@ -104,12 +102,12 @@ module ActiveSupport
           raise_parsing_error("is empty duration") if parts.empty?
 
           # Mixing any of Y, M, D with W is invalid.
-          if parts.key?(:weeks) && (parts.keys & DATE_COMPONENTS).any?
+          if parts.key?(:weeks) && parts.keys.intersect?(DATE_COMPONENTS)
             raise_parsing_error("mixing weeks with other date parts not allowed")
           end
 
           # Specifying an empty T part is invalid.
-          if mode == :time && (parts.keys & TIME_COMPONENTS).empty?
+          if mode == :time && !parts.keys.intersect?(TIME_COMPONENTS)
             raise_parsing_error("time part marker is present but time part is empty")
           end
 
@@ -118,7 +116,7 @@ module ActiveSupport
             raise_parsing_error "(only last part can be fractional)"
           end
 
-          return true
+          true
         end
     end
   end

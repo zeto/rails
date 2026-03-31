@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 module AbstractController
   module Caching
     extend ActiveSupport::Concern
@@ -15,7 +17,7 @@ module AbstractController
       end
 
       def cache_store=(store)
-        config.cache_store = ActiveSupport::Cache.lookup_store(store)
+        config.cache_store = ActiveSupport::Cache.lookup_store(*store)
       end
 
       private
@@ -30,13 +32,16 @@ module AbstractController
     included do
       extend ConfigMethods
 
-      config_accessor :default_static_extension
+      singleton_class.delegate :default_static_extension, :default_static_extension=, to: :config
+      delegate :default_static_extension, :default_static_extension=, to: :config
       self.default_static_extension ||= ".html"
 
-      config_accessor :perform_caching
+      singleton_class.delegate :perform_caching, :perform_caching=, to: :config
+      delegate :perform_caching, :perform_caching=, to: :config
       self.perform_caching = true if perform_caching.nil?
 
-      config_accessor :enable_fragment_cache_logging
+      singleton_class.delegate :enable_fragment_cache_logging, :enable_fragment_cache_logging=, to: :config
+      delegate :enable_fragment_cache_logging, :enable_fragment_cache_logging=, to: :config
       self.enable_fragment_cache_logging = false
 
       class_attribute :_view_cache_dependencies, default: []
@@ -50,7 +55,7 @@ module AbstractController
     end
 
     def view_cache_dependencies
-      self.class._view_cache_dependencies.map { |dep| instance_exec(&dep) }.compact
+      self.class._view_cache_dependencies.filter_map { |dep| instance_exec(&dep) }
     end
 
     private

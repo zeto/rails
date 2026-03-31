@@ -68,9 +68,25 @@ module ApplicationTests
       assert_includes I18n.load_path, "#{app_path}/config/another_locale.yml"
     end
 
+    test "load_path handles Pathname argument correctly" do
+      app_file "config/another_locale.yml", "en:\nfoo: ~"
+
+      add_to_config <<-RUBY
+        config.i18n.load_path << config.root.join("config/another_locale.yml")
+      RUBY
+
+      load_app
+      assert_equal [
+        "#{app_path}/config/locales/en.yml", Pathname.new("#{app_path}/config/another_locale.yml")
+      ], Rails.application.config.i18n.load_path
+
+      assert_includes I18n.load_path, "#{app_path}/config/locales/en.yml"
+      assert_includes I18n.load_path, Pathname.new("#{app_path}/config/another_locale.yml")
+    end
+
     test "load_path is populated before eager loaded models" do
       add_to_config <<-RUBY
-        config.cache_classes = true
+        config.enable_reloading = false
       RUBY
 
       app_file "config/locales/en.yml", <<-YAML
@@ -100,7 +116,7 @@ en:
 
     test "locales are reloaded if they change between requests" do
       add_to_config <<-RUBY
-        config.cache_classes = false
+        config.enable_reloading = true
       RUBY
 
       app_file "config/locales/en.yml", <<-YAML
@@ -135,7 +151,7 @@ en:
 
     test "new locale files are loaded" do
       add_to_config <<-RUBY
-        config.cache_classes = false
+        config.enable_reloading = true
       RUBY
 
       app_file "config/locales/en.yml", <<-YAML
@@ -171,7 +187,7 @@ en:
 
     test "I18n.load_path is reloaded" do
       add_to_config <<-RUBY
-        config.cache_classes = false
+        config.enable_reloading = true
       RUBY
 
       app_file "config/locales/en.yml", <<-YAML
@@ -237,7 +253,7 @@ fr:
     test "config.i18n.fallbacks.map = { :ca => :'es-ES' } initializes fallbacks with a mapping ca => es-ES" do
       I18n::Railtie.config.i18n.fallbacks.map = { ca: :'es-ES' }
       load_app
-      assert_fallbacks ca: [:ca, :"es-ES", :es, :en]
+      assert_fallbacks ca: [:ca, :"es-ES", :es]
     end
 
     test "[shortcut] config.i18n.fallbacks = [:'en-US'] initializes fallbacks with en-US as a fallback default" do
@@ -249,7 +265,7 @@ fr:
     test "[shortcut] config.i18n.fallbacks = [{ :ca => :'es-ES' }] initializes fallbacks with a mapping ca => es-ES" do
       I18n::Railtie.config.i18n.fallbacks = [{ ca: :'es-ES' }]
       load_app
-      assert_fallbacks ca: [:ca, :"es-ES", :es, :en]
+      assert_fallbacks ca: [:ca, :"es-ES", :es]
     end
 
     test "[shortcut] config.i18n.fallbacks = [:'en-US', { :ca => :'es-ES' }] initializes fallbacks with the given arguments" do

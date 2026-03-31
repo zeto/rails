@@ -15,13 +15,13 @@ class ActiveStorage::ImageTagTest < ActionView::TestCase
   end
 
   test "variant" do
-    variant = @blob.variant(resize: "100x100")
+    variant = @blob.variant(resize_to_limit: [100, 100])
     assert_dom_equal %(<img src="#{polymorphic_url variant}" />), image_tag(variant)
   end
 
   test "preview" do
     blob = create_file_blob(filename: "report.pdf", content_type: "application/pdf")
-    preview = blob.preview(resize: "100x100")
+    preview = blob.preview(resize_to_limit: [100, 100])
     assert_dom_equal %(<img src="#{polymorphic_url preview}" />), image_tag(preview)
   end
 
@@ -33,11 +33,11 @@ class ActiveStorage::ImageTagTest < ActionView::TestCase
   test "error when attachment's empty" do
     @user = User.create!(name: "DHH")
 
-    assert_not @user.avatar.attached?
+    assert_not_predicate @user.avatar, :attached?
     assert_raises(ArgumentError) { image_tag(@user.avatar) }
   end
 
-  test "error when object can't be resolved into url" do
+  test "error when object can't be resolved into URL" do
     unresolvable_object = ActionView::Helpers::AssetTagHelper
     assert_raises(ArgumentError) { image_tag(unresolvable_object) }
   end

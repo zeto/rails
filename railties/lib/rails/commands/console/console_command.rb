@@ -1,20 +1,9 @@
 # frozen_string_literal: true
 
-require "irb"
-require "irb/completion"
-
-require_relative "../../command/environment_argument"
+require "rails/command/environment_argument"
 
 module Rails
   class Console
-    module BacktraceCleaner
-      def filter_backtrace(bt)
-        if result = super
-          Rails.backtrace_cleaner.filter([result]).first
-        end
-      end
-    end
-
     def self.start(*args)
       new(*args).start
     end
@@ -26,17 +15,26 @@ module Rails
       @options = options
 
       app.sandbox = sandbox?
+
+      if sandbox? && app.config.disable_sandbox
+        puts "Error: Unable to start console in sandbox mode as sandbox mode is disabled (config.disable_sandbox is true)."
+        exit 1
+      end
+
       app.load_console
 
-      @console = app.config.console || IRB
-
-      if @console == IRB
-        IRB::WorkSpace.prepend(BacktraceCleaner)
+      @console = app.config.console || begin
+        require "rails/commands/console/irb_console"
+        IRBConsole.new(app)
       end
     end
 
     def sandbox?
-      options[:sandbox]
+      return options[:sandbox] if !options[:sandbox].nil?
+
+      return false if Rails.env.local?
+
+      app.config.sandbox_by_default
     end
 
     def environment
@@ -57,10 +55,8 @@ module Rails
       else
         puts "Loading #{Rails.env} environment (Rails #{Rails.version})"
       end
+      puts "Type 'help' for help."
 
-      if defined?(console::ExtendCommandBundle)
-        console::ExtendCommandBundle.include(Rails::ConsoleMethods)
-      end
       console.start
     end
   end
@@ -69,8 +65,13 @@ module Rails
     class ConsoleCommand < Base # :nodoc:
       include EnvironmentArgument
 
-      class_option :sandbox, aliases: "-s", type: :boolean, default: false,
+      class_option :sandbox, aliases: "-s", type: :boolean, default: nil,
         desc: "Rollback database modifications on exit."
+
+      class_option :skip_executor, type: :boolean, aliases: "-w", desc: "Don't wrap with Rails Executor", default: false
+
+      class_option :query_cache, type: :boolean, aliases: "-q", default: false,
+        desc: "Enable the Active Record query cache for the session (ignored if --skip-executor or -w is used)"
 
       def initialize(args = [], local_options = {}, config = {})
         console_options = []
@@ -86,15 +87,31 @@ module Rails
         super(args, local_options, config)
       end
 
+      desc "console", "Start the Rails console"
       def perform
-        extract_environment_option_from_argument
+        boot_application!
 
-        # RAILS_ENV needs to be set before config/application is required.
-        ENV["RAILS_ENV"] = options[:environment]
-
-        require_application_and_environment!
-        Rails::Console.start(Rails.application, options)
+        wrap_with_executor = !options[:skip_executor]
+        conditional_executor(wrap_with_executor, source: "application.console.railties") do
+          disable_query_cache_in_console! if wrap_with_executor && !options[:query_cache]
+          Rails::Console.start(Rails.application, options)
+        end
       end
+
+      private
+        def disable_query_cache_in_console!
+          return unless defined?(ActiveRecord::Base)
+
+          ActiveRecord::Base.connection_handler.each_connection_pool.select(&:query_cache_enabled).each(&:disable_query_cache!)
+        end
+
+        def conditional_executor(enabled, **args, &block)
+          if enabled
+            Rails.application.executor.wrap(**args, &block)
+          else
+            yield
+          end
+        end
     end
   end
 end

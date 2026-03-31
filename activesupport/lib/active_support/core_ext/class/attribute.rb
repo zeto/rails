@@ -1,8 +1,7 @@
 # frozen_string_literal: true
 
-require_relative "../kernel/singleton_class"
-require_relative "../module/redefine_method"
-require_relative "../array/extract_options"
+require "active_support/core_ext/module/redefine_method"
+require "active_support/class_attribute"
 
 class Class
   # Declare a class-level attribute whose value is inheritable by subclasses.
@@ -84,63 +83,55 @@ class Class
   # To set a default value for the attribute, pass <tt>default:</tt>, like so:
   #
   #   class_attribute :settings, default: {}
-  def class_attribute(*attrs)
-    options = attrs.extract_options!
-    instance_reader    = options.fetch(:instance_accessor, true) && options.fetch(:instance_reader, true)
-    instance_writer    = options.fetch(:instance_accessor, true) && options.fetch(:instance_writer, true)
-    instance_predicate = options.fetch(:instance_predicate, true)
-    default_value      = options.fetch(:default, nil)
-
+  def class_attribute(*attrs, instance_accessor: true,
+    instance_reader: instance_accessor, instance_writer: instance_accessor, instance_predicate: true, default: nil
+  )
+    class_methods, methods = [], []
     attrs.each do |name|
-      singleton_class.silence_redefinition_of_method(name)
-      define_singleton_method(name) { nil }
+      unless name.is_a?(Symbol) || name.is_a?(String)
+        raise TypeError, "#{name.inspect} is not a symbol nor a string"
+      end
 
-      singleton_class.silence_redefinition_of_method("#{name}?")
-      define_singleton_method("#{name}?") { !!public_send(name) } if instance_predicate
+      name = name.to_sym
+      namespaced_name = :"__class_attr_#{name}"
+      ::ActiveSupport::ClassAttribute.redefine(self, name, namespaced_name, default)
 
-      ivar = "@#{name}"
+      class_methods << "def #{name}; #{namespaced_name}; end"
+      class_methods << "def #{name}=(value); self.#{namespaced_name} = value; end"
 
-      singleton_class.silence_redefinition_of_method("#{name}=")
-      define_singleton_method("#{name}=") do |val|
-        singleton_class.class_eval do
-          redefine_method(name) { val }
-        end
-
-        if singleton_class?
-          class_eval do
-            redefine_method(name) do
-              if instance_variable_defined? ivar
-                instance_variable_get ivar
-              else
-                singleton_class.send name
-              end
+      if singleton_class?
+        methods << <<~RUBY if instance_reader
+          silence_redefinition_of_method(:#{name})
+          def #{name}
+            self.singleton_class.#{name}
+          end
+        RUBY
+      else
+        methods << <<~RUBY if instance_reader
+          silence_redefinition_of_method def #{name}
+            if defined?(@#{name})
+              @#{name}
+            else
+              self.class.#{name}
             end
           end
-        end
-        val
+        RUBY
       end
 
-      if instance_reader
-        redefine_method(name) do
-          if instance_variable_defined?(ivar)
-            instance_variable_get ivar
-          else
-            self.class.public_send name
-          end
+      methods << <<~RUBY if instance_writer
+        silence_redefinition_of_method(:#{name}=)
+        attr_writer :#{name}
+      RUBY
+
+      if instance_predicate
+        class_methods << "silence_redefinition_of_method def #{name}?; !!self.#{name}; end"
+        if instance_reader
+          methods << "silence_redefinition_of_method def #{name}?; !!self.#{name}; end"
         end
-
-        redefine_method("#{name}?") { !!public_send(name) } if instance_predicate
-      end
-
-      if instance_writer
-        redefine_method("#{name}=") do |val|
-          instance_variable_set ivar, val
-        end
-      end
-
-      unless default_value.nil?
-        self.send("#{name}=", default_value)
       end
     end
+
+    location = caller_locations(1, 1).first
+    class_eval(["class << self", *class_methods, "end", *methods].join(";").tr("\n", ";"), location.path, location.lineno)
   end
 end

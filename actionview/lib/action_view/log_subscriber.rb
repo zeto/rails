@@ -3,11 +3,10 @@
 require "active_support/log_subscriber"
 
 module ActionView
-  # = Action View Log Subscriber
-  #
-  # Provides functionality so that Rails can output logs from Action View.
-  class LogSubscriber < ActiveSupport::LogSubscriber
+  class LogSubscriber < ActiveSupport::EventReporter::LogSubscriber # :nodoc:
     VIEWS_PATTERN = /^app\/views\//
+
+    self.namespace = "action_view"
 
     def initialize
       @root = nil
@@ -16,81 +15,89 @@ module ActionView
 
     def render_template(event)
       info do
-        message = "  Rendered #{from_rails_root(event.payload[:identifier])}".dup
-        message << " within #{from_rails_root(event.payload[:layout])}" if event.payload[:layout]
-        message << " (#{event.duration.round(1)}ms)"
+        message = +"  Rendered #{from_rails_root(event[:payload][:identifier])}"
+        message << " within #{from_rails_root(event[:payload][:layout])}" if event[:payload][:layout]
+        message << " (Duration: #{event[:payload][:duration_ms].round(1)}ms | GC: #{event[:payload][:gc_ms].round(1)}ms)"
       end
     end
+    event_log_level :render_template, :debug
 
     def render_partial(event)
-      info do
-        message = "  Rendered #{from_rails_root(event.payload[:identifier])}".dup
-        message << " within #{from_rails_root(event.payload[:layout])}" if event.payload[:layout]
-        message << " (#{event.duration.round(1)}ms)"
-        message << " #{cache_message(event.payload)}" unless event.payload[:cache_hit].nil?
+      debug do
+        message = +"  Rendered #{from_rails_root(event[:payload][:identifier])}"
+        message << " within #{from_rails_root(event[:payload][:layout])}" if event[:payload][:layout]
+        message << " (Duration: #{event[:payload][:duration_ms].round(1)}ms | GC: #{event[:payload][:gc_ms].round(1)}ms)"
+        message << " #{cache_message(event[:payload])}" unless event[:payload][:cache_hit].nil?
         message
       end
     end
+    event_log_level :render_partial, :debug
+
+    def render_layout(event)
+      info do
+        message = +"  Rendered layout #{from_rails_root(event[:payload][:identifier])}"
+        message << " (Duration: #{event[:payload][:duration_ms].round(1)}ms | GC: #{event[:payload][:gc_ms].round(1)}ms)"
+      end
+    end
+    event_log_level :render_layout, :info
 
     def render_collection(event)
-      identifier = event.payload[:identifier] || "templates"
+      identifier = event[:payload][:identifier] || "templates"
 
-      info do
-        "  Rendered collection of #{from_rails_root(identifier)}" \
-        " #{render_count(event.payload)} (#{event.duration.round(1)}ms)"
+      debug do
+        message = +"  Rendered collection of #{from_rails_root(identifier)}"
+        message << " within #{from_rails_root(event[:payload][:layout])}" if event[:payload][:layout]
+        message << " #{render_count(event[:payload])} (Duration: #{event[:payload][:duration_ms].round(1)}ms | GC: #{event[:payload][:gc_ms].round(1)}ms)"
+        message
       end
     end
+    event_log_level :render_collection, :debug
 
-    def start(name, id, payload)
-      if name == "render_template.action_view"
-        log_rendering_start(payload)
-      end
+    def render_start(event)
+      debug do
+        payload = event[:payload]
 
-      super
-    end
-
-    def logger
-      ActionView::Base.logger
-    end
-
-  private
-
-    EMPTY = ""
-    def from_rails_root(string) # :doc:
-      string = string.sub(rails_root, EMPTY)
-      string.sub!(VIEWS_PATTERN, EMPTY)
-      string
-    end
-
-    def rails_root # :doc:
-      @root ||= "#{Rails.root}/"
-    end
-
-    def render_count(payload) # :doc:
-      if payload[:cache_hits]
-        "[#{payload[:cache_hits]} / #{payload[:count]} cache hits]"
-      else
-        "[#{payload[:count]} times]"
-      end
-    end
-
-    def cache_message(payload) # :doc:
-      case payload[:cache_hit]
-      when :hit
-        "[cache hit]"
-      when :miss
-        "[cache miss]"
-      end
-    end
-
-    def log_rendering_start(payload)
-      info do
-        message = "  Rendering #{from_rails_root(payload[:identifier])}".dup
+        message = +"  Rendering #{payload[:is_layout] ? "layout " : ""}#{from_rails_root(payload[:identifier])}"
         message << " within #{from_rails_root(payload[:layout])}" if payload[:layout]
         message
       end
     end
+    event_log_level :render_start, :debug
+
+    def self.default_logger
+      ActionView::Base.logger
+    end
+
+    private
+      def from_rails_root(string)
+        string = string.sub(rails_root, "")
+        string.sub!(VIEWS_PATTERN, "")
+        string
+      end
+
+      def rails_root # :doc:
+        @root ||= "#{Rails.root}/"
+      end
+
+      def render_count(payload) # :doc:
+        if payload[:cache_hits]
+          "[#{payload[:cache_hits]} / #{payload[:count]} cache hits]"
+        else
+          "[#{payload[:count]} times]"
+        end
+      end
+
+      def cache_message(payload) # :doc:
+        case payload[:cache_hit]
+        when :hit
+          "[cache hit]"
+        when :miss
+          "[cache miss]"
+        end
+      end
   end
 end
 
-ActionView::LogSubscriber.attach_to :action_view
+ActiveSupport.event_reporter.subscribe(
+  ActionView::LogSubscriber.new, &ActionView::LogSubscriber.subscription_filter
+)

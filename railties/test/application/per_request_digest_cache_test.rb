@@ -5,11 +5,9 @@ require "rack/test"
 require "minitest/mock"
 
 require "action_view"
-require "active_support/testing/method_call_assertions"
 
 class PerRequestDigestCacheTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::Isolation
-  include ActiveSupport::Testing::MethodCallAssertions
   include Rack::Test::Methods
 
   setup do
@@ -59,12 +57,12 @@ class PerRequestDigestCacheTest < ActiveSupport::TestCase
     assert_equal 200, last_response.status
 
     values = ActionView::LookupContext::DetailsKey.digest_caches.first.values
-    assert_equal [ "8ba099b7749542fe765ff34a6824d548" ], values
+    assert_equal [ "ddb451d2c1b2374caa676005893bb776" ], values
     assert_equal %w(david dingus), last_response.body.split.map(&:strip)
   end
 
   test "template digests are cleared before a request" do
-    assert_called(ActionView::LookupContext::DetailsKey, :clear) do
+    assert_called(ActionView::LookupContext::DetailsKey, :clear, times: 2) do
       get "/customers"
       assert_equal 200, last_response.status
     end

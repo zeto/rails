@@ -3,15 +3,15 @@
 require "active_support/descendants_tracker"
 
 module ActionMailer
-  module Previews #:nodoc:
+  module Previews # :nodoc:
     extend ActiveSupport::Concern
 
     included do
-      # Set the location of mailer previews through app configuration:
+      # Add the location of mailer previews through app configuration:
       #
-      #     config.action_mailer.preview_path = "#{Rails.root}/lib/mailer_previews"
+      #     config.action_mailer.preview_paths << "#{Rails.root}/lib/mailer_previews"
       #
-      mattr_accessor :preview_path, instance_writer: false
+      mattr_accessor :preview_paths, instance_writer: false, default: []
 
       # Enable or disable mailer previews through app configuration:
       #
@@ -31,22 +31,38 @@ module ActionMailer
         interceptors.flatten.compact.each { |interceptor| register_preview_interceptor(interceptor) }
       end
 
+      # Unregister one or more previously registered Interceptors.
+      def unregister_preview_interceptors(*interceptors)
+        interceptors.flatten.compact.each { |interceptor| unregister_preview_interceptor(interceptor) }
+      end
+
       # Register an Interceptor which will be called before mail is previewed.
       # Either a class or a string can be passed in as the Interceptor. If a
       # string is passed in it will be constantized.
       def register_preview_interceptor(interceptor)
-        preview_interceptor = \
+        preview_interceptor = interceptor_class_for(interceptor)
+
+        unless preview_interceptors.include?(preview_interceptor)
+          preview_interceptors << preview_interceptor
+        end
+      end
+
+      # Unregister a previously registered Interceptor.
+      # Either a class or a string can be passed in as the Interceptor. If a
+      # string is passed in it will be constantized.
+      def unregister_preview_interceptor(interceptor)
+        preview_interceptors.delete(interceptor_class_for(interceptor))
+      end
+
+      private
+        def interceptor_class_for(interceptor)
           case interceptor
           when String, Symbol
             interceptor.to_s.camelize.constantize
           else
             interceptor
           end
-
-        unless preview_interceptors.include?(preview_interceptor)
-          preview_interceptors << preview_interceptor
         end
-      end
     end
   end
 
@@ -63,7 +79,7 @@ module ActionMailer
       # Returns all mailer preview classes.
       def all
         load_previews if descendants.empty?
-        descendants
+        descendants.sort_by { |mailer| mailer.name.titleize }
       end
 
       # Returns the mail object for the given email name. The registered preview
@@ -98,18 +114,18 @@ module ActionMailer
 
       # Returns the underscored name of the mailer preview without the suffix.
       def preview_name
-        name.sub(/Preview$/, "").underscore
+        name.delete_suffix("Preview").underscore
       end
 
       private
         def load_previews
-          if preview_path
-            Dir["#{preview_path}/**/*_preview.rb"].each { |file| require_dependency file }
+          preview_paths.each do |preview_path|
+            Dir["#{preview_path}/**/*_preview.rb"].sort.each { |file| require file }
           end
         end
 
-        def preview_path
-          Base.preview_path
+        def preview_paths
+          Base.preview_paths
         end
 
         def show_previews

@@ -10,7 +10,6 @@ require "models/comment"
 
 module JsonSerializationHelpers
   private
-
     def set_include_root_in_json(value)
       original_root_in_json = ActiveRecord::Base.include_root_in_json
       ActiveRecord::Base.include_root_in_json = value
@@ -24,7 +23,7 @@ class JsonSerializationTest < ActiveRecord::TestCase
   include JsonSerializationHelpers
 
   class NamespacedContact < Contact
-    column :name, :string
+    column :name, "string"
   end
 
   def setup
@@ -34,7 +33,7 @@ class JsonSerializationTest < ActiveRecord::TestCase
       avatar: "binarydata",
       created_at: Time.utc(2006, 8, 1),
       awesome: true,
-      preferences: { shows: "anime" }
+      preferences: { "shows" => "anime" }
     )
   end
 
@@ -150,8 +149,8 @@ class JsonSerializationTest < ActiveRecord::TestCase
     @contact = ContactSti.new(@contact.attributes)
     assert_equal "ContactSti", @contact.type
 
-    def @contact.serializable_hash(options = {})
-      super({ except: %w(age) }.merge!(options))
+    def @contact.serializable_hash(options = nil)
+      super({ except: %w(age) }.merge!(options || {}))
     end
 
     json = @contact.to_json
@@ -252,7 +251,7 @@ class DatabaseConnectedJsonEncodingTest < ActiveRecord::TestCase
     def @david.favorite_quote; "Constraints are liberating"; end
     json = @david.to_json(include: :posts, methods: :favorite_quote)
 
-    assert !@david.posts.first.respond_to?(:favorite_quote)
+    assert_not_respond_to @david.posts.first, :favorite_quote
     assert_match %r{"favorite_quote":"Constraints are liberating"}, json
     assert_equal 1, %r{"favorite_quote":}.match(json).size
   end
@@ -269,7 +268,7 @@ class DatabaseConnectedJsonEncodingTest < ActiveRecord::TestCase
       authors = [@david, @mary]
       encoded = ActiveSupport::JSON.encode(authors, except: [
         :name, :author_address_id, :author_address_extra_id,
-        :organization_id, :owned_essay_id
+        :organization_id, :owned_essay_id, :published_author_id
       ])
       assert_equal %([{"id":1},{"id":2}]), encoded
     end
@@ -302,7 +301,7 @@ class DatabaseConnectedJsonEncodingTest < ActiveRecord::TestCase
 
   def test_should_be_able_to_encode_relation
     set_include_root_in_json(true) do
-      authors_relation = Author.where(id: [@david.id, @mary.id])
+      authors_relation = Author.where(id: [@david.id, @mary.id]).order(:id)
 
       json = ActiveSupport::JSON.encode authors_relation, only: :name
       assert_equal '[{"author":{"name":"David"}},{"author":{"name":"Mary"}}]', json

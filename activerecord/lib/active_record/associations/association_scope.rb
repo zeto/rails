@@ -2,7 +2,7 @@
 
 module ActiveRecord
   module Associations
-    class AssociationScope #:nodoc:
+    class AssociationScope # :nodoc:
       def self.scope(association)
         INSTANCE.scope(association)
       end
@@ -26,48 +26,48 @@ module ActiveRecord
         chain = get_chain(reflection, association, scope.alias_tracker)
 
         scope.extending! reflection.extensions
-        add_constraints(scope, owner, chain)
+        scope = add_constraints(scope, owner, chain)
+        scope.limit!(1) unless reflection.collection?
+        scope
       end
 
       def self.get_bind_values(owner, chain)
         binds = []
         last_reflection = chain.last
 
-        binds << last_reflection.join_id_for(owner)
+        binds.push(*last_reflection.join_id_for(owner))
         if last_reflection.type
-          binds << owner.class.base_class.name
+          binds << owner.class.polymorphic_name
         end
 
         chain.each_cons(2).each do |reflection, next_reflection|
           if reflection.type
-            binds << next_reflection.klass.base_class.name
+            binds << next_reflection.klass.polymorphic_name
           end
         end
         binds
       end
 
-      # TODO Change this to private once we've dropped Ruby 2.2 support.
-      # Workaround for Ruby 2.2 "private attribute?" warning.
-      protected
-
+      private
         attr_reader :value_transformation
 
-      private
         def join(table, constraint)
-          table.create_join(table, table.create_on(constraint))
+          Arel::Nodes::LeadingJoin.new(table, Arel::Nodes::On.new(constraint))
         end
 
         def last_chain_scope(scope, reflection, owner)
-          join_keys = reflection.join_keys
-          key = join_keys.key
-          foreign_key = join_keys.foreign_key
+          primary_key = Array(reflection.join_primary_key)
+          foreign_key = Array(reflection.join_foreign_key)
 
           table = reflection.aliased_table
-          value = transform_value(owner[foreign_key])
-          scope = apply_scope(scope, table, key, value)
+          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
+          primary_key_foreign_key_pairs.each do |join_key, foreign_key|
+            value = transform_value(owner._read_attribute(foreign_key))
+            scope = apply_scope(scope, table, join_key, value)
+          end
 
           if reflection.type
-            polymorphic_type = transform_value(owner.class.base_class.name)
+            polymorphic_type = transform_value(owner.class.polymorphic_name)
             scope = apply_scope(scope, table, reflection.type, polymorphic_type)
           end
 
@@ -79,20 +79,23 @@ module ActiveRecord
         end
 
         def next_chain_scope(scope, reflection, next_reflection)
-          join_keys = reflection.join_keys
-          key = join_keys.key
-          foreign_key = join_keys.foreign_key
+          primary_key = Array(reflection.join_primary_key)
+          foreign_key = Array(reflection.join_foreign_key)
 
           table = reflection.aliased_table
           foreign_table = next_reflection.aliased_table
-          constraint = table[key].eq(foreign_table[foreign_key])
+
+          primary_key_foreign_key_pairs = primary_key.zip(foreign_key)
+          constraints = primary_key_foreign_key_pairs.map do |join_primary_key, foreign_key|
+            table[join_primary_key].eq(foreign_table[foreign_key])
+          end.inject(&:and)
 
           if reflection.type
-            value = transform_value(next_reflection.klass.base_class.name)
+            value = transform_value(next_reflection.klass.polymorphic_name)
             scope = apply_scope(scope, table, reflection.type, value)
           end
 
-          scope.joins!(join(foreign_table, constraint))
+          scope.joins!(join(foreign_table, constraints))
         end
 
         class ReflectionProxy < SimpleDelegator # :nodoc:
@@ -110,11 +113,9 @@ module ActiveRecord
           name = reflection.name
           chain = [Reflection::RuntimeReflection.new(reflection, association)]
           reflection.chain.drop(1).each do |refl|
-            aliased_table = tracker.aliased_table_for(
-              refl.table_name,
-              refl.alias_candidate(name),
-              refl.klass.type_caster
-            )
+            aliased_table = tracker.aliased_table_for(refl.klass.arel_table) do
+              refl.alias_candidate(name)
+            end
             chain << ReflectionProxy.new(refl, aliased_table)
           end
           chain
@@ -129,22 +130,28 @@ module ActiveRecord
 
           chain_head = chain.first
           chain.reverse_each do |reflection|
-            # Exclude the scope of the association itself, because that
-            # was already merged in the #scope method.
             reflection.constraints.each do |scope_chain_item|
               item = eval_scope(reflection, scope_chain_item, owner)
 
               if scope_chain_item == chain_head.scope
-                scope.merge! item.except(:where, :includes)
+                scope.merge! item.except(:where, :includes, :unscope, :order)
+              elsif !item.references_values.empty?
+                scope.merge! item.only(:joins, :left_outer_joins)
+
+                associations = item.eager_load_values | item.includes_values
+
+                unless associations.empty?
+                  scope.joins! item.construct_join_dependency(associations, Arel::Nodes::OuterJoin)
+                end
               end
 
               reflection.all_includes do
-                scope.includes! item.includes_values
+                scope.includes_values |= item.includes_values
               end
 
               scope.unscope!(*item.unscope_values)
               scope.where_clause += item.where_clause
-              scope.order_values |= item.order_values
+              scope.order_values = item.order_values | scope.order_values
             end
           end
 

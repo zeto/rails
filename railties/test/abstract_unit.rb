@@ -14,19 +14,12 @@ require "rails/all"
 
 module TestApp
   class Application < Rails::Application
-    config.root = __dir__
+    config.root = File.expand_path("../../", __FILE__)
   end
 end
 
 class ActiveSupport::TestCase
   include ActiveSupport::Testing::Stream
-
-  # Skips the current run on Rubinius using Minitest::Assertions#skip
-  private def rubinius_skip(message = "")
-    skip message if RUBY_ENGINE == "rbx"
-  end
-  # Skips the current run on JRuby using Minitest::Assertions#skip
-  private def jruby_skip(message = "")
-    skip message if defined?(JRUBY_VERSION)
-  end
 end
+
+require_relative "../../tools/test_common"

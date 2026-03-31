@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module ActiveModel
-  # == Active \Model \Translation
+  # = Active \Model \Translation
   #
-  # Provides integration between your object and the Rails internationalization
+  # Provides integration between your object and the \Rails internationalization
   # (i18n) framework.
   #
   # A minimal implementation could be:
@@ -16,13 +16,15 @@ module ActiveModel
   #   # => "My attribute"
   #
   # This also provides the required class methods for hooking into the
-  # Rails internationalization API, including being able to define a
-  # class based +i18n_scope+ and +lookup_ancestors+ to find translations in
+  # \Rails internationalization API, including being able to define a
+  # class-based +i18n_scope+ and +lookup_ancestors+ to find translations in
   # parent classes.
   module Translation
     include ActiveModel::Naming
 
-    # Returns the +i18n_scope+ for the class. Overwrite if you want custom lookup.
+    singleton_class.attr_accessor :raise_on_missing_translations
+
+    # Returns the +i18n_scope+ for the class. Override if you want custom lookup.
     def i18n_scope
       :activemodel
     end
@@ -35,6 +37,8 @@ module ActiveModel
       ancestors.select { |x| x.respond_to?(:model_name) }
     end
 
+    MISSING_TRANSLATION = -(2**60) # :nodoc:
+
     # Transforms attribute names into a more human format, such as "First name"
     # instead of "first_name".
     #
@@ -42,29 +46,44 @@ module ActiveModel
     #
     # Specify +options+ with additional translating options.
     def human_attribute_name(attribute, options = {})
-      options   = { count: 1 }.merge!(options)
-      parts     = attribute.to_s.split(".")
-      attribute = parts.pop
-      namespace = parts.join("/") unless parts.empty?
-      attributes_scope = "#{i18n_scope}.attributes"
+      attribute = attribute.to_s
 
-      if namespace
-        defaults = lookup_ancestors.map do |klass|
-          :"#{attributes_scope}.#{klass.model_name.i18n_key}/#{namespace}.#{attribute}"
+      if attribute.include?(".")
+        namespace, _, attribute = attribute.rpartition(".")
+        namespace.tr!(".", "/")
+
+        if attribute.present?
+          key = "#{namespace}.#{attribute}"
+          separator = "/"
+        else
+          key = namespace
+          separator = "."
         end
-        defaults << :"#{attributes_scope}.#{namespace}.#{attribute}"
+
+        defaults = lookup_ancestors.map do |klass|
+          :"#{i18n_scope}.attributes.#{klass.model_name.i18n_key}#{separator}#{key}"
+        end
+        defaults << :"#{i18n_scope}.attributes.#{key}"
+        defaults << :"attributes.#{key}"
       else
         defaults = lookup_ancestors.map do |klass|
-          :"#{attributes_scope}.#{klass.model_name.i18n_key}.#{attribute}"
+          :"#{i18n_scope}.attributes.#{klass.model_name.i18n_key}.#{attribute}"
         end
       end
 
-      defaults << :"attributes.#{attribute}"
-      defaults << options.delete(:default) if options[:default]
-      defaults << attribute.humanize
+      raise_on_missing = options.fetch(:raise, Translation.raise_on_missing_translations)
 
-      options[:default] = defaults
-      I18n.translate(defaults.shift, options)
+      defaults << :"attributes.#{attribute}"
+      defaults << options[:default] if options[:default]
+      defaults << MISSING_TRANSLATION unless raise_on_missing
+
+      translation = I18n.translate(defaults.shift, count: 1, raise: raise_on_missing, **options, default: defaults)
+      if translation == MISSING_TRANSLATION
+        translation = attribute.present? ? attribute.humanize : namespace.humanize
+      end
+      translation
     end
   end
+
+  ActiveSupport.run_load_hooks(:active_model_translation, Translation)
 end

@@ -44,11 +44,11 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_has_many_distinct_through_count
     author = authors(:mary)
-    assert !authors(:mary).unique_categorized_posts.loaded?
-    assert_queries(1) { assert_equal 1, author.unique_categorized_posts.count }
-    assert_queries(1) { assert_equal 1, author.unique_categorized_posts.count(:title) }
-    assert_queries(1) { assert_equal 0, author.unique_categorized_posts.where(title: nil).count(:title) }
-    assert !authors(:mary).unique_categorized_posts.loaded?
+    assert_not_predicate authors(:mary).unique_categorized_posts, :loaded?
+    assert_queries_count(1) { assert_equal 1, author.unique_categorized_posts.count }
+    assert_queries_count(1) { assert_equal 1, author.unique_categorized_posts.count(:title) }
+    assert_queries_count(1) { assert_equal 0, author.unique_categorized_posts.where(title: nil).count(:title) }
+    assert_not_predicate authors(:mary).unique_categorized_posts, :loaded?
   end
 
   def test_has_many_distinct_through_find
@@ -341,6 +341,13 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert_raise(ActiveRecord::HasManyThroughAssociationNotFoundError) { authors(:david).nothings }
   end
 
+  def test_exceptions_have_suggestions_for_fix
+    error = assert_raise(ActiveRecord::HasManyThroughAssociationNotFoundError) {
+      authors(:david).nothings
+    }
+    assert_match "Did you mean?", error.detailed_message
+  end
+
   def test_has_many_through_join_model_with_conditions
     assert_equal [], posts(:welcome).invalid_taggings
     assert_equal [], posts(:welcome).invalid_tags
@@ -369,7 +376,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     Tag.has_many :null_taggings, -> { none }, class_name: :Tagging
     Tag.has_many :null_tagged_posts, through: :null_taggings, source: "taggable", source_type: "Post"
     assert_equal [], tags(:general).null_tagged_posts
-    refute_equal [], tags(:general).tagged_posts
+    assert_not_equal [], tags(:general).tagged_posts
   end
 
   def test_eager_has_many_polymorphic_with_source_type
@@ -395,7 +402,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
   end
 
   def test_has_many_through_has_many_find_conditions
-    options = { where: "comments.#{QUOTED_TYPE}='SpecialComment'", order: "comments.id" }
+    options = { where: "comments.#{ARTest::QUOTED_TYPE}='SpecialComment'", order: "comments.id" }
     assert_equal comments(:does_it_hurt), authors(:david).comments.merge(options).first
   end
 
@@ -423,7 +430,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     author = Author.all.merge!(where: ["name = ?", "David"], includes: :comments, order: "comments.id").first
     SpecialComment.new; VerySpecialComment.new
     assert_no_queries do
-      assert_equal [1, 2, 3, 5, 6, 7, 8, 9, 10, 12], author.comments.collect(&:id)
+      assert_equal [1, 2, 3, 5, 6, 7, 8, 9, 10, 12, 13], author.comments.collect(&:id)
     end
   end
 
@@ -454,8 +461,8 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_has_many_through_uses_conditions_specified_on_the_has_many_association
     author = Author.first
-    assert author.comments.present?
-    assert author.nonexistent_comments.blank?
+    assert_predicate author.comments, :present?
+    assert_predicate author.nonexistent_comments, :blank?
   end
 
   def test_has_many_through_uses_correct_attributes
@@ -467,27 +474,27 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     new_tag = Tag.new(name: "new")
 
     saved_post.tags << new_tag
-    assert new_tag.persisted? #consistent with habtm!
-    assert saved_post.persisted?
+    assert_predicate new_tag, :persisted? # consistent with habtm!
+    assert_predicate saved_post, :persisted?
     assert_includes saved_post.tags, new_tag
 
-    assert new_tag.persisted?
+    assert_predicate new_tag, :persisted?
     assert_includes saved_post.reload.tags.reload, new_tag
 
     new_post = Post.new(title: "Association replacement works!", body: "You best believe it.")
     saved_tag = tags(:general)
 
     new_post.tags << saved_tag
-    assert !new_post.persisted?
-    assert saved_tag.persisted?
+    assert_not_predicate new_post, :persisted?
+    assert_predicate saved_tag, :persisted?
     assert_includes new_post.tags, saved_tag
 
     new_post.save!
-    assert new_post.persisted?
+    assert_predicate new_post, :persisted?
     assert_includes new_post.reload.tags.reload, saved_tag
 
-    assert !posts(:thinking).tags.build.persisted?
-    assert !posts(:thinking).tags.new.persisted?
+    assert_not_predicate posts(:thinking).tags.build, :persisted?
+    assert_not_predicate posts(:thinking).tags.new, :persisted?
   end
 
   def test_create_associate_when_adding_to_has_many_through
@@ -528,15 +535,15 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
 
   def test_has_many_through_collection_size_doesnt_load_target_if_not_loaded
     author = authors(:david)
-    assert_equal 10, author.comments.size
-    assert !author.comments.loaded?
+    assert_equal 11, author.comments.size
+    assert_not_predicate author.comments, :loaded?
   end
 
   def test_has_many_through_collection_size_uses_counter_cache_if_it_exists
     c = categories(:general)
     c.categorizations_count = 100
     assert_equal 100, c.categorizations.size
-    assert !c.categorizations.loaded?
+    assert_not_predicate c.categorizations, :loaded?
   end
 
   def test_adding_junk_to_has_many_through_should_raise_type_mismatch
@@ -710,7 +717,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     category = david.categories.first
 
     assert_no_queries do
-      assert david.categories.loaded?
+      assert_predicate david.categories, :loaded?
       assert_includes david.categories, category
     end
   end
@@ -720,26 +727,26 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     category = david.categories.first
 
     david.reload
-    assert ! david.categories.loaded?
-    assert_queries(1) do
+    assert_not_predicate david.categories, :loaded?
+    assert_queries_count(1) do
       assert_includes david.categories, category
     end
-    assert ! david.categories.loaded?
+    assert_not_predicate david.categories, :loaded?
   end
 
   def test_has_many_through_include_returns_false_for_non_matching_record_to_verify_scoping
     david = authors(:david)
     category = Category.create!(name: "Not Associated")
 
-    assert ! david.categories.loaded?
-    assert ! david.categories.include?(category)
+    assert_not_predicate david.categories, :loaded?
+    assert_not david.categories.include?(category)
   end
 
   def test_has_many_through_goes_through_all_sti_classes
     sub_sti_post = SubStiPost.create!(title: "test", body: "test", author_id: 1)
     new_comment = sub_sti_post.comments.create(body: "test")
 
-    assert_equal [9, 10, new_comment.id], authors(:david).sti_post_comments.map(&:id).sort
+    assert_equal [9, 10, 13, new_comment.id], authors(:david).sti_post_comments.map(&:id).sort
   end
 
   def test_has_many_with_pluralize_table_names_false
@@ -765,6 +772,12 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
     assert_equal("Can't join 'Post' to association named 'nonexistent_relation'; perhaps you misspelled it?", includes_and_eager_load_error.message)
   end
 
+  def test_eager_association_with_scope_with_string_joins
+    assert_nothing_raised do
+      Post.joins(:very_special_comment_with_string_joins).first
+    end
+  end
+
   private
     # create dynamic Post models to allow different dependency options
     def find_post_with_dependency(post_id, association, association_name, dependency)
@@ -772,7 +785,7 @@ class AssociationsJoinModelTest < ActiveRecord::TestCase
       Post.find(post_id).update_columns type: class_name
       klass = Object.const_set(class_name, Class.new(ActiveRecord::Base))
       klass.table_name = "posts"
-      klass.send(association, association_name, as: :taggable, dependent: dependency)
+      klass.public_send(association, association_name, as: :taggable, dependent: dependency)
       klass.find(post_id)
     end
 end

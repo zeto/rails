@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
-require_relative "../regexp"
+require "concurrent/map"
 
 class Object
   # An object is blank if it's false, empty, or a whitespace string.
-  # For example, +false+, '', '   ', +nil+, [], and {} are all blank.
+  # For example, +nil+, '', '   ', [], {}, and +false+ are all blank.
   #
   # This simplifies
   #
@@ -16,7 +16,7 @@ class Object
   #
   # @return [true, false]
   def blank?
-    respond_to?(:empty?) ? !!empty? : !self
+    respond_to?(:empty?) ? !!empty? : false
   end
 
   # An object is present if it's not blank.
@@ -56,6 +56,10 @@ class NilClass
   def blank?
     true
   end
+
+  def present? # :nodoc:
+    false
+  end
 end
 
 class FalseClass
@@ -66,6 +70,10 @@ class FalseClass
   # @return [true]
   def blank?
     true
+  end
+
+  def present? # :nodoc:
+    false
   end
 end
 
@@ -78,6 +86,10 @@ class TrueClass
   def blank?
     false
   end
+
+  def present? # :nodoc:
+    true
+  end
 end
 
 class Array
@@ -88,6 +100,10 @@ class Array
   #
   # @return [true, false]
   alias_method :blank?, :empty?
+
+  def present? # :nodoc:
+    !empty?
+  end
 end
 
 class Hash
@@ -98,10 +114,29 @@ class Hash
   #
   # @return [true, false]
   alias_method :blank?, :empty?
+
+  def present? # :nodoc:
+    !empty?
+  end
+end
+
+class Symbol
+  # A Symbol is blank if it's empty:
+  #
+  #   :''.blank?     # => true
+  #   :symbol.blank? # => false
+  alias_method :blank?, :empty?
+
+  def present? # :nodoc:
+    !empty?
+  end
 end
 
 class String
   BLANK_RE = /\A[[:space:]]*\z/
+  ENCODED_BLANKS = Concurrent::Map.new do |h, enc|
+    h[enc] = Regexp.new(BLANK_RE.source.encode(enc), BLANK_RE.options | Regexp::FIXEDENCODING)
+  end
 
   # A string is blank if it's empty or contains whitespaces only:
   #
@@ -119,11 +154,20 @@ class String
     # The regexp that matches blank strings is expensive. For the case of empty
     # strings we can speed up this method (~3.5x) with an empty? call. The
     # penalty for the rest of strings is marginal.
-    empty? || BLANK_RE.match?(self)
+    empty? ||
+      begin
+        BLANK_RE.match?(self)
+      rescue Encoding::CompatibilityError
+        ENCODED_BLANKS[self.encoding].match?(self)
+      end
+  end
+
+  def present? # :nodoc:
+    !blank?
   end
 end
 
-class Numeric #:nodoc:
+class Numeric # :nodoc:
   # No number is blank:
   #
   #   1.blank? # => false
@@ -133,9 +177,13 @@ class Numeric #:nodoc:
   def blank?
     false
   end
+
+  def present?
+    true
+  end
 end
 
-class Time #:nodoc:
+class Time # :nodoc:
   # No Time is blank:
   #
   #   Time.now.blank? # => false
@@ -143,5 +191,9 @@ class Time #:nodoc:
   # @return [false]
   def blank?
     false
+  end
+
+  def present?
+    true
   end
 end

@@ -27,7 +27,7 @@ module Rails
           assert File.exist?(absolute), "Expected file #{relative.inspect} to exist, but does not"
 
           read = File.read(absolute) if block_given? || !contents.empty?
-          yield read if block_given?
+          assert_nothing_raised { yield read } if block_given?
 
           contents.each do |content|
             case content
@@ -99,7 +99,7 @@ module Rails
         #   end
         def assert_instance_method(method, content)
           assert content =~ /(\s+)def #{method}(\(.+\))?(.*?)\n\1end/m, "Expected to have method #{method}"
-          yield $3.strip if block_given?
+          assert_nothing_raised { yield $3.strip } if block_given?
         end
         alias :assert_method :assert_instance_method
 
@@ -120,6 +120,26 @@ module Rails
           else
             assert_equal(value, create_generated_attribute(attribute_type).default)
           end
+        end
+
+        # Asserts a given initializer exists. You need to supply a path relative
+        # to the `config/initializers/` directory.
+        #
+        #   assert_initializer "mail_interceptors.rb"
+        #
+        # You can also give extra arguments. If the argument is a regexp, it will check if the
+        # regular expression matches the given file content. If it's a string, it compares the
+        # file with the given string:
+        #
+        #   assert_initializer "mail_interceptors.rb", /SandboxEmailInterceptor/
+        #
+        # Finally, when a block is given, it yields the file content:
+        #
+        #   assert_initializer "mail_interceptors.rb" do |initializer|
+        #     assert_match(/SandboxEmailInterceptor/, initializer)
+        #   end
+        def assert_initializer(name, *contents, &block)
+          assert_file("config/initializers/#{name}", *contents, &block)
         end
       end
     end

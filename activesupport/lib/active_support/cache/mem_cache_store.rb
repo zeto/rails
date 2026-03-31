@@ -3,16 +3,19 @@
 begin
   require "dalli"
 rescue LoadError => e
-  $stderr.puts "You don't have dalli installed in your application. Please add it to your Gemfile and run bundle install"
+  warn "You don't have dalli installed in your application. Please add it to your Gemfile and run bundle install"
   raise e
 end
 
-require "digest/md5"
-require_relative "../core_ext/marshal"
-require_relative "../core_ext/array/extract_options"
+require "connection_pool"
+require "active_support/core_ext/enumerable"
+require "active_support/core_ext/array/extract_options"
+require "active_support/core_ext/numeric/time"
 
 module ActiveSupport
   module Cache
+    # = Memcached \Cache \Store
+    #
     # A cache store implementation which stores data in Memcached:
     # https://memcached.org
     #
@@ -20,122 +23,154 @@ module ActiveSupport
     #
     # Special features:
     # - Clustering and load balancing. One can specify multiple memcached servers,
-    #   and MemCacheStore will load balance between all available servers. If a
-    #   server goes down, then MemCacheStore will ignore it until it comes back up.
+    #   and +MemCacheStore+ will load balance between all available servers. If a
+    #   server goes down, then +MemCacheStore+ will ignore it until it comes back up.
     #
-    # MemCacheStore implements the Strategy::LocalCache strategy which implements
-    # an in-memory cache inside of a block.
+    # +MemCacheStore+ implements the Strategy::LocalCache strategy which
+    # implements an in-memory cache inside of a block.
     class MemCacheStore < Store
-      # Provide support for raw values in the local cache strategy.
-      module LocalCacheWithRaw # :nodoc:
-        private
-          def read_entry(key, options)
-            entry = super
-            if options[:raw] && local_cache && entry
-              entry = deserialize_entry(entry.value)
-            end
-            entry
-          end
+      # These options represent behavior overridden by this implementation and should
+      # not be allowed to get down to the Dalli client
+      OVERRIDDEN_OPTIONS = UNIVERSAL_OPTIONS
 
-          def write_entry(key, entry, options)
-            if options[:raw] && local_cache
-              raw_entry = Entry.new(entry.value.to_s)
-              raw_entry.expires_at = entry.expires_at
-              super(key, raw_entry, options)
-            else
-              super
-            end
-          end
+      # Advertise cache versioning support.
+      def self.supports_cache_versioning?
+        true
       end
 
       prepend Strategy::LocalCache
-      prepend LocalCacheWithRaw
 
       ESCAPE_KEY_CHARS = /[\x00-\x20%\x7F-\xFF]/n
 
       # Creates a new Dalli::Client instance with specified addresses and options.
-      # By default address is equal localhost:11211.
+      # If no addresses are provided, we give nil to Dalli::Client, so it uses its fallbacks:
+      # - ENV["MEMCACHE_SERVERS"] (if defined)
+      # - "127.0.0.1:11211"        (otherwise)
       #
       #   ActiveSupport::Cache::MemCacheStore.build_mem_cache
-      #     # => #<Dalli::Client:0x007f98a47d2028 @servers=["localhost:11211"], @options={}, @ring=nil>
+      #     # => #<Dalli::Client:0x007f98a47d2028 @servers=["127.0.0.1:11211"], @options={}, @ring=nil>
       #   ActiveSupport::Cache::MemCacheStore.build_mem_cache('localhost:10290')
       #     # => #<Dalli::Client:0x007f98a47b3a60 @servers=["localhost:10290"], @options={}, @ring=nil>
       def self.build_mem_cache(*addresses) # :nodoc:
         addresses = addresses.flatten
         options = addresses.extract_options!
-        addresses = ["localhost:11211"] if addresses.empty?
-        Dalli::Client.new(addresses, options)
+        addresses = nil if addresses.compact.empty?
+        pool_options = retrieve_pool_options(options)
+
+        if pool_options
+          ConnectionPool.new(**pool_options) { Dalli::Client.new(addresses, options.merge(threadsafe: false)) }
+        else
+          Dalli::Client.new(addresses, options)
+        end
       end
 
-      # Creates a new MemCacheStore object, with the given memcached server
+      # Creates a new +MemCacheStore+ object, with the given memcached server
       # addresses. Each address is either a host name, or a host-with-port string
       # in the form of "host_name:port". For example:
       #
       #   ActiveSupport::Cache::MemCacheStore.new("localhost", "server-downstairs.localnetwork:8229")
       #
-      # If no addresses are specified, then MemCacheStore will connect to
-      # localhost port 11211 (the default memcached port).
+      # If no addresses are provided, but <tt>ENV['MEMCACHE_SERVERS']</tt> is defined, it will be used instead. Otherwise,
+      # +MemCacheStore+ will connect to localhost:11211 (the default memcached port).
       def initialize(*addresses)
         addresses = addresses.flatten
         options = addresses.extract_options!
+        if options.key?(:cache_nils)
+          options[:skip_nil] = !options.delete(:cache_nils)
+        end
+        options[:max_key_size] ||= MAX_KEY_SIZE
         super(options)
 
         unless [String, Dalli::Client, NilClass].include?(addresses.first.class)
-          raise ArgumentError, "First argument must be an empty array, an array of hosts or a Dalli::Client instance."
+          raise ArgumentError, "First argument must be an empty array, address, or array of addresses."
         end
-        if addresses.first.is_a?(Dalli::Client)
-          @data = addresses.first
-        else
-          mem_cache_options = options.dup
-          UNIVERSAL_OPTIONS.each { |name| mem_cache_options.delete(name) }
-          @data = self.class.build_mem_cache(*(addresses + [mem_cache_options]))
-        end
+
+        @mem_cache_options = options.dup
+        # The value "compress: false" prevents duplicate compression within Dalli.
+        @mem_cache_options[:compress] = false
+        (OVERRIDDEN_OPTIONS - %i(compress)).each { |name| @mem_cache_options.delete(name) }
+        # Set the default serializer for Dalli to prevent warning about
+        # inheriting the default serializer.
+        @mem_cache_options[:serializer] = Marshal
+        @data = self.class.build_mem_cache(*(addresses + [@mem_cache_options]))
       end
 
-      # Reads multiple values from the cache using a single call to the
-      # servers for all keys. Options can be passed in the last argument.
-      def read_multi(*names)
-        options = names.extract_options!
-        options = merged_options(options)
-
-        keys_to_names = Hash[names.map { |name| [normalize_key(name, options), name] }]
-
-        raw_values = @data.get_multi(keys_to_names.keys)
-        values = {}
-
-        raw_values.each do |key, value|
-          entry = deserialize_entry(value)
-
-          unless entry.expired? || entry.mismatched?(normalize_version(keys_to_names[key], options))
-            values[keys_to_names[key]] = entry.value
-          end
-        end
-
-        values
+      def inspect
+        instance = @data || @mem_cache_options
+        "#<#{self.class} options=#{options.inspect} mem_cache=#{instance.inspect}>"
       end
 
-      # Increment a cached value. This method uses the memcached incr atomic
-      # operator and can only be used on values written with the :raw option.
-      # Calling it on a value not stored with :raw will initialize that value
-      # to zero.
+      ##
+      # :method: write
+      # :call-seq: write(name, value, options = nil)
+      #
+      # Behaves the same as ActiveSupport::Cache::Store#write, but supports
+      # additional options specific to memcached.
+      #
+      # ==== Additional Options
+      #
+      # * <tt>raw: true</tt> - Sends the value directly to the server as raw
+      #   bytes. The value must be a string or number. You can use memcached
+      #   direct operations like +increment+ and +decrement+ only on raw values.
+
+      # Increment a cached integer value using the memcached incr atomic operator.
+      # Returns the updated value.
+      #
+      # If the key is unset or has expired, it will be set to +amount+:
+      #
+      #   cache.increment("foo") # => 1
+      #   cache.increment("bar", 100) # => 100
+      #
+      # To set a specific value, call #write passing <tt>raw: true</tt>:
+      #
+      #   cache.write("baz", 5, raw: true)
+      #   cache.increment("baz") # => 6
+      #
+      # Incrementing a non-numeric value, or a value written without
+      # <tt>raw: true</tt>, will fail and return +nil+.
+      #
+      # To read the value later, call #read_counter:
+      #
+      #   cache.increment("baz") # => 7
+      #   cache.read_counter("baz") # 7
       def increment(name, amount = 1, options = nil)
         options = merged_options(options)
-        instrument(:increment, name, amount: amount) do
+        key = normalize_key(name, options)
+
+        instrument(:increment, key, amount: amount) do
           rescue_error_with nil do
-            @data.incr(normalize_key(name, options), amount)
+            @data.with { |c| c.incr(key, amount, options[:expires_in], amount) }
           end
         end
       end
 
-      # Decrement a cached value. This method uses the memcached decr atomic
-      # operator and can only be used on values written with the :raw option.
-      # Calling it on a value not stored with :raw will initialize that value
-      # to zero.
+      # Decrement a cached integer value using the memcached decr atomic operator.
+      # Returns the updated value.
+      #
+      # If the key is unset or has expired, it will be set to 0. Memcached
+      # does not support negative counters.
+      #
+      #   cache.decrement("foo") # => 0
+      #
+      # To set a specific value, call #write passing <tt>raw: true</tt>:
+      #
+      #   cache.write("baz", 5, raw: true)
+      #   cache.decrement("baz") # => 4
+      #
+      # Decrementing a non-numeric value, or a value written without
+      # <tt>raw: true</tt>, will fail and return +nil+.
+      #
+      # To read the value later, call #read_counter:
+      #
+      #   cache.decrement("baz") # => 3
+      #   cache.read_counter("baz") # 3
       def decrement(name, amount = 1, options = nil)
         options = merged_options(options)
-        instrument(:decrement, name, amount: amount) do
+        key = normalize_key(name, options)
+
+        instrument(:decrement, key, amount: amount) do
           rescue_error_with nil do
-            @data.decr(normalize_key(name, options), amount)
+            @data.with { |c| c.decr(key, amount, options[:expires_in], 0) }
           end
         end
       end
@@ -143,61 +178,111 @@ module ActiveSupport
       # Clear the entire cache on all memcached servers. This method should
       # be used with care when shared cache is being used.
       def clear(options = nil)
-        rescue_error_with(nil) { @data.flush_all }
+        rescue_error_with(nil) { @data.with { |c| c.flush_all } }
       end
 
       # Get the statistics from the memcached servers.
       def stats
-        @data.stats
+        @data.with { |c| c.stats }
       end
 
       private
         # Read an entry from the cache.
-        def read_entry(key, options)
-          rescue_error_with(nil) { deserialize_entry(@data.get(key, options)) }
+        def read_entry(key, **options)
+          deserialize_entry(read_serialized_entry(key, **options), **options)
+        end
+
+        def read_serialized_entry(key, **options)
+          rescue_error_with(nil) do
+            @data.with { |c| c.get(key, options) }
+          end
         end
 
         # Write an entry to the cache.
-        def write_entry(key, entry, options)
-          method = options && options[:unless_exist] ? :add : :set
-          value = options[:raw] ? entry.value.to_s : entry
+        def write_entry(key, entry, **options)
+          write_serialized_entry(key, serialize_entry(entry, **options), **options)
+        end
+
+        def write_serialized_entry(key, payload, **options)
+          method = options[:unless_exist] ? :add : :set
           expires_in = options[:expires_in].to_i
-          if expires_in > 0 && !options[:raw]
+          if options[:race_condition_ttl] && expires_in > 0 && !options[:raw]
             # Set the memcache expire a few minutes in the future to support race condition ttls on read
             expires_in += 5.minutes
           end
-          rescue_error_with false do
-            @data.send(method, key, value, expires_in, options)
+          rescue_error_with nil do
+            # Don't pass compress option to Dalli since we are already dealing with compression.
+            options.delete(:compress)
+            @data.with { |c| !!c.send(method, key, payload, expires_in, **options) }
+          end
+        end
+
+        # Reads multiple entries from the cache implementation.
+        def read_multi_entries(names, **options)
+          keys_to_names = names.index_by { |name| normalize_key(name, options) }
+
+          rescue_error_with({}) do
+            raw_values = @data.with { |c| c.get_multi(keys_to_names.keys) }
+
+            values = {}
+
+            raw_values.each do |key, value|
+              entry = deserialize_entry(value, raw: options[:raw])
+
+              unless entry.nil? || entry.expired? || entry.mismatched?(normalize_version(keys_to_names[key], options))
+                begin
+                  values[keys_to_names[key]] = entry.value
+                rescue DeserializationError
+                end
+              end
+            end
+
+            values
           end
         end
 
         # Delete an entry from the cache.
-        def delete_entry(key, options)
-          rescue_error_with(false) { @data.delete(key) }
+        def delete_entry(key, **options)
+          rescue_error_with(false) { @data.with { |c| c.delete(key) } }
+        end
+
+        def serialize_entry(entry, raw: false, **options)
+          if raw
+            entry.value.to_s
+          else
+            super(entry, raw: raw, **options)
+          end
         end
 
         # Memcache keys are binaries. So we need to force their encoding to binary
         # before applying the regular expression to ensure we are escaping all
         # characters properly.
         def normalize_key(key, options)
-          key = super.dup
-          key = key.force_encoding(Encoding::ASCII_8BIT)
-          key = key.gsub(ESCAPE_KEY_CHARS) { |match| "%#{match.getbyte(0).to_s(16).upcase}" }
-          key = "#{key[0, 213]}:md5:#{Digest::MD5.hexdigest(key)}" if key.size > 250
-          key
+          key = expand_and_namespace_key(key, options)
+          if key
+            key = key.dup.force_encoding(Encoding::ASCII_8BIT)
+            key = key.gsub(ESCAPE_KEY_CHARS) { |match| "%#{match.getbyte(0).to_s(16).upcase}" }
+          end
+          truncate_key(key)
         end
 
-        def deserialize_entry(raw_value)
-          if raw_value
-            entry = Marshal.load(raw_value) rescue raw_value
-            entry.is_a?(Entry) ? entry : Entry.new(entry)
+        def deserialize_entry(payload, raw: false, **)
+          if payload && raw
+            Entry.new(payload)
+          else
+            super(payload)
           end
         end
 
         def rescue_error_with(fallback)
           yield
-        rescue Dalli::DalliError => e
-          logger.error("DalliError (#{e}): #{e.message}") if logger
+        rescue Dalli::DalliError, ConnectionPool::Error, ConnectionPool::TimeoutError => error
+          logger.error("DalliError (#{error}): #{error.message}") if logger
+          ActiveSupport.error_reporter&.report(
+            error,
+            severity: :warning,
+            source: "mem_cache_store.active_support",
+          )
           fallback
         end
     end

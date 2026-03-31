@@ -1,124 +1,279 @@
-*   Add headless chrome support to System Tests.
+*   Add `content_type` option to HTTP authentication methods.
 
-    *Yuji Yaginuma*
+    `request_http_basic_authentication`, `request_http_digest_authentication`,
+    and `request_http_token_authentication` now accept a `content_type`
+    parameter to control the Content-Type of the 401 response. The default
+    behavior is unchanged.
 
-*   Add ability to enable Early Hints for HTTP/2
+    ```ruby
+    http_basic_authenticate_with(
+      name: "admin", password: "secret",
+      message: '{"error":"Access denied"}',
+      content_type: "application/json"
+    )
+    ```
 
-    If supported by the server, and enabled in Puma this allows H2 Early Hints to be used.
+    *Iliana Hadzhiatanasova*
 
-    The `javascript_include_tag` and the `stylesheet_link_tag` automatically add Early Hints if requested.
+*   Add `RAILS_HOST_APP_PATH` environment variable to support editor links in devcontainer/Docker environments.
 
-    *Eileen M. Uchitelle*, *Aaron Patterson*
+    When Rails runs inside a container, file paths in error pages are container-internal paths
+    that don't exist on the host machine. Setting `RAILS_HOST_APP_PATH` to the host's application
+    path enables proper translation of container paths to host paths for editor links.
 
-*   Simplify cookies middleware with key rotation support
+    Example in `.devcontainer/devcontainer.json`:
 
-    Use the `rotate` method for both `MessageEncryptor` and
-    `MessageVerifier` to add key rotation support for encrypted and
-    signed cookies. This also helps simplify support for legacy cookie
-    security.
+    ```json
+    {
+      "containerEnv": {
+        "EDITOR": "code",
+        "RAILS_HOST_APP_PATH": "${localWorkspaceFolder}"
+      }
+    }
+    ```
 
-    *Michael J Coyne*
+    This allows the "open in editor" feature to work correctly when developing in containers.
 
-*   Use Capybara registered `:puma` server config.
+    *Victor Cobos*
 
-    The Capybara registered `:puma` server ensures the puma server is run in process so
-    connection sharing and open request detection work correctly by default.
+*   Make `event_backtrace` attribute in `rescue_from_handled.action_controller` notifications the full backtrace, when `config.action_controller.rescue_from_event_backtrace` is `:array`.
 
-    *Thomas Walpole*
+    This also affects `action_controller.rescue_from_handled` events.
 
-*   Cookies `:expires` option supports `ActiveSupport::Duration` object.
+    *zzak*
 
-        cookies[:user_name] = { value: "assain", expires: 1.hour }
-        cookies[:key] = { value: "a yummy cookie", expires: 6.months }
+*   Avoid loading `ActionController::Live` early in initializer, and introduce
+    `action_controller_live` load hook.
 
-    Pull Request: #30121
+    *Adrianna Chang*
 
-    *Assain Jaleel*
+*   Make CSRF header-only protection compatible with local installs using HTTP
 
-*   Enforce signed/encrypted cookie expiry server side.
+    In local installations that don't use HTTPS and where the app is
+    accessed within a local network, requests won't be performed from a
+    secure context. In this case, the browser won't send the
+    `Sec-Fetch-Site` header. This means non-GET requests will be rejected
+    because CSRF protection will fail when using the header-only approach.
 
-    Rails can thwart attacks by malicious clients that don't honor a cookie's expiry.
+    With this change, we allow these requests with missing `Sec-Fetch-Site`
+    headers if:
 
-    It does so by stashing the expiry within the written cookie and relying on the
-    signing/encrypting to vouch that it hasn't been tampered with. Then on a
-    server-side read, the expiry is verified and any expired cookie is discarded.
+    - They happen over HTTP
+    - The app is not configured to force SSL
 
-    Pull Request: #30121
+    The `Origin` check always happens in any case.
 
-    *Assain Jaleel*
+    *Rosa Gutierrez*
 
-*   Make `take_failed_screenshot` work within engine.
+*   Deprecate calling `protect_from_forgery` without specifying a strategy.
 
-    Fixes #30405.
+    When `protect_from_forgery` is called without the `:with` option, it currently defaults to
+    `:null_session`. This is inconsistent with `config.action_controller.default_protect_from_forgery`,
+    which uses `:exception`.
 
-    *Yuji Yaginuma*
+    A new configuration option `config.action_controller.default_protect_from_forgery_with` has been
+    added to allow applications to configure the default strategy. It currently defaults to `:null_session`
+    for backwards compatibility, but will change to `:exception` in a future version of Rails.
 
-*   Deprecate `ActionDispatch::TestResponse` response aliases
+    Applications can opt into the new behavior now by setting:
 
-    `#success?`, `#missing?` & `#error?` are not supported by the actual
-    `ActionDispatch::Response` object and can produce false-positives. Instead,
-    use the response helpers provided by `Rack::Response`.
+    ```ruby
+    config.action_controller.default_protect_from_forgery_with = :exception
+    ```
 
-    *Trevor Wistaff*
+    To silence the deprecation warning without changing behavior, explicitly pass the strategy:
 
-*   Protect from forgery by default
+    ```ruby
+    protect_from_forgery with: :null_session
+    ```
 
-    Rather than protecting from forgery in the generated `ApplicationController`,
-    add it to `ActionController::Base` depending on
-    `config.action_controller.default_protect_from_forgery`. This configuration
-    defaults to false to support older versions which have removed it from their
-    `ApplicationController`, but is set to true for Rails 5.2.
+    *Said Kaldybaev*
 
-    *Lisa Ugray*
-
-*   Fallback `ActionController::Parameters#to_s` to `Hash#to_s`.
-
-    *Kir Shatrov*
-
-*   `driven_by` now registers poltergeist and capybara-webkit
-
-    If poltergeist or capybara-webkit are set as drivers is set for System Tests,
-    `driven_by` will register the driver and set additional options passed via
-    the `:options` parameter.
-
-    Refer to the respective driver's documentation to see what options can be passed.
-
-    *Mario Chavez*
-
-*   AEAD encrypted cookies and sessions with GCM
-
-    Encrypted cookies now use AES-GCM which couples authentication and
-    encryption in one faster step and produces shorter ciphertexts. Cookies
-    encrypted using AES in CBC HMAC mode will be seamlessly upgraded when
-    this new mode is enabled via the
-    `action_dispatch.use_authenticated_cookie_encryption` configuration value.
-
-    *Michael J Coyne*
-
-*   Change the cache key format for fragments to make it easier to debug key churn. The new format is:
-
-        views/template/action.html.erb:7a1156131a6928cb0026877f8b749ac9/projects/123
-              ^template path           ^template tree digest            ^class   ^id
+*   Add `ActionDispatch::Request#bearer_token` to extract the bearer token from the Authorization header.
+    Bearer tokens are commonly used for API and MCP requests.
 
     *DHH*
 
-*   Add support for recyclable cache keys with fragment caching. This uses the new versioned entries in the
-    `ActiveSupport::Cache` stores and relies on the fact that Active Record has split `#cache_key` and `#cache_version`
-    to support it.
+*   Add block support to `ActionController::Parameters#merge`
 
-    *DHH*
+    `ActionController::Parameters#merge` now accepts a block to resolve conflicts,
+    consistent with `Hash#merge` and `Parameters#merge!`.
 
-*   Add `action_controller_api` and `action_controller_base` load hooks to be called in `ActiveSupport.on_load`
+    ```ruby
+    params1 = ActionController::Parameters.new(a: 1, b: 2)
+    params2 = ActionController::Parameters.new(b: 3, c: 4)
+    params1.merge(params2) { |key, old_val, new_val| old_val + new_val }
+    # => #<ActionController::Parameters {"a"=>1, "b"=>5, "c"=>4} permitted: false>
+    ```
 
-    `ActionController::Base` and `ActionController::API` have differing implementations. This means that
-    the one umbrella hook `action_controller` is not able to address certain situations where a method
-    may not exist in a certain implementation.
+    *Said Kaldybaev*
 
-    This is fixed by adding two new hooks so you can target `ActionController::Base` vs `ActionController::API`
+*   Yield key to `ActionController::Parameters#fetch` block
 
-    Fixes #27013.
+    ```ruby
+    key = params.fetch(:missing) { |missing_key| missing_key }
+    key # => :missing
 
-    *Julian Nadeau*
+    key = params.fetch("missing") { |missing_key| missing_key }
+    key # => "missing"
+    ```
 
+    *Sean Doyle*
 
-Please check [5-1-stable](https://github.com/rails/rails/blob/5-1-stable/actionpack/CHANGELOG.md) for previous changes.
+*   Add `config.action_controller.live_streaming_excluded_keys` to control execution state sharing in ActionController::Live.
+
+    When using ActionController::Live, actions are executed in a separate thread that shares
+    state from the parent thread. This new configuration allows applications to opt-out specific
+    state keys that should not be shared.
+
+    This is useful when streaming inside a `connected_to` block, where you may want
+    the streaming thread to use its own database connection context.
+
+    ```ruby
+    # config/application.rb
+    config.action_controller.live_streaming_excluded_keys = [:active_record_connected_to_stack]
+    ```
+
+    By default, all keys are shared.
+
+    *Eileen M. Uchitelle*
+
+*   Add controller action source location to routes inspector.
+
+    The routes inspector now shows where controller actions are defined.
+    In `rails routes --expanded`, a new "Action Location" field displays
+    the file and line number of each action method.
+
+    On the routing error page, when `RAILS_EDITOR` or `EDITOR` is set,
+    a clickable ✏️ icon appears next to each Controller#Action that opens
+    the action directly in the editor.
+
+    *Guillermo Iguaran*
+
+*   Active Support notifications for CSRF warnings.
+
+    Switches from direct logging to event-driven logging, allowing others to
+    subscribe to and act on CSRF events:
+
+    - `csrf_token_fallback.action_controller`
+    - `csrf_request_blocked.action_controller`
+    - `csrf_javascript_blocked.action_controller`
+
+    *Jeremy Daer*
+
+*   Modern header-based CSRF protection.
+
+    Modern browsers send the `Sec-Fetch-Site` header to indicate the relationship
+    between request initiator and target origins. Rails now uses this header to
+    verify same-origin requests without requiring authenticity tokens.
+
+    Two verification strategies are available via `protect_from_forgery using:`:
+
+    * `:header_only` - Uses `Sec-Fetch-Site` header only. Rejects requests
+      without a valid header. Default for new Rails 8.2 applications.
+
+    * `:header_or_legacy_token` - Uses `Sec-Fetch-Site` header when present,
+      falls back to authenticity token verification for older browsers.
+
+    Configure trusted origins for legitimate cross-site requests (OAuth callbacks,
+    third-party embeds) with `trusted_origins:`:
+
+    ```ruby
+    protect_from_forgery trusted_origins: %w[ https://accounts.google.com ]
+    ```
+
+    `InvalidAuthenticityToken` is deprecated in favor of `InvalidCrossOriginRequest`.
+
+    *Rosa Gutierrez*
+
+*   Fix `action_dispatch_request` early load hook call when building
+    Rails app middleware.
+
+    *Gannon McGibbon*
+
+*   Emit a structured event when `action_on_open_redirect` is set to `:notify`
+    in addition to the existing Active Support Notification.
+
+    *Adrianna Chang*, *Hartley McGuire*
+
+*   Support `text/markdown` format in `DebugExceptions` middleware.
+
+    When `text/markdown` is requested via the Accept header, error responses
+    are returned with `Content-Type: text/markdown` instead of HTML.
+    The existing text templates are reused for markdown output, allowing
+    CLI tools and other clients to receive byte-efficient error information.
+
+    *Guillermo Iguaran*
+
+*   Support dynamic `to:` and `within:` options in `rate_limit`.
+
+    The `to:` and `within:` options now accept callables (lambdas or procs) and
+    method names (as symbols), in addition to static values. This allows for
+    dynamic rate limiting based on user attributes or other runtime conditions.
+
+    ```ruby
+    class APIController < ApplicationController
+      rate_limit to: :max_requests, within: :time_window, by: -> { current_user.id }
+
+      private
+        def max_requests
+          current_user.premium? ? 1000 : 100
+        end
+
+        def time_window
+          current_user.premium? ? 1.hour : 1.minute
+        end
+    end
+    ```
+
+    *Murilo Duarte*
+
+*   Define `ActionController::Parameters#deconstruct_keys` to support pattern matching
+
+    ```ruby
+    if params in { search:, page: }
+      Article.search(search).limit(page)
+    else
+      …
+    end
+
+    case (value = params[:string_or_hash_with_nested_key])
+    in String
+      # do something with a String `value`…
+    in { nested_key: }
+      # do something with `nested_key` or `value`
+    else
+      # …
+    end
+    ```
+
+    *Sean Doyle*
+
+*   Submit test requests using `as: :html` with `Content-Type: x-www-form-urlencoded`
+
+    *Sean Doyle*
+
+*   Add `svg:` renderer:
+
+    ```ruby
+    class Page
+      def to_svg
+        body
+      end
+    end
+
+    class PagesController < ActionController::Base
+      def show
+        @page = Page.find(params[:id])
+
+        respond_to do |format|
+          format.html
+          format.svg { render svg: @page }
+        end
+      end
+    end
+    ```
+
+    *Thiago Youssef*
+
+Please check [8-1-stable](https://github.com/rails/rails/blob/8-1-stable/actionpack/CHANGELOG.md) for previous changes.

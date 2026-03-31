@@ -58,7 +58,7 @@ class ModelTest < ActiveModel::TestCase
 
   def test_persisted_is_always_false
     object = BasicModel.new(attr: "value")
-    assert object.persisted? == false
+    assert_not object.persisted?
   end
 
   def test_mixin_inclusion_chain
@@ -75,5 +75,13 @@ class ModelTest < ActiveModel::TestCase
     assert_raises(ActiveModel::UnknownAttributeError) do
       SimpleModel.new(hello: "world")
     end
+  end
+
+  def test_load_hook_is_called
+    value = "not loaded"
+
+    ActiveSupport.on_load(:active_model) { value = "loaded" }
+
+    assert_equal "loaded", value
   end
 end

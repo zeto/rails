@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/array/extract"
+
 module ActiveRecord
   class PredicateBuilder
     class ArrayHandler # :nodoc:
@@ -11,31 +13,31 @@ module ActiveRecord
         return attribute.in([]) if value.empty?
 
         values = value.map { |x| x.is_a?(Base) ? x.id : x }
-        nils, values = values.partition(&:nil?)
-        ranges, values = values.partition { |v| v.is_a?(Range) }
+        nils = values.compact!
+        ranges = values.extract! { |v| v.is_a?(Range) }
 
         values_predicate =
           case values.length
           when 0 then NullPredicate
           when 1 then predicate_builder.build(attribute, values.first)
-          else
-            bind_values = values.map do |v|
-              predicate_builder.build_bind_attribute(attribute.name, v)
-            end
-            attribute.in(bind_values)
+          else Arel::Nodes::HomogeneousIn.new(values, attribute, :in)
           end
 
-        unless nils.empty?
-          values_predicate = values_predicate.or(predicate_builder.build(attribute, nil))
+        if nils
+          values_predicate = values_predicate.or(attribute.eq(nil))
         end
 
-        array_predicates = ranges.map { |range| predicate_builder.build(attribute, range) }
-        array_predicates.unshift(values_predicate)
-        array_predicates.inject(&:or)
+        if ranges.empty?
+          values_predicate
+        else
+          array_predicates = ranges.map! { |range| predicate_builder.build(attribute, range) }
+          values_predicate.or(
+            Arel::Nodes::Grouping.new Arel::Nodes::Or.new(array_predicates)
+          )
+        end
       end
 
-      protected
-
+      private
         attr_reader :predicate_builder
 
         module NullPredicate # :nodoc:

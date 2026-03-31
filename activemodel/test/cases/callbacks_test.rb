@@ -55,51 +55,63 @@ class CallbacksTest < ActiveModel::TestCase
   test "complete callback chain" do
     model = ModelCallbacks.new
     model.create
-    assert_equal model.callbacks, [ :before_create, :before_around_create, :create,
-                                    :after_around_create, :after_create, :final_callback]
+    assert_equal \
+      [:before_create, :before_around_create, :create, :after_around_create, :after_create, :final_callback],
+      model.callbacks
   end
 
   test "the callback chain is not halted when around or after callbacks return false" do
     model = ModelCallbacks.new
     model.create
-    assert_equal model.callbacks.last, :final_callback
+    assert_equal :final_callback, model.callbacks.last
   end
 
   test "the callback chain is not halted when a before callback returns false)" do
     model = ModelCallbacks.new(before_create_returns: false)
     model.create
-    assert_equal model.callbacks.last, :final_callback
+    assert_equal :final_callback, model.callbacks.last
   end
 
   test "the callback chain is halted when a callback throws :abort" do
     model = ModelCallbacks.new(before_create_throws: :abort)
     model.create
-    assert_equal model.callbacks, [:before_create]
+    assert_equal [:before_create], model.callbacks
   end
 
   test "after callbacks are not executed if the block returns false" do
     model = ModelCallbacks.new(valid: false)
     model.create
-    assert_equal model.callbacks, [ :before_create, :before_around_create,
-                                    :create, :after_around_create]
+    assert_equal \
+      [:before_create, :before_around_create, :create, :after_around_create],
+      model.callbacks
   end
 
   test "only selects which types of callbacks should be created" do
-    assert !ModelCallbacks.respond_to?(:before_initialize)
-    assert !ModelCallbacks.respond_to?(:around_initialize)
+    assert_not_respond_to ModelCallbacks, :before_initialize
+    assert_not_respond_to ModelCallbacks, :around_initialize
     assert_respond_to ModelCallbacks, :after_initialize
   end
 
   test "only selects which types of callbacks should be created from an array list" do
     assert_respond_to ModelCallbacks, :before_multiple
     assert_respond_to ModelCallbacks, :around_multiple
-    assert !ModelCallbacks.respond_to?(:after_multiple)
+    assert_not_respond_to ModelCallbacks, :after_multiple
   end
 
   test "no callbacks should be created" do
-    assert !ModelCallbacks.respond_to?(:before_empty)
-    assert !ModelCallbacks.respond_to?(:around_empty)
-    assert !ModelCallbacks.respond_to?(:after_empty)
+    assert_not_respond_to ModelCallbacks, :before_empty
+    assert_not_respond_to ModelCallbacks, :around_empty
+    assert_not_respond_to ModelCallbacks, :after_empty
+  end
+
+  test "the :if option array should not be mutated by an after callback" do
+    opts = []
+
+    Class.new(ModelCallbacks) do
+      after_create(if: opts) { }
+    end
+
+    assert_empty opts
   end
 
   class Violin
@@ -112,7 +124,7 @@ class CallbacksTest < ActiveModel::TestCase
     def callback1; history << "callback1"; end
     def callback2; history << "callback2"; end
     def create
-      run_callbacks(:create) {}
+      run_callbacks(:create) { }
       self
     end
   end

@@ -22,6 +22,7 @@ module ActionDispatch
         s["foo"] = "bar"
         assert_equal "bar", s["foo"]
         assert_equal({ "foo" => "bar" }, s.to_hash)
+        assert_equal({ "foo" => "bar" }, s.to_h)
       end
 
       def test_create_merges_old
@@ -47,6 +48,12 @@ module ActionDispatch
         s.destroy
 
         assert_empty s
+      end
+
+      def test_store
+        s = Session.create(store, req, {})
+        s.store("foo", "bar")
+        assert_equal "bar", s["foo"]
       end
 
       def test_keys
@@ -117,6 +124,52 @@ module ActionDispatch
         end
       end
 
+      def test_dig
+        session = Session.create(store, req, {})
+        session["one"] = { "two" => "3" }
+
+        assert_equal "3", session.dig("one", "two")
+        assert_equal "3", session.dig(:one, "two")
+
+        assert_nil session.dig("three", "two")
+        assert_nil session.dig("one", "three")
+        assert_nil session.dig("one", :two)
+      end
+
+      def test_id_was_for_new_session_that_does_not_exist
+        session = Session.create(store_for_session_that_does_not_exist, req, {})
+        assert_nil session.id_was
+      end
+
+      def test_id_was_for_session_that_does_not_exist_after_writing
+        session = Session.create(store_for_session_that_does_not_exist, req, {})
+        session["one"] = "1"
+        assert_nil session.id_was
+      end
+
+      def test_id_was_for_session_that_does_not_exist_after_destroying
+        session = Session.create(store_for_session_that_does_not_exist, req, {})
+        session.destroy
+        assert_nil session.id_was
+      end
+
+      def test_id_was_for_existing_session
+        session = Session.create(store, req, {})
+        assert_equal 1, session.id_was
+      end
+
+      def test_id_was_for_existing_session_after_write
+        session = Session.create(store, req, {})
+        session["one"] = "1"
+        assert_equal 1, session.id_was
+      end
+
+      def test_id_was_for_existing_session_after_destroy
+        session = Session.create(store, req, {})
+        session.destroy
+        assert_equal 1, session.id_was
+      end
+
       private
         def store
           Class.new {
@@ -130,6 +183,14 @@ module ActionDispatch
           Class.new {
             def load_session(env); [1, { "sample_key" => "sample_value" }]; end
             def session_exists?(env); true; end
+            def delete_session(env, id, options); 123; end
+          }.new
+        end
+
+        def store_for_session_that_does_not_exist
+          Class.new {
+            def load_session(env); [1, {}]; end
+            def session_exists?(env); false; end
             def delete_session(env, id, options); 123; end
           }.new
         end
@@ -150,7 +211,11 @@ module ActionDispatch
       end
 
       def app
-        @app ||= RoutedRackApp.new(Router)
+        @app ||= RoutedRackApp.new(Router) do |middleware|
+          @cache = ActiveSupport::Cache::MemoryStore.new
+          middleware.use ActionDispatch::Session::CacheStore, key: "_session_id", cache: @cache
+          middleware.use Rack::Lint
+        end
       end
 
       def test_session_follows_rack_api_contract_1

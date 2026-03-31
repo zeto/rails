@@ -1,14 +1,13 @@
 # frozen_string_literal: true
 
 namespace :log do
-
   ##
   # Truncates all/specified log files
   # ENV['LOGS']
   #   - defaults to all environments log files i.e. 'development,test,production'
   #   - ENV['LOGS']=all truncates all files i.e. log/*.log
   #   - ENV['LOGS']='test,development' truncates only specified files
-  desc "Truncates all/specified *.log files in log/ to zero bytes (specify which logs with LOGS=test,development)"
+  desc "Truncate all/specified *.log files in log/ to zero bytes (specify which logs with LOGS=test,development)"
   task :clear do
     log_files.each do |file|
       clear_log_file(file)

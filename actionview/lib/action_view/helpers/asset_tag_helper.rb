@@ -2,12 +2,14 @@
 
 require "active_support/core_ext/array/extract_options"
 require "active_support/core_ext/hash/keys"
-require_relative "asset_url_helper"
-require_relative "tag_helper"
+require "active_support/core_ext/object/inclusion"
+require "action_view/helpers/asset_url_helper"
+require "action_view/helpers/tag_helper"
 
 module ActionView
-  # = Action View Asset Tag Helpers
-  module Helpers #:nodoc:
+  module Helpers # :nodoc:
+    # = Action View Asset Tag \Helpers
+    #
     # This module provides methods for generating HTML that links views to assets such
     # as images, JavaScripts, stylesheets, and feeds. These methods do not verify
     # the assets exist before linking to them:
@@ -15,12 +17,17 @@ module ActionView
     #   image_tag("rails.png")
     #   # => <img src="/assets/rails.png" />
     #   stylesheet_link_tag("application")
-    #   # => <link href="/assets/application.css?body=1" media="screen" rel="stylesheet" />
+    #   # => <link href="/assets/application.css?body=1" rel="stylesheet" />
     module AssetTagHelper
-      extend ActiveSupport::Concern
-
       include AssetUrlHelper
       include TagHelper
+
+      mattr_accessor :image_loading
+      mattr_accessor :image_decoding
+      mattr_accessor :preload_links_header
+      mattr_accessor :apply_stylesheet_media_default
+      mattr_accessor :auto_include_nonce_for_scripts
+      mattr_accessor :auto_include_nonce_for_styles
 
       # Returns an HTML script tag for each of the +sources+ provided.
       #
@@ -28,7 +35,7 @@ module ActionView
       # to <tt>assets/javascripts</tt>, full paths are assumed to be relative to the document
       # root. Relative paths are idiomatic, use absolute paths only when needed.
       #
-      # When passing paths, the ".js" extension is optional.  If you do not want ".js"
+      # When passing paths, the ".js" extension is optional. If you do not want ".js"
       # appended to the path <tt>extname: false</tt> can be set on the options.
       #
       # You can modify the HTML attributes of the script tag by passing a hash as the
@@ -37,22 +44,41 @@ module ActionView
       # When the Asset Pipeline is enabled, you can pass the name of your manifest as
       # source, and include other JavaScript or CoffeeScript files inside the manifest.
       #
-      # If the server supports Early Hints header links for these assets will be
-      # automatically pushed.
+      # If the server supports HTTP Early Hints, and the +defer+ option is not
+      # enabled, \Rails will push a <tt>103 Early Hints</tt> response that links
+      # to the assets.
       #
       # ==== Options
       #
       # When the last parameter is a hash you can add HTML attributes using that
-      # parameter. The following options are supported:
+      # parameter. This includes but is not limited to the following options:
       #
-      # * <tt>:extname</tt>  - Append an extension to the generated url unless the extension
-      #   already exists. This only applies for relative urls.
-      # * <tt>:protocol</tt>  - Sets the protocol of the generated url, this option only
-      #   applies when a relative url and +host+ options are provided.
-      # * <tt>:host</tt>  - When a relative url is provided the host is added to the
+      # * <tt>:extname</tt>  - Append an extension to the generated URL unless the extension
+      #   already exists. This only applies for relative URLs.
+      # * <tt>:protocol</tt>  - Sets the protocol of the generated URL. This option only
+      #   applies when a relative URL and +host+ options are provided.
+      # * <tt>:host</tt>  - When a relative URL is provided the host is added to the
       #   that path.
       # * <tt>:skip_pipeline</tt>  - This option is used to bypass the asset pipeline
       #   when it is set to true.
+      # * <tt>:nonce</tt>  - When set to true, adds an automatic nonce value if
+      #   you have Content Security Policy enabled.
+      # * <tt>:async</tt>  - When set to +true+, adds the +async+ HTML
+      #   attribute, allowing the script to be fetched in parallel to be parsed
+      #   and evaluated as soon as possible.
+      # * <tt>:defer</tt>  - When set to +true+, adds the +defer+ HTML
+      #   attribute, which indicates to the browser that the script is meant to
+      #   be executed after the document has been parsed. Additionally, prevents
+      #   sending the Preload Links header.
+      # * <tt>:nopush</tt>  - Specify if the use of server push is not desired
+      #   for the script. Defaults to +true+.
+      #
+      # Any other specified options will be treated as HTML attributes for the
+      # +script+ tag.
+      #
+      # For more information regarding how the <tt>:async</tt> and <tt>:defer</tt>
+      # options affect the <tt><script></tt> tag, please refer to the
+      # {MDN docs}[https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script].
       #
       # ==== Examples
       #
@@ -77,43 +103,94 @@ module ActionView
       #
       #   javascript_include_tag "http://www.example.com/xmlhr.js"
       #   # => <script src="http://www.example.com/xmlhr.js"></script>
+      #
+      #   javascript_include_tag "http://www.example.com/xmlhr.js", nonce: true
+      #   # => <script src="http://www.example.com/xmlhr.js" nonce="..."></script>
+      #
+      #   javascript_include_tag "http://www.example.com/xmlhr.js", async: true
+      #   # => <script src="http://www.example.com/xmlhr.js" async="async"></script>
+      #
+      #   javascript_include_tag "http://www.example.com/xmlhr.js", defer: true
+      #   # => <script src="http://www.example.com/xmlhr.js" defer="defer"></script>
       def javascript_include_tag(*sources)
         options = sources.extract_options!.stringify_keys
         path_options = options.extract!("protocol", "extname", "host", "skip_pipeline").symbolize_keys
-        early_hints_links = []
+        preload_links = []
+        use_preload_links_header = options["preload_links_header"].nil? ? preload_links_header : options.delete("preload_links_header")
+        nopush = options["nopush"].nil? || options.delete("nopush")
+        crossorigin = options.delete("crossorigin")
+        crossorigin = "anonymous" if crossorigin == true
+        integrity = options["integrity"]
+        rel = options["type"] == "module" || options["type"] == :module ? "modulepreload" : "preload"
 
         sources_tags = sources.uniq.map { |source|
           href = path_to_javascript(source, path_options)
-          early_hints_links << "<#{href}>; rel=preload; as=script"
+          if use_preload_links_header && !options["defer"] && href.present? && !href.start_with?("data:")
+            preload_link = "<#{href}>; rel=#{rel}; as=script"
+            preload_link += "; crossorigin=#{crossorigin}" unless crossorigin.nil?
+            preload_link += "; integrity=#{integrity}" unless integrity.nil?
+            preload_link += "; nonce=#{content_security_policy_nonce}" if options["nonce"] == true
+            preload_link += "; nopush" if nopush
+            preload_links << preload_link
+          end
           tag_options = {
-            "src" => href
+            "src" => href,
+            "crossorigin" => crossorigin
           }.merge!(options)
-          content_tag("script".freeze, "", tag_options)
+          if tag_options["nonce"] == true || (!tag_options.key?("nonce") && auto_include_nonce_for_scripts)
+            tag_options["nonce"] = content_security_policy_nonce
+          elsif tag_options["nonce"] == false
+            tag_options.delete("nonce")
+          end
+          content_tag("script", "", tag_options)
         }.join("\n").html_safe
 
-        request.send_early_hints("Link" => early_hints_links.join("\n")) if respond_to?(:request)
+        if use_preload_links_header
+          send_preload_links_header(preload_links)
+        end
 
         sources_tags
       end
 
-      # Returns a stylesheet link tag for the sources specified as arguments. If
-      # you don't specify an extension, <tt>.css</tt> will be appended automatically.
-      # You can modify the link attributes by passing a hash as the last argument.
-      # For historical reasons, the 'media' attribute will always be present and defaults
-      # to "screen", so you must explicitly set it to "all" for the stylesheet(s) to
-      # apply to all media types.
+      # Returns a stylesheet link tag for the sources specified as arguments.
       #
-      # If the server supports Early Hints header links for these assets  will be
-      # automatically pushed.
+      # When passing paths, the <tt>.css</tt> extension is optional.
+      # If you don't specify an extension, <tt>.css</tt> will be appended automatically.
+      # If you do not want <tt>.css</tt> appended to the path,
+      # set <tt>extname: false</tt> in the options.
+      # You can modify the link attributes by passing a hash as the last argument.
+      #
+      # If the server supports HTTP Early Hints, \Rails will push a <tt>103 Early
+      # Hints</tt> response that links to the assets.
+      #
+      # ==== Options
+      #
+      # * <tt>:extname</tt>  - Append an extension to the generated URL unless the extension
+      #   already exists. This only applies for relative URLs.
+      # * <tt>:protocol</tt>  - Sets the protocol of the generated URL. This option only
+      #   applies when a relative URL and +host+ options are provided.
+      # * <tt>:host</tt>  - When a relative URL is provided the host is added to the
+      #   that path.
+      # * <tt>:skip_pipeline</tt>  - This option is used to bypass the asset pipeline
+      #   when it is set to true.
+      # * <tt>:nonce</tt>  - When set to true, adds an automatic nonce value if
+      #   you have Content Security Policy enabled.
+      # * <tt>:nopush</tt>  - Specify if the use of server push is not desired
+      #   for the stylesheet. Defaults to +true+.
+      #
+      # ==== Examples
       #
       #   stylesheet_link_tag "style"
-      #   # => <link href="/assets/style.css" media="screen" rel="stylesheet" />
+      #   # => <link href="/assets/style.css" rel="stylesheet" />
       #
       #   stylesheet_link_tag "style.css"
-      #   # => <link href="/assets/style.css" media="screen" rel="stylesheet" />
+      #   # => <link href="/assets/style.css" rel="stylesheet" />
       #
       #   stylesheet_link_tag "http://www.example.com/style.css"
-      #   # => <link href="http://www.example.com/style.css" media="screen" rel="stylesheet" />
+      #   # => <link href="http://www.example.com/style.css" rel="stylesheet" />
+      #
+      #   stylesheet_link_tag "style.less", extname: false, skip_pipeline: true, rel: "stylesheet/less"
+      #   # => <link href="/stylesheets/style.less" rel="stylesheet/less">
       #
       #   stylesheet_link_tag "style", media: "all"
       #   # => <link href="/assets/style.css" media="all" rel="stylesheet" />
@@ -122,25 +199,52 @@ module ActionView
       #   # => <link href="/assets/style.css" media="print" rel="stylesheet" />
       #
       #   stylesheet_link_tag "random.styles", "/css/stylish"
-      #   # => <link href="/assets/random.styles" media="screen" rel="stylesheet" />
-      #   #    <link href="/css/stylish.css" media="screen" rel="stylesheet" />
+      #   # => <link href="/assets/random.styles" rel="stylesheet" />
+      #   #    <link href="/css/stylish.css" rel="stylesheet" />
+      #
+      #   stylesheet_link_tag "style", nonce: true
+      #   # => <link href="/assets/style.css" rel="stylesheet" nonce="..." />
       def stylesheet_link_tag(*sources)
         options = sources.extract_options!.stringify_keys
-        path_options = options.extract!("protocol", "host", "skip_pipeline").symbolize_keys
-        early_hints_links = []
+        path_options = options.extract!("protocol", "extname", "host", "skip_pipeline").symbolize_keys
+        use_preload_links_header = options["preload_links_header"].nil? ? preload_links_header : options.delete("preload_links_header")
+        preload_links = []
+        crossorigin = options.delete("crossorigin")
+        crossorigin = "anonymous" if crossorigin == true
+        nopush = options["nopush"].nil? || options.delete("nopush")
+        integrity = options["integrity"]
 
         sources_tags = sources.uniq.map { |source|
           href = path_to_stylesheet(source, path_options)
-          early_hints_links << "<#{href}>; rel=preload; as=stylesheet"
+          if use_preload_links_header && href.present? && !href.start_with?("data:")
+            preload_link = "<#{href}>; rel=preload; as=style"
+            preload_link += "; crossorigin=#{crossorigin}" unless crossorigin.nil?
+            preload_link += "; integrity=#{integrity}" unless integrity.nil?
+            preload_link += "; nonce=#{content_security_policy_nonce}" if options["nonce"] == true
+            preload_link += "; nopush" if nopush
+            preload_links << preload_link
+          end
           tag_options = {
             "rel" => "stylesheet",
-            "media" => "screen",
+            "crossorigin" => crossorigin,
             "href" => href
           }.merge!(options)
+          if tag_options["nonce"] == true || (!tag_options.key?("nonce") && auto_include_nonce_for_styles && respond_to?(:content_security_policy_nonce))
+            tag_options["nonce"] = content_security_policy_nonce
+          elsif tag_options["nonce"] == false
+            tag_options.delete("nonce")
+          end
+
+          if apply_stylesheet_media_default && tag_options["media"].blank?
+            tag_options["media"] = "screen"
+          end
+
           tag(:link, tag_options)
         }.join("\n").html_safe
 
-        request.send_early_hints("Link" => early_hints_links.join("\n")) if respond_to?(:request)
+        if use_preload_links_header
+          send_preload_links_header(preload_links)
+        end
 
         sources_tags
       end
@@ -198,14 +302,14 @@ module ActionView
       #
       # The helper gets the name of the favicon file as first argument, which
       # defaults to "favicon.ico", and also supports +:rel+ and +:type+ options
-      # to override their defaults, "shortcut icon" and "image/x-icon"
+      # to override their defaults, "icon" and "image/x-icon"
       # respectively:
       #
       #   favicon_link_tag
-      #   # => <link href="/assets/favicon.ico" rel="shortcut icon" type="image/x-icon" />
+      #   # => <link href="/assets/favicon.ico" rel="icon" type="image/x-icon" />
       #
       #   favicon_link_tag 'myicon.ico'
-      #   # => <link href="/assets/myicon.ico" rel="shortcut icon" type="image/x-icon" />
+      #   # => <link href="/assets/myicon.ico" rel="icon" type="image/x-icon" />
       #
       # Mobile Safari looks for a different link tag, pointing to an image that
       # will be used if you add the page to the home screen of an iOS device.
@@ -215,22 +319,98 @@ module ActionView
       #   # => <link href="/assets/mb-icon.png" rel="apple-touch-icon" type="image/png" />
       def favicon_link_tag(source = "favicon.ico", options = {})
         tag("link", {
-          rel: "shortcut icon",
+          rel: "icon",
           type: "image/x-icon",
           href: path_to_image(source, skip_pipeline: options.delete(:skip_pipeline))
         }.merge!(options.symbolize_keys))
       end
 
+      # Returns a link tag that browsers can use to preload the +source+.
+      # The +source+ can be the path of a resource managed by asset pipeline,
+      # a full path, or an URI.
+      #
+      # ==== Options
+      #
+      # * <tt>:type</tt>  - Override the auto-generated mime type, defaults to the mime type for +source+ extension.
+      # * <tt>:as</tt>  - Override the auto-generated value for as attribute, calculated using +source+ extension and mime type.
+      # * <tt>:crossorigin</tt>  - Specify the crossorigin attribute, required to load cross-origin resources.
+      # * <tt>:nopush</tt>  - Specify if the use of server push is not desired for the resource. Defaults to +false+.
+      # * <tt>:integrity</tt> - Specify the integrity attribute.
+      #
+      # ==== Examples
+      #
+      #   preload_link_tag("custom_theme.css")
+      #   # => <link rel="preload" href="/assets/custom_theme.css" as="style" type="text/css" />
+      #
+      #   preload_link_tag("/videos/video.webm")
+      #   # => <link rel="preload" href="/videos/video.mp4" as="video" type="video/webm" />
+      #
+      #   preload_link_tag(post_path(format: :json), as: "fetch")
+      #   # => <link rel="preload" href="/posts.json" as="fetch" type="application/json" />
+      #
+      #   preload_link_tag("worker.js", as: "worker")
+      #   # => <link rel="preload" href="/assets/worker.js" as="worker" type="text/javascript" />
+      #
+      #   preload_link_tag("//example.com/font.woff2")
+      #   # => <link rel="preload" href="//example.com/font.woff2" as="font" type="font/woff2" crossorigin="anonymous"/>
+      #
+      #   preload_link_tag("//example.com/font.woff2", crossorigin: "use-credentials")
+      #   # => <link rel="preload" href="//example.com/font.woff2" as="font" type="font/woff2" crossorigin="use-credentials" />
+      #
+      #   preload_link_tag("/media/audio.ogg", nopush: true)
+      #   # => <link rel="preload" href="/media/audio.ogg" as="audio" type="audio/ogg" />
+      #
+      def preload_link_tag(source, options = {})
+        href = path_to_asset(source, skip_pipeline: options.delete(:skip_pipeline))
+        extname = File.extname(source).downcase.delete(".")
+        mime_type = options.delete(:type) || Template::Types[extname]&.to_s
+        as_type = options.delete(:as) || resolve_link_as(extname, mime_type)
+        crossorigin = options.delete(:crossorigin)
+        crossorigin = "anonymous" if crossorigin == true || (crossorigin.blank? && as_type == "font")
+        integrity = options[:integrity]
+        fetchpriority = options.delete(:fetchpriority)
+        nopush = options.delete(:nopush) || false
+        rel = mime_type == "module" || mime_type == :module ? "modulepreload" : "preload"
+        add_nonce = content_security_policy_nonce &&
+          respond_to?(:request) &&
+          request.content_security_policy_nonce_directives&.include?("#{as_type}-src")
+
+        if add_nonce
+          options[:nonce] = content_security_policy_nonce
+        end
+
+        link_tag = tag.link(
+          rel: rel,
+          href: href,
+          as: as_type,
+          type: mime_type,
+          crossorigin: crossorigin,
+          fetchpriority: fetchpriority,
+          **options.symbolize_keys)
+
+        preload_link = "<#{href}>; rel=#{rel}; as=#{as_type}"
+        preload_link += "; type=#{mime_type}" if mime_type
+        preload_link += "; crossorigin=#{crossorigin}" if crossorigin
+        preload_link += "; fetchpriority=#{fetchpriority}" if fetchpriority
+        preload_link += "; integrity=#{integrity}" if integrity
+        preload_link += "; nonce=#{content_security_policy_nonce}" if add_nonce
+        preload_link += "; nopush" if nopush
+
+        send_preload_links_header([preload_link])
+
+        link_tag
+      end
+
       # Returns an HTML image tag for the +source+. The +source+ can be a full
-      # path, a file or an Active Storage attachment.
+      # path, a file, or an Active Storage attachment.
       #
       # ==== Options
       #
       # You can add HTML attributes using the +options+. The +options+ supports
       # additional keys for convenience and conformance:
       #
-      # * <tt>:size</tt> - Supplied as "{Width}x{Height}" or "{Number}", so "30x45" becomes
-      #   width="30" and height="45", and "50" becomes width="50" and height="50".
+      # * <tt>:size</tt> - Supplied as <tt>"#{width}x#{height}"</tt> or <tt>"#{number}"</tt>, so <tt>"30x45"</tt> becomes
+      #   <tt>width="30" height="45"</tt>, and <tt>"50"</tt> becomes <tt>width="50" height="50"</tt>.
       #   <tt>:size</tt> will be ignored if the value is not in the correct format.
       # * <tt>:srcset</tt> - If supplied as a hash or array of <tt>[source, descriptor]</tt>
       #   pairs, each image path will be expanded before the list is formatted as a string.
@@ -258,20 +438,20 @@ module ActionView
       #   image_tag("pic.jpg", srcset: [["pic_1024.jpg", "1024w"], ["pic_1980.jpg", "1980w"]], sizes: "100vw")
       #   # => <img src="/assets/pic.jpg" srcset="/assets/pic_1024.jpg 1024w, /assets/pic_1980.jpg 1980w" sizes="100vw">
       #
-      # Active Storage (images that are uploaded by the users of your app):
+      # Active Storage blobs (images that are uploaded by the users of your app):
       #
       #   image_tag(user.avatar)
       #   # => <img src="/rails/active_storage/blobs/.../tiger.jpg" />
-      #   image_tag(user.avatar.variant(resize: "100x100"))
-      #   # => <img src="/rails/active_storage/variants/.../tiger.jpg" />
-      #   image_tag(user.avatar.variant(resize: "100x100"), size: '100')
-      #   # => <img width="100" height="100" src="/rails/active_storage/variants/.../tiger.jpg" />
+      #   image_tag(user.avatar.variant(resize_to_limit: [100, 100]))
+      #   # => <img src="/rails/active_storage/representations/.../tiger.jpg" />
+      #   image_tag(user.avatar.variant(resize_to_limit: [100, 100]), size: '100')
+      #   # => <img width="100" height="100" src="/rails/active_storage/representations/.../tiger.jpg" />
       def image_tag(source, options = {})
         options = options.symbolize_keys
         check_for_image_tag_errors(options)
         skip_pipeline = options.delete(:skip_pipeline)
 
-        options[:src] = resolve_image_source(source, skip_pipeline)
+        options[:src] = resolve_asset_source("image", source, skip_pipeline)
 
         if options[:srcset] && !options[:srcset].is_a?(String)
           options[:srcset] = options[:srcset].map do |src_path, size|
@@ -281,46 +461,89 @@ module ActionView
         end
 
         options[:width], options[:height] = extract_dimensions(options.delete(:size)) if options[:size]
+
+        options[:loading] ||= image_loading if image_loading
+        options[:decoding] ||= image_decoding if image_decoding
+
         tag("img", options)
       end
 
-      # Returns a string suitable for an HTML image tag alt attribute.
-      # The +src+ argument is meant to be an image file path.
-      # The method removes the basename of the file path and the digest,
-      # if any. It also removes hyphens and underscores from file names and
-      # replaces them with spaces, returning a space-separated, titleized
-      # string.
+      # Returns an HTML picture tag for the +sources+. If +sources+ is a string,
+      # a single picture tag will be returned. If +sources+ is an array, a picture
+      # tag with nested source tags for each source will be returned. The
+      # +sources+ can be full paths, files that exist in your public images
+      # directory, or Active Storage attachments. Since the picture tag requires
+      # an img tag, the last element you provide will be used for the img tag.
+      # For complete control over the picture tag, a block can be passed, which
+      # will populate the contents of the tag accordingly.
+      #
+      # ==== Options
+      #
+      # When the last parameter is a hash you can add HTML attributes using that
+      # parameter. Apart from all the HTML supported options, the following are supported:
+      #
+      # * <tt>:image</tt> - Hash of options that are passed directly to the +image_tag+ helper.
       #
       # ==== Examples
       #
-      #   image_alt('rails.png')
-      #   # => Rails
+      #   picture_tag("picture.webp")
+      #   # => <picture><img src="/images/picture.webp" /></picture>
+      #   picture_tag("gold.png", :image => { :size => "20" })
+      #   # => <picture><img height="20" src="/images/gold.png" width="20" /></picture>
+      #   picture_tag("gold.png", :image => { :size => "45x70" })
+      #   # => <picture><img height="70" src="/images/gold.png" width="45" /></picture>
+      #   picture_tag("picture.webp", "picture.png")
+      #   # => <picture><source srcset="/images/picture.webp" /><source srcset="/images/picture.png" /><img src="/images/picture.png" /></picture>
+      #   picture_tag("picture.webp", "picture.png", :image => { alt: "Image" })
+      #   # => <picture><source srcset="/images/picture.webp" /><source srcset="/images/picture.png" /><img alt="Image" src="/images/picture.png" /></picture>
+      #   picture_tag(["picture.webp", "picture.png"], :image => { alt: "Image" })
+      #   # => <picture><source srcset="/images/picture.webp" /><source srcset="/images/picture.png" /><img alt="Image" src="/images/picture.png" /></picture>
+      #   picture_tag(:class => "my-class") { tag(:source, :srcset => image_path("picture.webp")) + image_tag("picture.png", :alt => "Image") }
+      #   # => <picture class="my-class"><source srcset="/images/picture.webp" /><img alt="Image" src="/images/picture.png" /></picture>
+      #   picture_tag { tag(:source, :srcset => image_path("picture-small.webp"), :media => "(min-width: 600px)") + tag(:source, :srcset => image_path("picture-big.webp")) + image_tag("picture.png", :alt => "Image") }
+      #   # => <picture><source srcset="/images/picture-small.webp" media="(min-width: 600px)" /><source srcset="/images/picture-big.webp" /><img alt="Image" src="/images/picture.png" /></picture>
       #
-      #   image_alt('hyphenated-file-name.png')
-      #   # => Hyphenated file name
+      # Active Storage blobs (images that are uploaded by the users of your app):
       #
-      #   image_alt('underscored_file_name.png')
-      #   # => Underscored file name
-      def image_alt(src)
-        ActiveSupport::Deprecation.warn("image_alt is deprecated and will be removed from Rails 6.0. You must explicitly set alt text on images.")
+      #   picture_tag(user.profile_picture)
+      #   # => <picture><img src="/rails/active_storage/blobs/.../profile_picture.webp" /></picture>
+      def picture_tag(*sources, &block)
+        sources.flatten!
+        options = sources.extract_options!.symbolize_keys
+        image_options = options.delete(:image) || {}
+        skip_pipeline = options.delete(:skip_pipeline)
 
-        File.basename(src, ".*".freeze).sub(/-[[:xdigit:]]{32,64}\z/, "".freeze).tr("-_".freeze, " ".freeze).capitalize
+        content_tag("picture", options) do
+          if block.present?
+            capture(&block).html_safe
+          elsif sources.size <= 1
+            image_tag(sources.last, image_options)
+          else
+            source_tags = sources.map do |source|
+              tag("source",
+               srcset: resolve_asset_source("image", source, skip_pipeline),
+               type: Template::Types[File.extname(source)[1..]]&.to_s)
+            end
+            safe_join(source_tags << image_tag(sources.last, image_options))
+          end
+        end
       end
 
       # Returns an HTML video tag for the +sources+. If +sources+ is a string,
       # a single video tag will be returned. If +sources+ is an array, a video
       # tag with nested source tags for each source will be returned. The
-      # +sources+ can be full paths or files that exists in your public videos
-      # directory.
+      # +sources+ can be full paths, files that exist in your public videos
+      # directory, or Active Storage attachments.
       #
       # ==== Options
-      # You can add HTML attributes using the +options+. The +options+ supports
-      # two additional keys for convenience and conformance:
+      #
+      # When the last parameter is a hash you can add HTML attributes using that
+      # parameter. The following options are supported:
       #
       # * <tt>:poster</tt> - Set an image (like a screenshot) to be shown
       #   before the video loads. The path is calculated like the +src+ of +image_tag+.
-      # * <tt>:size</tt> - Supplied as "{Width}x{Height}" or "{Number}", so "30x45" becomes
-      #   width="30" and height="45", and "50" becomes width="50" and height="50".
+      # * <tt>:size</tt> - Supplied as <tt>"#{width}x#{height}"</tt> or <tt>"#{number}"</tt>, so <tt>"30x45"</tt> becomes
+      #   <tt>width="30" height="45"</tt>, and <tt>"50"</tt> becomes <tt>width="50" height="50"</tt>.
       #   <tt>:size</tt> will be ignored if the value is not in the correct format.
       # * <tt>:poster_skip_pipeline</tt> will bypass the asset pipeline when using
       #   the <tt>:poster</tt> option instead using an asset in the public folder.
@@ -332,7 +555,7 @@ module ActionView
       #   video_tag("trailer.ogg")
       #   # => <video src="/videos/trailer.ogg"></video>
       #   video_tag("trailer.ogg", controls: true, preload: 'none')
-      #   # => <video preload="none" controls="controls" src="/videos/trailer.ogg" ></video>
+      #   # => <video preload="none" controls="controls" src="/videos/trailer.ogg"></video>
       #   video_tag("trailer.m4v", size: "16x10", poster: "screenshot.png")
       #   # => <video src="/videos/trailer.m4v" width="16" height="10" poster="/assets/screenshot.png"></video>
       #   video_tag("trailer.m4v", size: "16x10", poster: "screenshot.png", poster_skip_pipeline: true)
@@ -349,6 +572,11 @@ module ActionView
       #   # => <video><source src="/videos/trailer.ogg" /><source src="/videos/trailer.flv" /></video>
       #   video_tag(["trailer.ogg", "trailer.flv"], size: "160x120")
       #   # => <video height="120" width="160"><source src="/videos/trailer.ogg" /><source src="/videos/trailer.flv" /></video>
+      #
+      # Active Storage blobs (videos that are uploaded by the users of your app):
+      #
+      #   video_tag(user.intro_video)
+      #   # => <video src="/rails/active_storage/blobs/.../intro_video.mp4"></video>
       def video_tag(*sources)
         options = sources.extract_options!.symbolize_keys
         public_poster_folder = options.delete(:poster_skip_pipeline)
@@ -359,9 +587,14 @@ module ActionView
         end
       end
 
-      # Returns an HTML audio tag for the +source+.
-      # The +source+ can be full path or file that exists in
-      # your public audios directory.
+      # Returns an HTML audio tag for the +sources+. If +sources+ is a string,
+      # a single audio tag will be returned. If +sources+ is an array, an audio
+      # tag with nested source tags for each source will be returned. The
+      # +sources+ can be full paths, files that exist in your public audios
+      # directory, or Active Storage attachments.
+      #
+      # When the last parameter is a hash you can add HTML attributes using that
+      # parameter.
       #
       #   audio_tag("sound")
       #   # => <audio src="/audios/sound"></audio>
@@ -371,6 +604,11 @@ module ActionView
       #   # => <audio autoplay="autoplay" controls="controls" src="/audios/sound.wav"></audio>
       #   audio_tag("sound.wav", "sound.mid")
       #   # => <audio><source src="/audios/sound.wav" /><source src="/audios/sound.mid" /></audio>
+      #
+      # Active Storage blobs (audios that are uploaded by the users of your app):
+      #
+      #   audio_tag(user.name_pronunciation_audio)
+      #   # => <audio src="/rails/active_storage/blobs/.../name_pronunciation_audio.mp3"></audio>
       def audio_tag(*sources)
         multiple_sources_tag_builder("audio", sources)
       end
@@ -385,29 +623,29 @@ module ActionView
 
           if sources.size > 1
             content_tag(type, options) do
-              safe_join sources.map { |source| tag("source", src: send("path_to_#{type}", source, skip_pipeline: skip_pipeline)) }
+              safe_join sources.map { |source| tag("source", src: resolve_asset_source(type, source, skip_pipeline)) }
             end
           else
-            options[:src] = send("path_to_#{type}", sources.first, skip_pipeline: skip_pipeline)
+            options[:src] = resolve_asset_source(type, sources.first, skip_pipeline)
             content_tag(type, nil, options)
           end
         end
 
-        def resolve_image_source(source, skip_pipeline)
+        def resolve_asset_source(asset_type, source, skip_pipeline)
           if source.is_a?(Symbol) || source.is_a?(String)
-            path_to_image(source, skip_pipeline: skip_pipeline)
+            path_to_asset(source, type: asset_type.to_sym, skip_pipeline: skip_pipeline)
           else
             polymorphic_url(source)
           end
         rescue NoMethodError => e
-          raise ArgumentError, "Can't resolve image into URL: #{e}"
+          raise ArgumentError, "Can't resolve #{asset_type} into URL: #{e}"
         end
 
         def extract_dimensions(size)
           size = size.to_s
-          if /\A\d+x\d+\z/.match?(size)
+          if /\A\d+(?:\.\d+)?x\d+(?:\.\d+)?\z/.match?(size)
             size.split("x")
-          elsif /\A\d+\z/.match?(size)
+          elsif /\A\d+(?:\.\d+)?\z/.match?(size)
             [size, size]
           end
         end
@@ -415,6 +653,45 @@ module ActionView
         def check_for_image_tag_errors(options)
           if options[:size] && (options[:height] || options[:width])
             raise ArgumentError, "Cannot pass a :size option with a :height or :width option"
+          end
+        end
+
+        def resolve_link_as(extname, mime_type)
+          case extname
+          when "js"  then "script"
+          when "css" then "style"
+          when "vtt" then "track"
+          else
+            mime_type.to_s.split("/").first.presence_in(%w(audio video font image))
+          end
+        end
+
+        # Some HTTP client and proxies have a 4kiB header limit, but more importantly
+        # including preload links has diminishing returns so it's best to not go overboard
+        MAX_HEADER_SIZE = 1_000 # :nodoc:
+
+        def send_preload_links_header(preload_links, max_header_size: MAX_HEADER_SIZE)
+          return if preload_links.empty?
+          response_present = respond_to?(:response) && response
+          return if response_present && response.sending?
+
+          if respond_to?(:request) && request
+            request.send_early_hints("link" => preload_links.join(","))
+          end
+
+          if response_present
+            header = +response.headers["link"].to_s
+            preload_links.each do |link|
+              break if header.bytesize + link.bytesize > max_header_size
+
+              if header.empty?
+                header << link
+              else
+                header << "," << link
+              end
+            end
+
+            response.headers["link"] = header
           end
         end
     end

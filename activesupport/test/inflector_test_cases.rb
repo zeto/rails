@@ -119,7 +119,9 @@ module InflectorTestCases
     "Product"               => "product",
     "SpecialGuest"          => "special_guest",
     "ApplicationController" => "application_controller",
-    "Area51Controller"      => "area51_controller"
+    "Area51Controller"      => "area51_controller",
+    "AppCDir"               => "app_c_dir",
+    "Accountsv2N2Test"      => "accountsv2_n2_test",
   }
 
   UnderscoreToLowerCamel = {
@@ -142,6 +144,7 @@ module InflectorTestCases
     "FreeBSD"               => "free_bsd",
     "HTML"                  => "html",
     "ForceXMLController"    => "force_xml_controller",
+    :product                => "product",
   }
 
   CamelWithModuleToUnderscoreWithSlash = {
@@ -162,7 +165,8 @@ module InflectorTestCases
 
   ClassNameToTableName = {
     "PrimarySpokesman" => "primary_spokesmen",
-    "NodeChild"        => "node_children"
+    "NodeChild"        => "node_children",
+    "Calculu"          => "calculus" # Singular names are not handled correctly
   }
 
   StringToParameterized = {
@@ -221,7 +225,7 @@ module InflectorTestCases
     "Test with malformed utf8 \251"       => "test_with_malformed_utf8"
   }
 
-  StringToParameterizePreserceCaseWithUnderscore = {
+  StringToParameterizePreserveCaseWithUnderscore = {
     "Donald E. Knuth"                     => "Donald_E_Knuth",
     "Random text with *(bad)* characters" => "Random_text_with_bad_characters",
     "With-some-dashes"                    => "With-some-dashes",
@@ -245,6 +249,8 @@ module InflectorTestCases
   UnderscoreToHuman = {
     "employee_salary" => "Employee salary",
     "employee_id"     => "Employee",
+    "employee id"     => "Employee id",
+    "employee id etc" => "Employee id etc",
     "underground"     => "Underground",
     "_id"             => "Id",
     "_external_id"    => "External"
@@ -255,6 +261,8 @@ module InflectorTestCases
     "employee_id"                => "Employee id",
     "employee_id_something_else" => "Employee id something else",
     "underground"               => "Underground",
+    "employee id"               => "Employee id",
+    "employee id etc"           => "Employee id etc",
     "_id"                       => "Id",
     "_external_id"              => "External id"
   }
@@ -286,9 +294,13 @@ module InflectorTestCases
     "i've just seen a face" => "I've Just Seen A Face",
     "maybe you'll be there" => "Maybe You'll Be There",
     "¿por qué?"             => "¿Por Qué?",
+    "über ñoño"             => "Über Ñoño",
     "Fred’s"                => "Fred’s",
     "Fred`s"                => "Fred`s",
     "this was 'fake news'"  => "This Was 'Fake News'",
+    "new name(s)"           => "New Name(s)",
+    "new (names)"           => "New (Names)",
+    "their (mis)deeds"      => "Their (Mis)deeds",
     ActiveSupport::SafeBuffer.new("confirmation num") => "Confirmation Num"
   }
 

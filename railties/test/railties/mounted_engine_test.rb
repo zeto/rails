@@ -11,7 +11,7 @@ module ApplicationTests
     def setup
       build_app
 
-      add_to_config("config.action_dispatch.show_exceptions = false")
+      add_to_config("config.action_dispatch.show_exceptions = :none")
 
       @simple_plugin = engine "weblog"
       @plugin = engine "blog"
@@ -24,6 +24,7 @@ module ApplicationTests
           get "/engine_route" => "application_generating#engine_route"
           get "/engine_route_in_view" => "application_generating#engine_route_in_view"
           get "/weblog_engine_route" => "application_generating#weblog_engine_route"
+          get "/weblog_through_metric_engine_route" => "application_generating#weblog_through_metric_engine_route"
           get "/weblog_engine_route_in_view" => "application_generating#weblog_engine_route_in_view"
           get "/url_for_engine_route" => "application_generating#url_for_engine_route"
           get "/polymorphic_route" => "application_generating#polymorphic_route"
@@ -46,6 +47,7 @@ module ApplicationTests
       @simple_plugin.write "config/routes.rb", <<-RUBY
         Weblog::Engine.routes.draw do
           get '/weblog' => "weblogs#index", as: 'weblogs'
+          get '/generate_weblog_route' => "weblogs#generate_weblog_route", as: 'weblog_generate_weblog_route'
         end
       RUBY
 
@@ -53,6 +55,10 @@ module ApplicationTests
         class WeblogsController < ActionController::Base
           def index
             render plain: request.url
+          end
+
+          def generate_weblog_route
+            render plain: weblog.weblogs_path
           end
         end
       RUBY
@@ -118,6 +124,7 @@ module ApplicationTests
           get '/application_route_in_view', to: 'posts#application_route_in_view'
           get '/engine_polymorphic_path', to: 'posts#engine_polymorphic_path'
           get '/engine_asset_path', to: 'posts#engine_asset_path'
+          get '/file_field_with_direct_upload_path', to: 'posts#file_field_with_direct_upload_path'
         end
       RUBY
 
@@ -150,6 +157,10 @@ module ApplicationTests
             def engine_asset_path
               render inline: "<%= asset_path 'images/foo.png', skip_pipeline: true %>"
             end
+
+            def file_field_with_direct_upload_path
+              render inline: "<%= file_field_tag :image, direct_upload: true %>"
+            end
           end
         end
       RUBY
@@ -166,6 +177,13 @@ module ApplicationTests
 
           def weblog_engine_route
             render plain: weblog.weblogs_path
+          end
+
+          def weblog_through_metric_engine_route
+            # trigger definition of route helper
+            weblog.weblogs_path
+
+            render plain: metrics.respond_to?(:weblogs_path)
           end
 
           def weblog_engine_route_in_view
@@ -232,7 +250,7 @@ module ApplicationTests
       get "/someone/blog/generate_application_route"
       assert_equal "/", last_response.body
 
-      get "/somone/blog/application_route_in_view"
+      get "/someone/blog/application_route_in_view"
       assert_equal "/", last_response.body
 
       # test generating engine's route from other engine
@@ -258,8 +276,8 @@ module ApplicationTests
       assert_equal "http://example.org/anonymous/blog/posts/44", last_response.body
 
       # test that correct path is generated for the same polymorphic_path call in an engine
-      get "/somone/blog/engine_polymorphic_path"
-      assert_equal "/somone/blog/posts/44", last_response.body
+      get "/someone/blog/engine_polymorphic_path"
+      assert_equal "/someone/blog/posts/44", last_response.body
 
       # and in an application
       get "/application_polymorphic_path"
@@ -268,6 +286,18 @@ module ApplicationTests
       # test that asset path will not get script_name when generated in the engine
       get "/someone/blog/engine_asset_path"
       assert_equal "/images/foo.png", last_response.body
+
+      # test that the Active Storage direct upload URL is added to a file field that explicitly requires it within en engine's view code
+      get "/someone/blog/file_field_with_direct_upload_path"
+      assert_equal "<input type=\"file\" name=\"image\" id=\"image\" data-direct-upload-url=\"http://example.org/rails/active_storage/direct_uploads\" />", last_response.body
+
+      # test that correct path is generated in an engine mounted at root
+      get "/generate_weblog_route"
+      assert_equal "/weblog", last_response.body
+
+      # test that correct path is generated in an engine mounted at root with default_url_options
+      get "/generate_weblog_route", {}, { "SCRIPT_NAME" => "/1234" }
+      assert_equal "/1234/weblog", last_response.body
     end
 
     test "route path for controller action when engine is mounted at root" do
@@ -276,6 +306,11 @@ module ApplicationTests
 
       get "/weblog_engine_route_in_view"
       assert_equal "/weblog", last_response.body
+    end
+
+    test "route helpers from weblog are not accessible through metrics engine" do
+      get "/weblog_through_metric_engine_route"
+      assert_equal "false", last_response.body
     end
   end
 end

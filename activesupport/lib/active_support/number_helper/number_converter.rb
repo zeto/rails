@@ -1,10 +1,11 @@
 # frozen_string_literal: true
 
-require_relative "../core_ext/big_decimal/conversions"
-require_relative "../core_ext/object/blank"
-require_relative "../core_ext/hash/keys"
-require_relative "../i18n"
-require_relative "../core_ext/class/attribute"
+require "bigdecimal"
+require "bigdecimal/util"
+require "active_support/core_ext/big_decimal/conversions"
+require "active_support/core_ext/hash/keys"
+require "active_support/i18n"
+require "active_support/core_ext/class/attribute"
 
 module ActiveSupport
   module NumberHelper
@@ -30,7 +31,7 @@ module ActiveSupport
           # If set to true, precision will mean the number of significant digits instead
           # of the number of decimal digits (1234 with precision 2 becomes 1200, 1.23543 becomes 1.2)
           significant: false,
-          # If set, the zeros after the decimal separator will always be stripped (eg.: 1.200 will be 1.2)
+          # If set, the zeros after the decimal separator will always be stripped (e.g.: 1.200 will be 1.2)
           strip_insignificant_zeros: false
         },
 
@@ -122,13 +123,14 @@ module ActiveSupport
 
       def initialize(number, options)
         @number = number
-        @opts   = options.symbolize_keys
+        @opts = options.symbolize_keys
+        @options = nil
       end
 
       def execute
         if !number
           nil
-        elsif validate_float? && !valid_float?
+        elsif validate_float? && !valid_bigdecimal
           number
         else
           convert
@@ -136,7 +138,6 @@ module ActiveSupport
       end
 
       private
-
         def options
           @options ||= format_options.merge(opts)
         end
@@ -162,22 +163,27 @@ module ActiveSupport
           options
         end
 
-        def translate_number_value_with_default(key, i18n_options = {})
-          I18n.translate(key, { default: default_value(key), scope: :number }.merge!(i18n_options))
+        def translate_number_value_with_default(key, **i18n_options)
+          I18n.translate(key, default: default_value(key), scope: :number, **i18n_options)
         end
 
-        def translate_in_locale(key, i18n_options = {})
-          translate_number_value_with_default(key, { locale: options[:locale] }.merge(i18n_options))
+        def translate_in_locale(key, **i18n_options)
+          translate_number_value_with_default(key, locale: options[:locale], **i18n_options)
         end
 
         def default_value(key)
           key.split(".").reduce(DEFAULTS) { |defaults, k| defaults[k.to_sym] }
         end
 
-        def valid_float?
-          Float(number)
-        rescue ArgumentError, TypeError
-          false
+        def valid_bigdecimal
+          case number
+          when Float, Rational
+            number.to_d(0)
+          when String
+            BigDecimal(number, exception: false) unless number.to_s.match?(/[de]/i)
+          else
+            number.to_d rescue nil
+          end
         end
     end
   end

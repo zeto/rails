@@ -2,7 +2,6 @@
 
 require "abstract_unit"
 require "controller/fake_models"
-require "pathname"
 
 class RenderXmlTest < ActionController::TestCase
   class XmlRenderable
@@ -13,7 +12,7 @@ class RenderXmlTest < ActionController::TestCase
   end
 
   class TestController < ActionController::Base
-    protect_from_forgery
+    protect_from_forgery with: :null_session
 
     def self.controller_path
       "test"
@@ -75,7 +74,7 @@ class RenderXmlTest < ActionController::TestCase
       set.draw do
         resources :customers
 
-        ActiveSupport::Deprecation.silence do
+        ActionDispatch.deprecator.silence do
           get ":controller/:action"
         end
       end
@@ -92,11 +91,11 @@ class RenderXmlTest < ActionController::TestCase
 
   def test_should_render_xml_but_keep_custom_content_type
     get :render_xml_with_custom_content_type
-    assert_equal "application/atomsvc+xml", @response.content_type
+    assert_equal "application/atomsvc+xml", @response.media_type
   end
 
   def test_should_use_implicit_content_type
     get :implicit_content_type, format: "atom"
-    assert_equal Mime[:atom], @response.content_type
+    assert_equal Mime[:atom], @response.media_type
   end
 end

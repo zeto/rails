@@ -4,6 +4,8 @@ require "active_support/test_case"
 require "active_support/testing/autorun"
 require "rails/generators/rails/app/app_generator"
 require "tempfile"
+require "fileutils"
+require "env_helpers"
 
 module Rails
   module Generators
@@ -11,6 +13,8 @@ module Rails
       # Future people who read this... These tests are just to surround the
       # current behavior of the ARGVScrubber, they do not mean that the class
       # *must* act this way, I just want to prevent regressions.
+
+      include EnvHelpers
 
       def test_version
         ["-v", "--version"].each do |str|
@@ -56,6 +60,17 @@ module Rails
         assert_equal [], args
       end
 
+      def test_default_rc_file_with_xdg_config_home
+        Dir.mktmpdir do |dir|
+          rc_file = File.join(dir, "rails/railsrc")
+          FileUtils.mkdir_p(File.dirname(rc_file))
+          FileUtils.touch(rc_file)
+          switch_env("XDG_CONFIG_HOME", dir) do
+            assert_equal rc_file, ARGVScrubber.default_rc_file
+          end
+        end
+      end
+
       def test_new_homedir_rc
         file = Tempfile.new "myrcfile"
         file.puts "--hello-world"
@@ -87,6 +102,23 @@ module Rails
         }.new ["new", "--rc=#{file.path}"]
         args = scrubber.prepare!
         assert_equal ["--hello", "--world"], args
+      ensure
+        file.close
+        file.unlink
+      end
+
+      def test_rc_lines_with_comments
+        file = Tempfile.new "myrcfile"
+        file.puts "--hello # --world"
+        file.puts "--love"
+        file.puts "# --hate"
+        file.flush
+
+        scrubber = Class.new(ARGVScrubber) {
+          define_method(:puts) { |msg| }
+        }.new ["new", "--rc=#{file.path}"]
+        args = scrubber.prepare!
+        assert_equal ["--hello", "--love"], args
       ensure
         file.close
         file.unlink

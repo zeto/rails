@@ -3,10 +3,8 @@
 module ActiveRecord
   # See ActiveRecord::Aggregations::ClassMethods for documentation
   module Aggregations
-    extend ActiveSupport::Concern
-
     def initialize_dup(*) # :nodoc:
-      @aggregation_cache = {}
+      @aggregation_cache = @aggregation_cache.dup
       super
     end
 
@@ -16,16 +14,17 @@ module ActiveRecord
     end
 
     private
-
       def clear_aggregation_cache
         @aggregation_cache.clear if persisted?
       end
 
       def init_internals
-        @aggregation_cache = {}
         super
+        @aggregation_cache = {}
       end
 
+      # = Active Record \Aggregations
+      #
       # Active Record implements aggregation through a macro-like class method called #composed_of
       # for representing attributes as value objects. It expresses relationships like "Account [is]
       # composed of Money [among other things]" or "Person [is] composed of [an] address". Each call
@@ -35,8 +34,8 @@ module ActiveRecord
       # the database).
       #
       #   class Customer < ActiveRecord::Base
-      #     composed_of :balance, class_name: "Money", mapping: %w(amount currency)
-      #     composed_of :address, mapping: [ %w(address_street street), %w(address_city city) ]
+      #     composed_of :balance, class_name: "Money", mapping: { balance: :amount }
+      #     composed_of :address, mapping: { address_street: :street, address_city: :city }
       #   end
       #
       # The customer class now has the following methods to manipulate the value objects:
@@ -144,7 +143,7 @@ module ActiveRecord
       # converted to an instance of value class if necessary.
       #
       # For example, the +NetworkResource+ model has +network_address+ and +cidr_range+ attributes that should be
-      # aggregated using the +NetAddr::CIDR+ value class (http://www.rubydoc.info/gems/netaddr/1.5.0/NetAddr/CIDR).
+      # aggregated using the +NetAddr::CIDR+ value class (https://www.rubydoc.info/gems/netaddr/1.5.0/NetAddr/CIDR).
       # The constructor for the value class is called +create+ and it expects a CIDR address string as a parameter.
       # New values can be assigned to the value object using either another +NetAddr::CIDR+ object, a string
       # or an array. The <tt>:constructor</tt> and <tt>:converter</tt> options can be used to meet
@@ -153,7 +152,7 @@ module ActiveRecord
       #   class NetworkResource < ActiveRecord::Base
       #     composed_of :cidr,
       #                 class_name: 'NetAddr::CIDR',
-      #                 mapping: [ %w(network_address network), %w(cidr_range bits) ],
+      #                 mapping: { network_address: :network, cidr_range: :bits },
       #                 allow_nil: true,
       #                 constructor: Proc.new { |network_address, cidr_range| NetAddr::CIDR.create("#{network_address}/#{cidr_range}") },
       #                 converter: Proc.new { |value| NetAddr::CIDR.create(value.is_a?(Array) ? value.join('/') : value) }
@@ -177,9 +176,9 @@ module ActiveRecord
       #
       # Once a #composed_of relationship is specified for a model, records can be loaded from the database
       # by specifying an instance of the value object in the conditions hash. The following example
-      # finds all customers with +balance_amount+ equal to 20 and +balance_currency+ equal to "USD":
+      # finds all customers with +address_street+ equal to "May Street" and +address_city+ equal to "Chicago":
       #
-      #   Customer.where(balance: Money.new(20, "USD"))
+      #   Customer.where(address: Address.new("May Street", "Chicago"))
       #
       module ClassMethods
         # Adds reader and writer methods for manipulating a value object:
@@ -191,10 +190,10 @@ module ActiveRecord
         #   to the Address class, but if the real class name is +CompanyAddress+, you'll have to specify it
         #   with this option.
         # * <tt>:mapping</tt> - Specifies the mapping of entity attributes to attributes of the value
-        #   object. Each mapping is represented as an array where the first item is the name of the
-        #   entity attribute and the second item is the name of the attribute in the value object. The
+        #   object. Each mapping is represented as a key-value pair where the key is the name of the
+        #   entity attribute and the value is the name of the attribute in the value object. The
         #   order in which mappings are defined determines the order in which attributes are sent to the
-        #   value class constructor.
+        #   value class constructor. The mapping can be written as a hash or as an array of pairs.
         # * <tt>:allow_nil</tt> - Specifies that the value object will not be instantiated when all mapped
         #   attributes are +nil+. Setting the value object to +nil+ has the effect of writing +nil+ to all
         #   mapped attributes.
@@ -211,20 +210,24 @@ module ActiveRecord
         #   can return +nil+ to skip the assignment.
         #
         # Option examples:
-        #   composed_of :temperature, mapping: %w(reading celsius)
-        #   composed_of :balance, class_name: "Money", mapping: %w(balance amount),
-        #                         converter: Proc.new { |balance| balance.to_money }
+        #   composed_of :temperature, mapping: { reading: :celsius }
+        #   composed_of :balance, class_name: "Money", mapping: { balance: :amount }
+        #   composed_of :address, mapping: { address_street: :street, address_city: :city }
         #   composed_of :address, mapping: [ %w(address_street street), %w(address_city city) ]
         #   composed_of :gps_location
         #   composed_of :gps_location, allow_nil: true
         #   composed_of :ip_address,
         #               class_name: 'IPAddr',
-        #               mapping: %w(ip to_i),
+        #               mapping: { ip: :to_i },
         #               constructor: Proc.new { |ip| IPAddr.new(ip, Socket::AF_INET) },
         #               converter: Proc.new { |ip| ip.is_a?(Integer) ? IPAddr.new(ip, Socket::AF_INET) : IPAddr.new(ip.to_s) }
         #
         def composed_of(part_id, options = {})
           options.assert_valid_keys(:class_name, :mapping, :allow_nil, :constructor, :converter)
+
+          unless self < Aggregations
+            include Aggregations
+          end
 
           name        = part_id.id2name
           class_name  = options[:class_name]  || name.camelize
@@ -244,12 +247,12 @@ module ActiveRecord
         private
           def reader_method(name, class_name, mapping, allow_nil, constructor)
             define_method(name) do
-              if @aggregation_cache[name].nil? && (!allow_nil || mapping.any? { |key, _| !_read_attribute(key).nil? })
-                attrs = mapping.collect { |key, _| _read_attribute(key) }
+              if @aggregation_cache[name].nil? && (!allow_nil || mapping.any? { |key, _| !read_attribute(key).nil? })
+                attrs = mapping.collect { |key, _| read_attribute(key) }
                 object = constructor.respond_to?(:call) ?
                   constructor.call(*attrs) :
                   class_name.constantize.send(constructor, *attrs)
-                @aggregation_cache[name] = object
+                @aggregation_cache[name] = object.freeze
               end
               @aggregation_cache[name]
             end
@@ -264,18 +267,18 @@ module ActiveRecord
               end
 
               hash_from_multiparameter_assignment = part.is_a?(Hash) &&
-                part.each_key.all? { |k| k.is_a?(Integer) }
+                part.keys.all?(Integer)
               if hash_from_multiparameter_assignment
                 raise ArgumentError unless part.size == part.each_key.max
                 part = klass.new(*part.sort.map(&:last))
               end
 
               if part.nil? && allow_nil
-                mapping.each { |key, _| self[key] = nil }
+                mapping.each { |key, _| write_attribute(key, nil) }
                 @aggregation_cache[name] = nil
               else
-                mapping.each { |key, value| self[key] = part.send(value) }
-                @aggregation_cache[name] = part.freeze
+                mapping.each { |key, value| write_attribute(key, part.send(value)) }
+                @aggregation_cache[name] = part.dup.freeze
               end
             end
           end

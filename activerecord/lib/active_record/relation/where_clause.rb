@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "active_support/core_ext/array/extract"
+
 module ActiveRecord
   class Relation
     class WhereClause # :nodoc:
@@ -10,21 +12,21 @@ module ActiveRecord
       end
 
       def +(other)
-        WhereClause.new(
-          predicates + other.predicates,
-        )
+        WhereClause.new(predicates + other.predicates)
       end
 
       def -(other)
-        WhereClause.new(
-          predicates - other.predicates,
-        )
+        WhereClause.new(predicates - other.predicates)
+      end
+
+      def |(other)
+        WhereClause.new(predicates | other.predicates)
       end
 
       def merge(other)
-        WhereClause.new(
-          predicates_unreferenced_by(other) + other.predicates,
-        )
+        predicates = except_predicates(other.extract_attributes)
+
+        WhereClause.new(predicates | other.predicates)
       end
 
       def except(*columns)
@@ -39,93 +41,151 @@ module ActiveRecord
         if left.empty? || right.empty?
           common
         else
-          or_clause = WhereClause.new(
-            [left.ast.or(right.ast)],
-          )
-          common + or_clause
+          left = left.ast
+          left = left.expr if left.is_a?(Arel::Nodes::Grouping)
+
+          right = right.ast
+          right = right.expr if right.is_a?(Arel::Nodes::Grouping)
+
+          or_clause = if left.is_a?(Arel::Nodes::Or)
+            Arel::Nodes::Or.new(left.children + [right])
+          else
+            Arel::Nodes::Or.new([left, right])
+          end
+
+          common.predicates << Arel::Nodes::Grouping.new(or_clause)
+          common
         end
       end
 
-      def to_h(table_name = nil)
-        equalities = predicates.grep(Arel::Nodes::Equality)
-        if table_name
-          equalities = equalities.select do |node|
-            node.left.relation.name == table_name
-          end
-        end
-
-        equalities.map { |node|
+      def to_h(table_name = nil, equality_only: false)
+        equalities(predicates, equality_only).each_with_object({}) do |node, hash|
+          next if table_name&.!= node.left.relation.name
           name = node.left.name.to_s
           value = extract_node_value(node.right)
-          [name, value]
-        }.to_h
+          hash[name] = value
+        end
       end
 
       def ast
-        Arel::Nodes::And.new(predicates_with_wrapped_sql_literals)
+        predicates = predicates_with_wrapped_sql_literals
+        predicates.one? ? predicates.first : Arel::Nodes::And.new(predicates)
       end
 
       def ==(other)
         other.is_a?(WhereClause) &&
           predicates == other.predicates
       end
+      alias :eql? :==
+
+      def hash
+        [self.class, predicates].hash
+      end
 
       def invert
+        if predicates.size == 1
+          inverted_predicates = [ invert_predicate(predicates.first) ]
+        else
+          inverted_predicates = [ Arel::Nodes::Not.new(ast) ]
+        end
+
         WhereClause.new(inverted_predicates)
       end
 
       def self.empty
-        @empty ||= new([])
+        @empty ||= new([]).freeze
+      end
+
+      def contradiction?
+        predicates.any? do |x|
+          case x
+          when Arel::Nodes::In
+            Array === x.right && x.right.empty?
+          when Arel::Nodes::Equality
+            x.right.respond_to?(:unboundable?) && x.right.unboundable?
+          end
+        end
+      end
+
+      def extract_attributes
+        attrs = []
+        each_attributes { |attr, _| attrs << attr }
+        attrs
       end
 
       protected
-
         attr_reader :predicates
 
         def referenced_columns
-          @referenced_columns ||= begin
-            equality_nodes = predicates.select { |n| equality_node?(n) }
-            Set.new(equality_nodes, &:left)
-          end
+          hash = {}
+          each_attributes { |attr, node| hash[attr] = node }
+          hash
         end
 
       private
+        def each_attributes
+          predicates.each do |node|
+            attr = extract_attribute(node) || begin
+              node.left if equality_node?(node) && node.left.is_a?(Arel::Predications)
+            end
 
-        def predicates_unreferenced_by(other)
-          predicates.reject do |n|
-            equality_node?(n) && other.referenced_columns.include?(n.left)
+            yield attr, node if attr
           end
         end
 
-        def equality_node?(node)
-          node.respond_to?(:operator) && node.operator == :==
+        def extract_attribute(node)
+          attr_node = nil
+
+          valid_attrs = Arel.fetch_attribute(node) do |attr|
+            !attr_node || attr_node == attr # all attr nodes should be the same
+          ensure
+            attr_node = attr
+          end
+          return unless valid_attrs # all nested nodes should yield an attribute
+
+          attr_node
         end
 
-        def inverted_predicates
-          predicates.map { |node| invert_predicate(node) }
+        def equalities(predicates, equality_only)
+          equalities = []
+
+          predicates.each do |node|
+            if equality_only ? Arel::Nodes::Equality === node : equality_node?(node)
+              equalities << node
+            elsif node.is_a?(Arel::Nodes::And)
+              equalities.concat equalities(node.children, equality_only)
+            end
+          end
+
+          equalities
+        end
+
+        def equality_node?(node)
+          !node.is_a?(String) && node.equality?
         end
 
         def invert_predicate(node)
           case node
           when NilClass
             raise ArgumentError, "Invalid argument for .where.not(), got nil."
-          when Arel::Nodes::In
-            Arel::Nodes::NotIn.new(node.left, node.right)
-          when Arel::Nodes::Equality
-            Arel::Nodes::NotEqual.new(node.left, node.right)
           when String
             Arel::Nodes::Not.new(Arel::Nodes::SqlLiteral.new(node))
           else
-            Arel::Nodes::Not.new(node)
+            node.invert
           end
         end
 
         def except_predicates(columns)
-          self.predicates.reject do |node|
-            case node
-            when Arel::Nodes::Between, Arel::Nodes::In, Arel::Nodes::NotIn, Arel::Nodes::Equality, Arel::Nodes::NotEqual, Arel::Nodes::LessThan, Arel::Nodes::LessThanOrEqual, Arel::Nodes::GreaterThan, Arel::Nodes::GreaterThanOrEqual
-              subrelation = (node.left.kind_of?(Arel::Attributes::Attribute) ? node.left : node.right)
-              columns.include?(subrelation.name.to_s)
+          return predicates if columns.empty?
+
+          attrs = columns.extract! { |node| node.is_a?(Arel::Attribute) }
+          non_attrs = columns.extract! { |node| node.is_a?(Arel::Predications) }
+
+          predicates.reject do |node|
+            if !non_attrs.empty? && equality_node?(node) && node.left.is_a?(Arel::Predications)
+              non_attrs.include?(node.left)
+            end || Arel.fetch_attribute(node) do |attr|
+              attrs.include?(attr) || columns.include?(attr.name.to_s)
             end
           end
         end
@@ -134,7 +194,7 @@ module ActiveRecord
           non_empty_predicates.map do |node|
             case node
             when Arel::Nodes::SqlLiteral, ::String
-              wrap_sql_literal(node)
+              Arel::Nodes::Grouping.new(node)
             else node
             end
           end
@@ -145,26 +205,11 @@ module ActiveRecord
           predicates - ARRAY_WITH_EMPTY_STRING
         end
 
-        def wrap_sql_literal(node)
-          if ::String === node
-            node = Arel.sql(node)
-          end
-          Arel::Nodes::Grouping.new(node)
-        end
-
         def extract_node_value(node)
-          case node
-          when Array
+          if node.respond_to?(:value_before_type_cast)
+            node.value_before_type_cast
+          elsif Array === node
             node.map { |v| extract_node_value(v) }
-          when Arel::Nodes::Casted, Arel::Nodes::Quoted
-            node.val
-          when Arel::Nodes::BindParam
-            value = node.value
-            if value.respond_to?(:value_before_type_cast)
-              value.value_before_type_cast
-            else
-              value
-            end
           end
         end
     end

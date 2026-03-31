@@ -1,17 +1,21 @@
 # frozen_string_literal: true
 
+# :markup: markdown
+
 module ActionDispatch
+  # # Action Dispatch DebugLocks
+  #
   # This middleware can be used to diagnose deadlocks in the autoload interlock.
   #
   # To use it, insert it near the top of the middleware stack, using
-  # <tt>config/application.rb</tt>:
+  # `config/application.rb`:
   #
-  #     config.middleware.insert_before Rack::Sendfile, ActionDispatch::DebugLocks
+  #     config.middleware.insert_before ActionDispatch::Executor, ActionDispatch::DebugLocks
   #
-  # After restarting the application and re-triggering the deadlock condition,
-  # <tt>/rails/locks</tt> will show a summary of all threads currently known to
-  # the interlock, which lock level they are holding or awaiting, and their
-  # current backtrace.
+  # After restarting the application and re-triggering the deadlock condition, the
+  # route `/rails/locks` will show a summary of all threads currently known to the
+  # interlock, which lock level they are holding or awaiting, and their current
+  # backtrace.
   #
   # Generally a deadlock will be caused by the interlock conflicting with some
   # other external lock or blocking I/O call. These cannot be automatically
@@ -32,7 +36,7 @@ module ActionDispatch
       req = ActionDispatch::Request.new env
 
       if req.get?
-        path = req.path_info.chomp("/".freeze)
+        path = req.path_info.chomp("/")
         if path == @path
           return render_details(req)
         end
@@ -44,14 +48,14 @@ module ActionDispatch
     private
       def render_details(req)
         threads = ActiveSupport::Dependencies.interlock.raw_state do |raw_threads|
-          # The Interlock itself comes to a complete halt as long as this block
-          # is executing. That gives us a more consistent picture of everything,
-          # but creates a pretty strong Observer Effect.
+          # The Interlock itself comes to a complete halt as long as this block is
+          # executing. That gives us a more consistent picture of everything, but creates
+          # a pretty strong Observer Effect.
           #
-          # Most directly, that means we need to do as little as possible in
-          # this block. More widely, it means this middleware should remain a
-          # strictly diagnostic tool (to be used when something has gone wrong),
-          # and not for any sort of general monitoring.
+          # Most directly, that means we need to do as little as possible in this block.
+          # More widely, it means this middleware should remain a strictly diagnostic tool
+          # (to be used when something has gone wrong), and not for any sort of general
+          # monitoring.
 
           raw_threads.each.with_index do |(thread, info), idx|
             info[:index] = idx
@@ -63,19 +67,19 @@ module ActionDispatch
 
         str = threads.map do |thread, info|
           if info[:exclusive]
-            lock_state = "Exclusive".dup
+            lock_state = +"Exclusive"
           elsif info[:sharing] > 0
-            lock_state = "Sharing".dup
+            lock_state = +"Sharing"
             lock_state << " x#{info[:sharing]}" if info[:sharing] > 1
           else
-            lock_state = "No lock".dup
+            lock_state = +"No lock"
           end
 
           if info[:waiting]
             lock_state << " (yielded share)"
           end
 
-          msg = "Thread #{info[:index]} [0x#{thread.__id__.to_s(16)} #{thread.status || 'dead'}]  #{lock_state}\n".dup
+          msg = +"Thread #{info[:index]} [0x#{thread.__id__.to_s(16)} #{thread.status || 'dead'}]  #{lock_state}\n"
 
           if info[:sleeper]
             msg << "  Waiting in #{info[:sleeper]}"
@@ -97,7 +101,8 @@ module ActionDispatch
           msg << "\n#{info[:backtrace].join("\n")}\n" if info[:backtrace]
         end.join("\n\n---\n\n\n")
 
-        [200, { "Content-Type" => "text/plain", "Content-Length" => str.size }, [str]]
+        [200, { Rack::CONTENT_TYPE => "text/plain; charset=#{ActionDispatch::Response.default_charset}",
+                Rack::CONTENT_LENGTH => str.size.to_s }, [str]]
       end
 
       def blocked_by?(victim, blocker, all_threads)

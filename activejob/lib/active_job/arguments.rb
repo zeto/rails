@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "bigdecimal"
 require "active_support/core_ext/hash"
 
 module ActiveJob
@@ -7,36 +8,77 @@ module ActiveJob
   #
   # Wraps the original exception raised as +cause+.
   class DeserializationError < StandardError
-    def initialize #:nodoc:
+    def initialize # :nodoc:
       super("Error while trying to deserialize arguments: #{$!.message}")
       set_backtrace $!.backtrace
     end
   end
 
   # Raised when an unsupported argument type is set as a job argument. We
-  # currently support NilClass, Integer, Fixnum, Float, String, TrueClass, FalseClass,
-  # Bignum, BigDecimal, and objects that can be represented as GlobalIDs (ex: Active Record).
+  # currently support String, Integer, Float, NilClass, TrueClass, FalseClass,
+  # BigDecimal, Symbol, Date, Time, DateTime, ActiveSupport::TimeWithZone,
+  # ActiveSupport::Duration, Hash, ActiveSupport::HashWithIndifferentAccess,
+  # Array, Range, or GlobalID::Identification instances, although this can be
+  # extended by adding custom serializers.
   # Raised if you set the key for a Hash something else than a string or
   # a symbol. Also raised when trying to serialize an object which can't be
-  # identified with a Global ID - such as an unpersisted Active Record model.
+  # identified with a GlobalID - such as an unpersisted Active Record model.
   class SerializationError < ArgumentError; end
 
   module Arguments
     extend self
-    # :nodoc:
-    TYPE_WHITELIST = [ NilClass, String, Integer, Float, BigDecimal, TrueClass, FalseClass ]
-    TYPE_WHITELIST.push(Fixnum, Bignum) unless 1.class == Integer
-
-    # Serializes a set of arguments. Whitelisted types are returned
-    # as-is. Arrays/Hashes are serialized element by element.
-    # All other types are serialized using GlobalID.
+    # Serializes a set of arguments. Intrinsic types that can safely be
+    # serialized without mutation are returned as-is. Arrays/Hashes are
+    # serialized element by element. All other types are serialized using
+    # GlobalID.
     def serialize(arguments)
       arguments.map { |argument| serialize_argument(argument) }
     end
 
-    # Deserializes a set of arguments. Whitelisted types are returned
-    # as-is. Arrays/Hashes are deserialized element by element.
-    # All other types are deserialized using GlobalID.
+    def serialize_argument(argument) # :nodoc:
+      case argument
+      when nil, true, false, Integer, Float # Types that can hardly be subclassed
+        argument
+      when String
+        if argument.class == String
+          argument
+        else
+          begin
+            Serializers.serialize(argument)
+          rescue SerializationError
+            argument
+          end
+        end
+      when Symbol
+        { Serializers::OBJECT_SERIALIZER_KEY => "ActiveJob::Serializers::SymbolSerializer", "value" => argument.name }
+      when GlobalID::Identification
+        convert_to_global_id_hash(argument)
+      when Array
+        argument.map { |arg| serialize_argument(arg) }
+      when ActiveSupport::HashWithIndifferentAccess
+        serialize_indifferent_hash(argument)
+      when Hash
+        symbol_keys = argument.keys
+        symbol_keys.select! { |k| k.is_a?(Symbol) }
+        symbol_keys.map!(&:name)
+
+        aj_hash_key = if Hash.ruby2_keywords_hash?(argument)
+          RUBY2_KEYWORDS_KEY
+        else
+          SYMBOL_KEYS_KEY
+        end
+        result = serialize_hash(argument)
+        result[aj_hash_key] = symbol_keys
+        result
+      else
+        Serializers.serialize(argument)
+      end
+    end
+
+    # Deserializes a set of arguments. Intrinsic types that can safely be
+    # deserialized without mutation are returned as-is. Arrays/Hashes are
+    # deserialized element by element. All other types are deserialized using
+    # GlobalID.
     def deserialize(arguments)
       arguments.map { |argument| deserialize_argument(argument) }
     rescue
@@ -45,46 +87,36 @@ module ActiveJob
 
     private
       # :nodoc:
-      GLOBALID_KEY = "_aj_globalid".freeze
+      GLOBALID_KEY = "_aj_globalid"
       # :nodoc:
-      SYMBOL_KEYS_KEY = "_aj_symbol_keys".freeze
+      SYMBOL_KEYS_KEY = "_aj_symbol_keys"
       # :nodoc:
-      WITH_INDIFFERENT_ACCESS_KEY = "_aj_hash_with_indifferent_access".freeze
-      private_constant :GLOBALID_KEY, :SYMBOL_KEYS_KEY, :WITH_INDIFFERENT_ACCESS_KEY
+      RUBY2_KEYWORDS_KEY = "_aj_ruby2_keywords"
+      # :nodoc:
+      WITH_INDIFFERENT_ACCESS_KEY = "_aj_hash_with_indifferent_access"
 
-      def serialize_argument(argument)
-        case argument
-        when *TYPE_WHITELIST
-          argument
-        when GlobalID::Identification
-          convert_to_global_id_hash(argument)
-        when Array
-          argument.map { |arg| serialize_argument(arg) }
-        when ActiveSupport::HashWithIndifferentAccess
-          result = serialize_hash(argument)
-          result[WITH_INDIFFERENT_ACCESS_KEY] = serialize_argument(true)
-          result
-        when Hash
-          symbol_keys = argument.each_key.grep(Symbol).map(&:to_s)
-          result = serialize_hash(argument)
-          result[SYMBOL_KEYS_KEY] = symbol_keys
-          result
-        else
-          raise SerializationError.new("Unsupported argument type: #{argument.class.name}")
-        end
-      end
+      # :nodoc:
+      RESERVED_KEYS = [
+        GLOBALID_KEY, GLOBALID_KEY.to_sym,
+        SYMBOL_KEYS_KEY, SYMBOL_KEYS_KEY.to_sym,
+        RUBY2_KEYWORDS_KEY, RUBY2_KEYWORDS_KEY.to_sym,
+        Serializers::OBJECT_SERIALIZER_KEY, Serializers::OBJECT_SERIALIZER_KEY.to_sym,
+        WITH_INDIFFERENT_ACCESS_KEY, WITH_INDIFFERENT_ACCESS_KEY.to_sym,
+      ].to_set
+      private_constant :RESERVED_KEYS, :GLOBALID_KEY,
+        :SYMBOL_KEYS_KEY, :RUBY2_KEYWORDS_KEY, :WITH_INDIFFERENT_ACCESS_KEY
 
       def deserialize_argument(argument)
         case argument
-        when String
-          GlobalID::Locator.locate(argument) || argument
-        when *TYPE_WHITELIST
+        when nil, true, false, String, Integer, Float
           argument
         when Array
           argument.map { |arg| deserialize_argument(arg) }
         when Hash
           if serialized_global_id?(argument)
             deserialize_global_id argument
+          elsif custom_serialized?(argument)
+            Serializers.deserialize(argument)
           else
             deserialize_hash(argument)
           end
@@ -101,6 +133,10 @@ module ActiveJob
         GlobalID::Locator.locate hash[GLOBALID_KEY]
       end
 
+      def custom_serialized?(hash)
+        hash.key?(Serializers::OBJECT_SERIALIZER_KEY)
+      end
+
       def serialize_hash(argument)
         argument.each_with_object({}) do |(key, value), hash|
           hash[serialize_hash_key(key)] = serialize_argument(value)
@@ -113,31 +149,37 @@ module ActiveJob
           result = result.with_indifferent_access
         elsif symbol_keys = result.delete(SYMBOL_KEYS_KEY)
           result = transform_symbol_keys(result, symbol_keys)
+        elsif symbol_keys = result.delete(RUBY2_KEYWORDS_KEY)
+          result = transform_symbol_keys(result, symbol_keys)
+          result = Hash.ruby2_keywords_hash(result)
         end
         result
       end
 
-      # :nodoc:
-      RESERVED_KEYS = [
-        GLOBALID_KEY, GLOBALID_KEY.to_sym,
-        SYMBOL_KEYS_KEY, SYMBOL_KEYS_KEY.to_sym,
-        WITH_INDIFFERENT_ACCESS_KEY, WITH_INDIFFERENT_ACCESS_KEY.to_sym,
-      ]
-      private_constant :RESERVED_KEYS
-
       def serialize_hash_key(key)
         case key
-        when *RESERVED_KEYS
+        when RESERVED_KEYS
           raise SerializationError.new("Can't serialize a Hash with reserved key #{key.inspect}")
-        when String, Symbol
-          key.to_s
+        when String
+          key
+        when Symbol
+          key.name
         else
           raise SerializationError.new("Only string and symbol hash keys may be serialized as job arguments, but #{key.inspect} is a #{key.class}")
         end
       end
 
+      def serialize_indifferent_hash(indifferent_hash)
+        result = serialize_hash(indifferent_hash)
+        result[WITH_INDIFFERENT_ACCESS_KEY] = true
+        result
+      end
+
       def transform_symbol_keys(hash, symbol_keys)
-        hash.transform_keys do |key|
+        # NOTE: HashWithIndifferentAccess#transform_keys always
+        # returns stringified keys with indifferent access
+        # so we call #to_h here to ensure keys are symbolized.
+        hash.to_h.transform_keys do |key|
           if symbol_keys.include?(key)
             key.to_sym
           else
@@ -153,4 +195,6 @@ module ActiveJob
           "without an id. (Maybe you forgot to call save?)"
       end
   end
+
+  ActiveSupport.run_load_hooks(:active_job_arguments, Arguments)
 end

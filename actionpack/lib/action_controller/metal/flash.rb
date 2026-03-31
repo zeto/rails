@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
-module ActionController #:nodoc:
+# :markup: markdown
+
+module ActionController # :nodoc:
   module Flash
     extend ActiveSupport::Concern
 
@@ -13,19 +15,19 @@ module ActionController #:nodoc:
 
     module ClassMethods
       # Creates new flash types. You can pass as many types as you want to create
-      # flash types other than the default <tt>alert</tt> and <tt>notice</tt> in
-      # your controllers and views. For instance:
+      # flash types other than the default `alert` and `notice` in your controllers
+      # and views. For instance:
       #
-      #   # in application_controller.rb
-      #   class ApplicationController < ActionController::Base
-      #     add_flash_types :warning
-      #   end
+      #     # in application_controller.rb
+      #     class ApplicationController < ActionController::Base
+      #       add_flash_types :warning
+      #     end
       #
-      #   # in your controller
-      #   redirect_to user_path(@user), warning: "Incomplete profile"
+      #     # in your controller
+      #     redirect_to user_path(@user), warning: "Incomplete profile"
       #
-      #   # in your view
-      #   <%= warning %>
+      #     # in your view
+      #     <%= warning %>
       #
       # This method will automatically define a new method for each of the given
       # names, and it will be available in your views.
@@ -36,7 +38,8 @@ module ActionController #:nodoc:
           define_method(type) do
             request.flash[type]
           end
-          helper_method type
+          private type
+          helper_method(type) if respond_to?(:helper_method)
 
           self._flash_types += [type]
         end
@@ -44,18 +47,18 @@ module ActionController #:nodoc:
     end
 
     private
-      def redirect_to(options = {}, response_status_and_flash = {}) #:doc:
+      def redirect_to(options = {}, response_options_and_flash = {}) # :doc:
         self.class._flash_types.each do |flash_type|
-          if type = response_status_and_flash.delete(flash_type)
+          if type = response_options_and_flash.delete(flash_type)
             flash[flash_type] = type
           end
         end
 
-        if other_flashes = response_status_and_flash.delete(:flash)
+        if other_flashes = response_options_and_flash.delete(:flash)
           flash.update(other_flashes)
         end
 
-        super(options, response_status_and_flash)
+        super(options, response_options_and_flash)
       end
   end
 end

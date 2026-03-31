@@ -7,15 +7,23 @@ end
 class Company < AbstractCompany
   self.sequence_name = :companies_nonstd_seq
 
+  enum :status, [:active, :suspended]
+
   validates_presence_of :name
 
+  has_one :account, foreign_key: "firm_id"
   has_one :dummy_account, foreign_key: "firm_id", class_name: "Account"
   has_many :contracts
   has_many :developers, through: :contracts
+  has_many :special_contracts, -> { includes(:special_developer).where.not("developers.id": nil) }
+  has_many :special_developers, through: :special_contracts
+  has_many :comments, foreign_key: "company"
+
+  alias_attribute :new_name, :name
+  attribute :metadata, :json
 
   scope :of_first_firm, lambda {
-    joins(account: :firm).
-    where("firms.id" => 1)
+    joins(account: :firm).where("companies.id": 1)
   }
 
   def arbitrary_method
@@ -23,7 +31,6 @@ class Company < AbstractCompany
   end
 
   private
-
     def private_method
       "I am Jack's innermost fears and aspirations"
     end
@@ -51,7 +58,7 @@ class Firm < Company
   has_many :unsorted_clients, class_name: "Client"
   has_many :unsorted_clients_with_symbol, class_name: :Client
   has_many :clients_sorted_desc, -> { order "id DESC" }, class_name: "Client"
-  has_many :clients_of_firm, -> { order "id" }, foreign_key: "client_of", class_name: "Client", inverse_of: :firm
+  has_many :clients_of_firm, -> { order "id" }, class_name: "Client", inverse_of: :firm
   has_many :clients_ordered_by_name, -> { order "name" }, class_name: "Client"
   has_many :unvalidated_clients_of_firm, foreign_key: "client_of", class_name: "Client", validate: false
   has_many :dependent_clients_of_firm, -> { order "id" }, foreign_key: "client_of", class_name: "Client", dependent: :destroy
@@ -79,6 +86,8 @@ class Firm < Company
   has_one :account_with_inexistent_foreign_key, class_name: "Account", foreign_key: "inexistent"
   has_one :deletable_account, foreign_key: "firm_id", class_name: "Account", dependent: :delete
 
+  has_one :client, foreign_key: "client_of"
+
   has_one :account_limit_500_with_hash_conditions, -> { where credit_limit: 500 }, foreign_key: "firm_id", class_name: "Account"
 
   has_one :unautosaved_account, foreign_key: "firm_id", class_name: "Account", autosave: false
@@ -86,6 +95,8 @@ class Firm < Company
   has_many :unautosaved_accounts, foreign_key: "firm_id", class_name: "Account", autosave: false
 
   has_many :association_with_references, -> { references(:foo) }, class_name: "Client"
+
+  has_many :developers_with_select, -> { select("id, name, first_name") }, class_name: "Developer"
 
   has_one :lead_developer, class_name: "Developer"
   has_many :projects
@@ -105,7 +116,7 @@ class Firm < Company
 end
 
 class DependentFirm < Company
-  has_one :account, foreign_key: "firm_id", dependent: :nullify
+  has_one :account, -> { order(:id) }, foreign_key: "firm_id", dependent: :nullify
   has_many :companies, foreign_key: "client_of", dependent: :nullify
   has_one :company, foreign_key: "client_of", dependent: :nullify
 end
@@ -120,8 +131,14 @@ class RestrictedWithErrorFirm < Company
   has_many :companies, -> { order("id") }, foreign_key: "client_of", dependent: :restrict_with_error
 end
 
+class Agency < Firm
+  has_many :projects, foreign_key: :firm_id
+
+  accepts_nested_attributes_for :projects
+end
+
 class Client < Company
-  belongs_to :firm, foreign_key: "client_of"
+  belongs_to :firm, foreign_key: "client_of", inverse_of: :client
   belongs_to :firm_with_basic_id, class_name: "Firm", foreign_key: "firm_id"
   belongs_to :firm_with_select, -> { select("id") }, class_name: "Firm", foreign_key: "firm_id"
   belongs_to :firm_with_other_name, class_name: "Firm", foreign_key: "client_of"
@@ -141,6 +158,21 @@ class Client < Company
   attr_accessor :raise_on_save
   before_save do
     raise RaisedOnSave if raise_on_save
+  end
+
+  attr_accessor :throw_on_save
+  before_save do
+    throw :abort if throw_on_save
+  end
+
+  attr_accessor :rollback_on_save
+  after_save do
+    raise ActiveRecord::Rollback if rollback_on_save
+  end
+
+  attr_accessor :rollback_on_create_called
+  after_rollback(on: :create) do |client|
+    client.rollback_on_create_called = true
   end
 
   class RaisedOnDestroy < RuntimeError; end
@@ -181,10 +213,28 @@ class ExclusivelyDependentFirm < Company
   has_many :dependent_conditional_clients_of_firm, -> { order("id").where("name = ?", "BigShot Inc.") }, foreign_key: "client_of", class_name: "Client", dependent: :delete_all
 end
 
+class LargeClient < Client
+  attribute :extra_size, :integer
+
+  after_initialize :set_extra_size
+
+  def set_extra_size
+    self[:extra_size] = 50
+  end
+end
+
 class SpecialClient < Client
 end
 
 class VerySpecialClient < SpecialClient
+end
+
+class NewlyContractedCompany < Company
+  has_many :new_contracts, foreign_key: "company_id"
+
+  before_save do
+    self.new_contracts << NewContract.new
+  end
 end
 
 require "models/account"

@@ -1,9 +1,9 @@
 # frozen_string_literal: true
 
 module ActiveRecord
-  class AssociationRelation < Relation
-    def initialize(klass, table, predicate_builder, association)
-      super(klass, table, predicate_builder)
+  class AssociationRelation < Relation # :nodoc:
+    def initialize(klass, association, **)
+      super(klass)
       @association = association
     end
 
@@ -15,25 +15,36 @@ module ActiveRecord
       other == records
     end
 
-    def build(*args, &block)
-      scoping { @association.build(*args, &block) }
-    end
-    alias new build
+    %w(insert insert_all insert! insert_all! upsert upsert_all).each do |method|
+      class_eval <<~RUBY, __FILE__, __LINE__ + 1
+        def #{method}(...)
+          if @association.reflection.through_reflection?
+            raise ArgumentError, "Bulk insert or upsert is currently not supported for has_many through association"
+          end
 
-    def create(*args, &block)
-      scoping { @association.create(*args, &block) }
-    end
-
-    def create!(*args, &block)
-      scoping { @association.create!(*args, &block) }
+          super
+        end
+      RUBY
     end
 
     private
+      def _new(attributes, &block)
+        @association.build(attributes, &block)
+      end
+
+      def _create(attributes, &block)
+        @association.create(attributes, &block)
+      end
+
+      def _create!(attributes, &block)
+        @association.create!(attributes, &block)
+      end
 
       def exec_queries
-        super do |r|
-          @association.set_inverse_instance r
-          yield r if block_given?
+        super do |record|
+          @association.set_inverse_instance_from_queries(record)
+          @association.set_strict_loading(record)
+          yield record if block_given?
         end
       end
   end

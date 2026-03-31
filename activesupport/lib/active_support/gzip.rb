@@ -4,6 +4,8 @@ require "zlib"
 require "stringio"
 
 module ActiveSupport
+  # = Active Support \Gzip
+  #
   # A convenient wrapper for the zlib standard library that allows
   # compression/decompression of strings with gzip.
   #
@@ -30,6 +32,7 @@ module ActiveSupport
     def self.compress(source, level = Zlib::DEFAULT_COMPRESSION, strategy = Zlib::DEFAULT_STRATEGY)
       output = Stream.new
       gz = Zlib::GzipWriter.new(output, level, strategy)
+      gz.mtime = 0
       gz.write(source)
       gz.close
       output.string

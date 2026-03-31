@@ -1,43 +1,84 @@
 # frozen_string_literal: true
 
 Rails.application.routes.draw do
-  get "/rails/active_storage/blobs/:signed_id/*filename" => "active_storage/blobs#show", as: :rails_service_blob, internal: true
+  scope ActiveStorage.routes_prefix do
+    get "/blobs/redirect/:signed_id/*filename" => "active_storage/blobs/redirect#show", as: :rails_service_blob
+    get "/blobs/proxy/:signed_id/*filename" => "active_storage/blobs/proxy#show", as: :rails_service_blob_proxy
+    get "/blobs/:signed_id/*filename" => "active_storage/blobs/redirect#show"
 
-  direct :rails_blob do |blob|
-    route_for(:rails_service_blob, blob.signed_id, blob.filename)
+    get "/representations/redirect/:signed_blob_id/:variation_key/*filename" => "active_storage/representations/redirect#show", as: :rails_blob_representation
+    get "/representations/proxy/:signed_blob_id/:variation_key/*filename" => "active_storage/representations/proxy#show", as: :rails_blob_representation_proxy
+    get "/representations/:signed_blob_id/:variation_key/*filename" => "active_storage/representations/redirect#show"
+
+    get  "/disk/:encoded_key/*filename" => "active_storage/disk#show", as: :rails_disk_service
+    put  "/disk/:encoded_token" => "active_storage/disk#update", as: :update_rails_disk_service
+    post "/direct_uploads" => "active_storage/direct_uploads#create", as: :rails_direct_uploads
   end
 
-  resolve("ActiveStorage::Blob")       { |blob| route_for(:rails_blob, blob) }
-  resolve("ActiveStorage::Attachment") { |attachment| route_for(:rails_blob, attachment.blob) }
-
-
-  get "/rails/active_storage/variants/:signed_blob_id/:variation_key/*filename" => "active_storage/variants#show", as: :rails_blob_variation, internal: true
-
-  direct :rails_variant do |variant|
-    signed_blob_id = variant.blob.signed_id
-    variation_key  = variant.variation.key
-    filename       = variant.blob.filename
-
-    route_for(:rails_blob_variation, signed_blob_id, variation_key, filename)
+  direct :rails_representation do |representation, options|
+    route_for(ActiveStorage.resolve_model_to_route, representation, options)
   end
 
-  resolve("ActiveStorage::Variant") { |variant| route_for(:rails_variant, variant) }
+  resolve("ActiveStorage::Variant") { |variant, options| route_for(ActiveStorage.resolve_model_to_route, variant, options) }
+  resolve("ActiveStorage::VariantWithRecord") { |variant, options| route_for(ActiveStorage.resolve_model_to_route, variant, options) }
+  resolve("ActiveStorage::Preview") { |preview, options| route_for(ActiveStorage.resolve_model_to_route, preview, options) }
 
-
-  get "/rails/active_storage/previews/:signed_blob_id/:variation_key/*filename" => "active_storage/previews#show", as: :rails_blob_preview, internal: true
-
-  direct :rails_preview do |preview|
-    signed_blob_id = preview.blob.signed_id
-    variation_key  = preview.variation.key
-    filename       = preview.blob.filename
-
-    route_for(:rails_blob_preview, signed_blob_id, variation_key, filename)
+  direct :rails_blob do |blob, options|
+    route_for(ActiveStorage.resolve_model_to_route, blob, options)
   end
 
-  resolve("ActiveStorage::Preview") { |preview| route_for(:rails_preview, preview) }
+  resolve("ActiveStorage::Blob")       { |blob, options| route_for(ActiveStorage.resolve_model_to_route, blob, options) }
+  resolve("ActiveStorage::Attachment") { |attachment, options| route_for(ActiveStorage.resolve_model_to_route, attachment.blob, options) }
 
+  direct :rails_storage_proxy do |model, options|
+    expires_in = options.delete(:expires_in) { ActiveStorage.urls_expire_in }
+    expires_at = options.delete(:expires_at)
 
-  get  "/rails/active_storage/disk/:encoded_key/*filename" => "active_storage/disk#show", as: :rails_disk_service, internal: true
-  put  "/rails/active_storage/disk/:encoded_token" => "active_storage/disk#update", as: :update_rails_disk_service, internal: true
-  post "/rails/active_storage/direct_uploads" => "active_storage/direct_uploads#create", as: :rails_direct_uploads, internal: true
-end
+    if model.respond_to?(:signed_id)
+      route_for(
+        :rails_service_blob_proxy,
+        model.signed_id(expires_in: expires_in, expires_at: expires_at),
+        model.filename,
+        options
+      )
+    else
+      signed_blob_id = model.blob.signed_id(expires_in: expires_in, expires_at: expires_at)
+      variation_key  = model.variation.key
+      filename       = model.blob.filename
+
+      route_for(
+        :rails_blob_representation_proxy,
+        signed_blob_id,
+        variation_key,
+        filename,
+        options
+      )
+    end
+  end
+
+  direct :rails_storage_redirect do |model, options|
+    expires_in = options.delete(:expires_in) { ActiveStorage.urls_expire_in }
+    expires_at = options.delete(:expires_at)
+
+    if model.respond_to?(:signed_id)
+      route_for(
+        :rails_service_blob,
+        model.signed_id(expires_in: expires_in, expires_at: expires_at),
+        model.filename,
+        options
+      )
+    else
+      signed_blob_id = model.blob.signed_id(expires_in: expires_in, expires_at: expires_at)
+      variation_key  = model.variation.key
+      filename       = model.blob.filename
+
+      route_for(
+        :rails_blob_representation,
+        signed_blob_id,
+        variation_key,
+        filename,
+        options
+      )
+    end
+  end
+end if ActiveStorage.draw_routes

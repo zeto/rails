@@ -3,22 +3,23 @@
 require "time"
 require "base64"
 require "bigdecimal"
-require_relative "core_ext/module/delegation"
-require_relative "core_ext/string/inflections"
-require_relative "core_ext/date_time/calculations"
+require "bigdecimal/util"
+require "active_support/core_ext/module/delegation"
+require "active_support/core_ext/string/inflections"
+require "active_support/core_ext/date_time/calculations"
 
 module ActiveSupport
-  # = XmlMini
+  # = \XmlMini
   #
   # To use the much faster libxml parser:
-  #   gem 'libxml-ruby', '=0.9.7'
+  #   gem "libxml-ruby"
   #   XmlMini.backend = 'LibXML'
   module XmlMini
     extend self
 
     # This module decorates files deserialized using Hash.from_xml with
     # the <tt>original_filename</tt> and <tt>content_type</tt> methods.
-    module FileLike #:nodoc:
+    module FileLike # :nodoc:
       attr_writer :original_filename, :content_type
 
       def original_filename
@@ -45,46 +46,44 @@ module ActiveSupport
         "Date"       => "date",
         "DateTime"   => "dateTime",
         "Time"       => "dateTime",
+        "ActiveSupport::Duration" => "duration",
         "Array"      => "array",
         "Hash"       => "hash"
       }
-
-      # No need to map these on Ruby 2.4+
-      TYPE_NAMES["Fixnum"] = "integer" unless 0.class == Integer
-      TYPE_NAMES["Bignum"] = "integer" unless 0.class == Integer
     end
+    TYPE_NAMES["ActiveSupport::TimeWithZone"] = TYPE_NAMES["Time"]
 
     FORMATTING = {
       "symbol"   => Proc.new { |symbol| symbol.to_s },
-      "date"     => Proc.new { |date| date.to_s(:db) },
+      "date"     => Proc.new { |date| date.to_fs(:db) },
       "dateTime" => Proc.new { |time| time.xmlschema },
+      "duration" => Proc.new { |duration| duration.iso8601 },
       "binary"   => Proc.new { |binary| ::Base64.encode64(binary) },
       "yaml"     => Proc.new { |yaml| yaml.to_yaml }
     } unless defined?(FORMATTING)
 
-    # TODO use regexp instead of Date.parse
     unless defined?(PARSING)
       PARSING = {
         "symbol"       => Proc.new { |symbol|  symbol.to_s.to_sym },
-        "date"         => Proc.new { |date|    ::Date.parse(date) },
+        "date"         => Proc.new { |date|    ::Date.strptime(date, "%Y-%m-%d") },
         "datetime"     => Proc.new { |time|    Time.xmlschema(time).utc rescue ::DateTime.parse(time).utc },
+        "duration"     => Proc.new { |duration| Duration.parse(duration) },
         "integer"      => Proc.new { |integer| integer.to_i },
         "float"        => Proc.new { |float|   float.to_f },
         "decimal"      => Proc.new do |number|
           if String === number
-            begin
-              BigDecimal(number)
-            rescue ArgumentError
-              BigDecimal("0")
-            end
+            number.to_d
+          elsif Float === number
+            BigDecimal(number, 0)
           else
             BigDecimal(number)
           end
         end,
         "boolean"      => Proc.new { |boolean| %w(1 true).include?(boolean.to_s.strip) },
         "string"       => Proc.new { |string|  string.to_s },
-        "yaml"         => Proc.new { |yaml|    YAML::load(yaml) rescue yaml },
+        "yaml"         => Proc.new { |yaml|    YAML.load(yaml) rescue yaml },
         "base64Binary" => Proc.new { |bin|     ::Base64.decode64(bin) },
+        "hexBinary"    => Proc.new { |bin|     _parse_hex_binary(bin) },
         "binary"       => Proc.new { |bin, entity| _parse_binary(bin, entity) },
         "file"         => Proc.new { |file, entity| _parse_file(file, entity) }
       }
@@ -162,18 +161,18 @@ module ActiveSupport
     end
 
     private
-
       def _dasherize(key)
         # $2 must be a non-greedy regex for this to work
         left, middle, right = /\A(_*)(.*?)(_*)\Z/.match(key.strip)[1, 3]
         "#{left}#{middle.tr('_ ', '--')}#{right}"
       end
 
-      # TODO: Add support for other encodings
       def _parse_binary(bin, entity)
         case entity["encoding"]
         when "base64"
           ::Base64.decode64(bin)
+        when "hex", "hexBinary"
+          _parse_hex_binary(bin)
         else
           bin
         end
@@ -187,19 +186,23 @@ module ActiveSupport
         f
       end
 
+      def _parse_hex_binary(bin)
+        [bin].pack("H*")
+      end
+
       def current_thread_backend
-        Thread.current[:xml_mini_backend]
+        IsolatedExecutionState[:xml_mini_backend]
       end
 
       def current_thread_backend=(name)
-        Thread.current[:xml_mini_backend] = name && cast_backend_name_to_module(name)
+        IsolatedExecutionState[:xml_mini_backend] = name && cast_backend_name_to_module(name)
       end
 
       def cast_backend_name_to_module(name)
         if name.is_a?(Module)
           name
         else
-          require_relative "xml_mini/#{name.downcase}"
+          require "active_support/xml_mini/#{name.downcase}"
           ActiveSupport.const_get("XmlMini_#{name}")
         end
       end

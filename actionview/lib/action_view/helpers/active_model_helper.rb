@@ -4,11 +4,11 @@ require "active_support/core_ext/module/attribute_accessors"
 require "active_support/core_ext/enumerable"
 
 module ActionView
-  # = Active Model Helpers
-  module Helpers #:nodoc:
+  module Helpers # :nodoc:
     module ActiveModelHelper
     end
 
+    # = Active \Model Instance Tag \Helpers
     module ActiveModelInstanceTag
       def object
         @active_model_object ||= begin
@@ -17,8 +17,8 @@ module ActionView
         end
       end
 
-      def content_tag(*)
-        error_wrapping(super)
+      def content_tag(type, options, *)
+        select_markup_helper?(type) ? super : error_wrapping(super)
       end
 
       def tag(type, options, *)
@@ -27,7 +27,7 @@ module ActionView
 
       def error_wrapping(html_tag)
         if object_has_errors?
-          Base.field_error_proc.call(html_tag, self)
+          @template_object.instance_exec(html_tag, self, &Base.field_error_proc)
         else
           html_tag
         end
@@ -38,9 +38,12 @@ module ActionView
       end
 
       private
-
         def object_has_errors?
           object.respond_to?(:errors) && object.errors.respond_to?(:[]) && error_message.present?
+        end
+
+        def select_markup_helper?(type)
+          ["optgroup", "option"].include?(type)
         end
 
         def tag_generate_errors?(options)

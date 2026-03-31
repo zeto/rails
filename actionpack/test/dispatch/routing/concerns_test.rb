@@ -7,14 +7,14 @@ class ReviewsController < ResourcesController; end
 class RoutingConcernsTest < ActionDispatch::IntegrationTest
   class Reviewable
     def self.call(mapper, options = {})
-      mapper.resources :reviews, options
+      mapper.resources :reviews, **options
     end
   end
 
   Routes = ActionDispatch::Routing::RouteSet.new.tap do |app|
     app.draw do
       concern :commentable do |options|
-        resources :comments, options
+        resources :comments, **options
       end
 
       concern :image_attachable do
@@ -110,15 +110,5 @@ class RoutingConcernsTest < ActionDispatch::IntegrationTest
     end
 
     assert_equal "No concern named foo was found!", e.message
-  end
-
-  def test_concerns_executes_block_in_context_of_current_mapper
-    mapper = ActionDispatch::Routing::Mapper.new(ActionDispatch::Routing::RouteSet.new)
-    mapper.concern :test_concern do
-      resources :things
-      return self
-    end
-
-    assert_equal mapper, mapper.concerns(:test_concern)
   end
 end

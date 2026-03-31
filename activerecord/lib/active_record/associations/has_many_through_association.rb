@@ -3,14 +3,12 @@
 module ActiveRecord
   module Associations
     # = Active Record Has Many Through Association
-    class HasManyThroughAssociation < HasManyAssociation #:nodoc:
+    class HasManyThroughAssociation < HasManyAssociation # :nodoc:
       include ThroughAssociation
 
       def initialize(owner, reflection)
         super
-
-        @through_records     = {}
-        @through_association = nil
+        @through_records = {}.compare_by_identity
       end
 
       def concat(*records)
@@ -21,20 +19,6 @@ module ActiveRecord
         end
 
         super
-      end
-
-      def concat_records(records)
-        ensure_not_nested
-
-        records = super(records, true)
-
-        if owner.new_record? && records
-          records.flatten.each do |record|
-            build_through_record(record)
-          end
-        end
-
-        records
       end
 
       def insert_record(record, validate = true, raise = false)
@@ -50,9 +34,18 @@ module ActiveRecord
       end
 
       private
+        def concat_records(records)
+          ensure_not_nested
 
-        def through_association
-          @through_association ||= owner.association(through_reflection.name)
+          records = super(records, true)
+
+          if owner.new_record? && records
+            records.flatten.each do |record|
+              build_through_record(record)
+            end
+          end
+
+          records
         end
 
         # The through record (built with build_record) is temporarily cached
@@ -61,28 +54,28 @@ module ActiveRecord
         # However, after insert_record has been called, the cache is cleared in
         # order to allow multiple instances of the same record in an association.
         def build_through_record(record)
-          @through_records[record.object_id] ||= begin
+          @through_records[record] ||= begin
             ensure_mutable
 
-            through_record = through_association.build(*options_for_through_record)
-            through_record.send("#{source_reflection.name}=", record)
+            attributes = through_scope_attributes
+            attributes[source_reflection.name] = record
 
-            if options[:source_type]
-              through_record.send("#{source_reflection.foreign_type}=", options[:source_type])
+            through_association.build(attributes).tap do |new_record|
+              new_record.send("#{source_reflection.foreign_type}=", options[:source_type]) if options[:source_type]
             end
-
-            through_record
           end
         end
 
-        def options_for_through_record
-          [through_scope_attributes]
-        end
+        attr_reader :through_scope
 
         def through_scope_attributes
-          scope.where_values_hash(through_association.reflection.name.to_s).
-            except!(through_association.reflection.foreign_key,
-                    through_association.reflection.klass.inheritance_column)
+          scope = through_scope || self.scope
+          attributes = scope.where_values_hash(through_association.reflection.klass.table_name)
+          except_keys = [
+            *Array(through_association.reflection.foreign_key),
+            through_association.reflection.klass.inheritance_column
+          ]
+          attributes.except!(*except_keys)
         end
 
         def save_through_record(record)
@@ -91,15 +84,22 @@ module ActiveRecord
             association.save!
           end
         ensure
-          @through_records.delete(record.object_id)
+          @through_records.delete(record)
         end
 
         def build_record(attributes)
           ensure_not_nested
 
-          record = super(attributes)
+          @through_scope = scope
+          record = super
 
-          inverse = source_reflection.inverse_of
+          inverse =
+            if source_reflection.polymorphic?
+              source_reflection.polymorphic_inverse_of(record.class)
+            else
+              source_reflection.inverse_of
+            end
+
           if inverse
             if inverse.collection?
               record.send(inverse.name) << build_through_record(record)
@@ -109,6 +109,8 @@ module ActiveRecord
           end
 
           record
+        ensure
+          @through_scope = nil
         end
 
         def remove_records(existing_records, records, method)
@@ -117,7 +119,7 @@ module ActiveRecord
         end
 
         def target_reflection_has_associated_record?
-          !(through_reflection.belongs_to? && owner[through_reflection.foreign_key].blank?)
+          !(through_reflection.belongs_to? && Array(through_reflection.foreign_key).all? { |foreign_key_column| owner[foreign_key_column].blank? })
         end
 
         def update_through_counter?(method)
@@ -140,21 +142,15 @@ module ActiveRecord
 
           scope = through_association.scope
           scope.where! construct_join_attributes(*records)
+          scope = scope.where(through_scope_attributes)
 
           case method
           when :destroy
-            if scope.klass.primary_key
-              count = scope.destroy_all.length
+            if scope.model.primary_key
+              count = scope.destroy_all.count(&:destroyed?)
             else
               scope.each(&:_run_destroy_callbacks)
-
-              arel = scope.arel
-
-              stmt = Arel::DeleteManager.new
-              stmt.from scope.klass.arel_table
-              stmt.wheres = arel.constraints
-
-              count = scope.klass.connection.delete(stmt, "SQL")
+              count = scope.delete_all
             end
           when :nullify
             count = scope.update_all(source_reflection.foreign_key => nil)
@@ -173,6 +169,30 @@ module ActiveRecord
             update_counter(-count, through_reflection)
           else
             update_counter(-count)
+          end
+
+          count
+        end
+
+        def difference(a, b)
+          distribution = distribution(b)
+
+          a.reject { |record| mark_occurrence(distribution, record) }
+        end
+
+        def intersection(a, b)
+          distribution = distribution(b)
+
+          a.select { |record| mark_occurrence(distribution, record) }
+        end
+
+        def mark_occurrence(distribution, record)
+          distribution[record] > 0 && distribution[record] -= 1
+        end
+
+        def distribution(array)
+          array.each_with_object(Hash.new(0)) do |record, distribution|
+            distribution[record] += 1
           end
         end
 
@@ -198,12 +218,14 @@ module ActiveRecord
               end
             end
 
-            @through_records.delete(record.object_id)
+            @through_records.delete(record)
           end
         end
 
-        def find_target
+        def find_target(async: false)
+          raise NotImplementedError, "No async loading for HasManyThroughAssociation yet" if async
           return [] unless target_reflection_has_associated_record?
+          return scope.to_a if disable_joins
           super
         end
 

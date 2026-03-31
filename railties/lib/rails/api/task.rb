@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "rdoc/task"
-require_relative "generator"
+require "rails/api/generator"
 
 module Rails
   module API
@@ -10,6 +10,7 @@ module Rails
         "activesupport" => {
           include: %w(
             README.rdoc
+            lib/active_support.rb
             lib/active_support/**/*.rb
           )
         },
@@ -17,13 +18,16 @@ module Rails
         "activerecord" => {
           include: %w(
             README.rdoc
+            lib/active_record.rb
             lib/active_record/**/*.rb
+            lib/arel.rb
           )
         },
 
         "activemodel" => {
           include: %w(
             README.rdoc
+            lib/active_model.rb
             lib/active_model/**/*.rb
           )
         },
@@ -32,7 +36,9 @@ module Rails
           include: %w(
             README.rdoc
             lib/abstract_controller/**/*.rb
+            lib/action_controller.rb
             lib/action_controller/**/*.rb
+            lib/action_dispatch.rb
             lib/action_dispatch/**/*.rb
           )
         },
@@ -40,6 +46,7 @@ module Rails
         "actionview" => {
           include: %w(
             README.rdoc
+            lib/action_view.rb
             lib/action_view/**/*.rb
           ),
           exclude: "lib/action_view/vendor/*"
@@ -48,6 +55,7 @@ module Rails
         "actionmailer" => {
           include: %w(
             README.rdoc
+            lib/action_mailer.rb
             lib/action_mailer/**/*.rb
           )
         },
@@ -55,6 +63,7 @@ module Rails
         "activejob" => {
           include: %w(
             README.md
+            lib/active_job.rb
             lib/active_job/**/*.rb
           )
         },
@@ -62,6 +71,7 @@ module Rails
         "actioncable" => {
           include: %w(
             README.md
+            lib/action_cable.rb
             lib/action_cable/**/*.rb
           )
         },
@@ -70,7 +80,26 @@ module Rails
           include: %w(
             README.md
             app/**/active_storage/**/*.rb
+            lib/active_storage.rb
             lib/active_storage/**/*.rb
+          )
+        },
+
+        "actionmailbox" => {
+          include: %w(
+            README.md
+            app/**/action_mailbox/**/*.rb
+            lib/action_mailbox.rb
+            lib/action_mailbox/**/*.rb
+          )
+        },
+
+        "actiontext" => {
+          include: %w(
+            README.md
+            app/**/action_text/**/*.rb
+            lib/action_text.rb
+            lib/action_text/**/*.rb
           )
         },
 
@@ -117,8 +146,6 @@ module Rails
       end
 
       def configure_rdoc_files
-        rdoc_files.include(api_main)
-
         RDOC_FILES.each do |component, cfg|
           cdr = component_root_dir(component)
 
@@ -133,8 +160,9 @@ module Rails
 
         # Only generate documentation for files that have been
         # changed since the API was generated.
-        if Dir.exist?("doc/rdoc") && !ENV["ALL"]
-          last_generation = DateTime.rfc2822(File.open("doc/rdoc/created.rid", &:readline))
+        timestamp_path = "#{api_dir}/created.rid"
+        if File.exist?(timestamp_path) && !File.zero?(timestamp_path) && !ENV["ALL"]
+          last_generation = DateTime.rfc2822(File.open(timestamp_path, &:readline))
 
           rdoc_files.keep_if do |file|
             File.mtime(file).to_datetime > last_generation
@@ -143,15 +171,21 @@ module Rails
           # Nothing to do
           exit(0) if rdoc_files.empty?
         end
+
+        # This must come after the mtime comparison to ensure the main page is not excluded.
+        rdoc_files.include(api_main)
       end
 
-      def setup_horo_variables
+      # These variables are used by the sdoc template
+      def setup_horo_variables # :nodoc:
         ENV["HORO_PROJECT_NAME"]    = "Ruby on Rails"
         ENV["HORO_PROJECT_VERSION"] = rails_version
+        ENV["HORO_BADGE_VERSION"]   = badge_version
+        ENV["HORO_CANONICAL_URL"]   = canonical_url
       end
 
       def api_main
-        component_root_dir("railties") + "/RDOC_MAIN.rdoc"
+        component_root_dir("railties") + "/RDOC_MAIN.md"
       end
     end
 
@@ -172,13 +206,29 @@ module Rails
 
     class EdgeTask < RepoTask
       def rails_version
-        "master@#{`git rev-parse HEAD`[0, 7]}"
+        "main@#{`git rev-parse HEAD`[0, 7]}"
+      end
+
+      def badge_version
+        "edge"
+      end
+
+      def canonical_url
+        "https://edgeapi.rubyonrails.org"
       end
     end
 
     class StableTask < RepoTask
       def rails_version
         File.read("RAILS_VERSION").strip
+      end
+
+      def badge_version
+        "v#{rails_version}"
+      end
+
+      def canonical_url
+        "https://api.rubyonrails.org/#{badge_version}"
       end
     end
   end

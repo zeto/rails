@@ -3,7 +3,7 @@
 require "active_support/core_ext/module/anonymous"
 
 module ActiveModel
-  # == Active \Model \Validator
+  # = Active \Model \Validator
   #
   # A simple base class that can be used along with
   # ActiveModel::Validations::ClassMethods.validates_with
@@ -26,7 +26,7 @@ module ActiveModel
   #       end
   #   end
   #
-  # Any class that inherits from ActiveModel::Validator must implement a method
+  # Any class that inherits from \ActiveModel::Validator must implement a method
   # called +validate+ which accepts a +record+.
   #
   #   class Person
@@ -65,7 +65,7 @@ module ActiveModel
   # life cycle, and not on each validation run.
   #
   # The easiest way to add custom validators for validating individual attributes
-  # is with the convenient <tt>ActiveModel::EachValidator</tt>.
+  # is with the convenient ActiveModel::EachValidator class.
   #
   #   class TitleValidator < ActiveModel::EachValidator
   #     def validate_each(record, attribute, value)
@@ -73,8 +73,8 @@ module ActiveModel
   #     end
   #   end
   #
-  # This can now be used in combination with the +validates+ method
-  # (see <tt>ActiveModel::Validations::ClassMethods.validates</tt> for more on this).
+  # This can now be used in combination with the +validates+ method.
+  # See ActiveModel::Validations::ClassMethods#validates for more on this.
   #
   #   class Person
   #     include ActiveModel::Validations
@@ -85,12 +85,12 @@ module ActiveModel
   #
   # It can be useful to access the class that is using that validator when there are prerequisites such
   # as an +attr_accessor+ being present. This class is accessible via <tt>options[:class]</tt> in the constructor.
-  # To setup your validator override the constructor.
+  # To set up your validator override the constructor.
   #
   #   class MyValidator < ActiveModel::Validator
   #     def initialize(options={})
   #       super
-  #       options[:class].send :attr_accessor, :custom_attribute
+  #       options[:class].attr_accessor :custom_attribute
   #     end
   #   end
   class Validator
@@ -124,12 +124,14 @@ module ActiveModel
     end
   end
 
+  # = Active \Model \EachValidator
+  #
   # +EachValidator+ is a validator which iterates through the attributes given
   # in the options hash invoking the <tt>validate_each</tt> method passing in the
-  # record, attribute and value.
+  # record, attribute, and value.
   #
   # All \Active \Model validations are built on top of this validator.
-  class EachValidator < Validator #:nodoc:
+  class EachValidator < Validator
     attr_reader :attributes
 
     # Returns a new validator instance. All options will be available via the
@@ -148,7 +150,8 @@ module ActiveModel
     def validate(record)
       attributes.each do |attribute|
         value = record.read_attribute_for_validation(attribute)
-        next if (value.nil? && options[:allow_nil]) || (value.blank? && options[:allow_blank])
+        next if (value.nil? && allow_nil?(record)) || (value.blank? && allow_blank?(record))
+        value = prepare_value_for_validation(value, record, attribute)
         validate_each(record, attribute, value)
       end
     end
@@ -164,18 +167,38 @@ module ActiveModel
     # +ArgumentError+ when invalid options are supplied.
     def check_validity!
     end
+
+    private
+      def prepare_value_for_validation(value, record, attr_name)
+        value
+      end
+
+      def allow_nil?(record)
+        if options[:allow_nil].respond_to?(:to_proc)
+          options[:allow_nil].to_proc.call(record)
+        else
+          options[:allow_nil]
+        end
+      end
+
+      def allow_blank?(record)
+        if options[:allow_blank].respond_to?(:to_proc)
+          options[:allow_blank].to_proc.call(record)
+        else
+          options[:allow_blank]
+        end
+      end
   end
 
   # +BlockValidator+ is a special +EachValidator+ which receives a block on initialization
   # and call this block for each attribute being validated. +validates_each+ uses this validator.
-  class BlockValidator < EachValidator #:nodoc:
+  class BlockValidator < EachValidator # :nodoc:
     def initialize(options, &block)
       @block = block
       super
     end
 
     private
-
       def validate_each(record, attribute, value)
         @block.call(record, attribute, value)
       end

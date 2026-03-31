@@ -1,18 +1,26 @@
 # frozen_string_literal: true
 
-require "active_support/rails"
+# :markup: markdown
+
 require "abstract_controller"
 require "action_dispatch"
-require_relative "action_controller/metal/live"
-require_relative "action_controller/metal/strong_parameters"
+require "action_controller/deprecator"
+require "action_controller/metal/strong_parameters"
+require "action_controller/metal/exceptions"
 
+# # Action Controller
+#
+# Action Controller is a module of Action Pack.
+#
+# Action Controller provides a base controller class that can be subclassed to
+# implement filters and actions to handle requests. The result of an action is
+# typically content generated from views.
 module ActionController
   extend ActiveSupport::Autoload
 
   autoload :API
   autoload :Base
   autoload :Metal
-  autoload :Middleware
   autoload :Renderer
   autoload :FormBuilder
 
@@ -21,21 +29,27 @@ module ActionController
   end
 
   autoload_under "metal" do
+    autoload :AllowBrowser
     autoload :ConditionalGet
+    autoload :ContentSecurityPolicy
     autoload :Cookies
     autoload :DataStreaming
+    autoload :DefaultHeaders
     autoload :EtagWithTemplateDigest
     autoload :EtagWithFlash
+    autoload :PermissionsPolicy
     autoload :Flash
-    autoload :ForceSSL
     autoload :Head
     autoload :Helpers
     autoload :HttpAuthentication
     autoload :BasicImplicitRender
     autoload :ImplicitRender
     autoload :Instrumentation
+    autoload :Live
+    autoload :Logging
     autoload :MimeResponds
     autoload :ParamsWrapper
+    autoload :RateLimiting
     autoload :Redirecting
     autoload :Renderers
     autoload :Rendering
@@ -52,14 +66,15 @@ module ActionController
     autoload :ApiRendering
   end
 
-  autoload :TestCase,           "action_controller/test_case"
-  autoload :TemplateAssertions, "action_controller/test_case"
+  autoload_at "action_controller/test_case" do
+    autoload :TestCase
+    autoload :TestRequest
+    autoload :TemplateAssertions
+  end
 end
 
 # Common Active Support usage in Action Controller
 require "active_support/core_ext/module/attribute_accessors"
-require "active_support/core_ext/load_error"
 require "active_support/core_ext/module/attr_internal"
 require "active_support/core_ext/name_error"
-require "active_support/core_ext/uri"
 require "active_support/inflector"

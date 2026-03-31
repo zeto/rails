@@ -1,12 +1,13 @@
 # frozen_string_literal: true
 
-require_relative "collection_helpers"
+require "action_view/helpers/tags/collection_helpers"
 
 module ActionView
   module Helpers
     module Tags # :nodoc:
       class CollectionRadioButtons < Base # :nodoc:
         include CollectionHelpers
+        include FormOptionsHelper
 
         class RadioButtonBuilder < Builder # :nodoc:
           def radio_button(extra_html_options = {})
@@ -21,7 +22,6 @@ module ActionView
         end
 
         private
-
           def render_component(builder)
             builder.radio_button + builder.label
           end

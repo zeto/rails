@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require "abstract_unit"
+require_relative "abstract_unit"
 require "active_support/number_helper"
 require "active_support/core_ext/string/output_safety"
 
@@ -13,6 +13,16 @@ module ActiveSupport
 
       class TestClassWithClassNumberHelpers
         extend ActiveSupport::NumberHelper
+      end
+
+      class NumberWithToD
+        def initialize(number)
+          @number = number
+        end
+
+        def to_d
+          @number.to_d
+        end
       end
 
       def setup
@@ -43,6 +53,10 @@ module ActiveSupport
         petabytes(number) * 1024
       end
 
+      def zettabytes(number)
+        exabytes(number) * 1024
+      end
+
       def test_number_to_phone
         [@instance_with_helpers, TestClassWithClassNumberHelpers, ActiveSupport::NumberHelper].each do |number_helper|
           assert_equal("555-1234", number_helper.number_to_phone(5551234))
@@ -65,18 +79,33 @@ module ActiveSupport
 
       def test_number_to_currency
         [@instance_with_helpers, TestClassWithClassNumberHelpers, ActiveSupport::NumberHelper].each do |number_helper|
+          assert_equal("$123,456,789,012,345,678.91", number_helper.number_to_currency("123456789012345678.91"))
           assert_equal("$1,234,567,890.50", number_helper.number_to_currency(1234567890.50))
           assert_equal("$1,234,567,890.51", number_helper.number_to_currency(1234567890.506))
           assert_equal("-$1,234,567,890.50", number_helper.number_to_currency(-1234567890.50))
           assert_equal("-$ 1,234,567,890.50", number_helper.number_to_currency(-1234567890.50, format: "%u %n"))
           assert_equal("($1,234,567,890.50)", number_helper.number_to_currency(-1234567890.50, negative_format: "(%u%n)"))
           assert_equal("$1,234,567,892", number_helper.number_to_currency(1234567891.50, precision: 0))
+          assert_equal("$1,234,567,891", number_helper.number_to_currency(1234567891.50, precision: 0, round_mode: :down))
           assert_equal("$1,234,567,890.5", number_helper.number_to_currency(1234567890.50, precision: 1))
           assert_equal("&pound;1234567890,50", number_helper.number_to_currency(1234567890.50, unit: "&pound;", separator: ",", delimiter: ""))
           assert_equal("$1,234,567,890.50", number_helper.number_to_currency("1234567890.50"))
           assert_equal("1,234,567,890.50 K&#269;", number_helper.number_to_currency("1234567890.50", unit: "K&#269;", format: "%n %u"))
           assert_equal("1,234,567,890.50 - K&#269;", number_helper.number_to_currency("-1234567890.50", unit: "K&#269;", format: "%n %u", negative_format: "%n - %u"))
           assert_equal("0.00", number_helper.number_to_currency(+0.0, unit: "", negative_format: "(%n)"))
+          assert_equal("$0", number_helper.number_to_currency(-0.456789, precision: 0))
+          assert_equal("$0.0", number_helper.number_to_currency(-0.0456789, precision: 1))
+          assert_equal("$0.00", number_helper.number_to_currency(-0.00456789, precision: 2))
+          assert_equal("-$1", number_helper.number_to_currency(-0.5, precision: 0))
+          assert_equal("$1,11", number_helper.number_to_currency("1,11"))
+          assert_equal("$0,11", number_helper.number_to_currency("0,11"))
+          assert_equal("$,11", number_helper.number_to_currency(",11"))
+          assert_equal("-$1,11", number_helper.number_to_currency("-1,11"))
+          assert_equal("-$0,11", number_helper.number_to_currency("-0,11"))
+          assert_equal("-$,11", number_helper.number_to_currency("-,11"))
+          assert_equal("$0.00", number_helper.number_to_currency(-0.0))
+          assert_equal("$0.00", number_helper.number_to_currency("-0.0"))
+          assert_equal("$1.23", number_helper.number_to_currency(NumberWithToD.new(1.23)))
         end
       end
 
@@ -85,6 +114,7 @@ module ActiveSupport
           assert_equal("100.000%", number_helper.number_to_percentage(100))
           assert_equal("100%", number_helper.number_to_percentage(100, precision: 0))
           assert_equal("302.06%", number_helper.number_to_percentage(302.0574, precision: 2))
+          assert_equal("302.05%", number_helper.number_to_percentage(302.0574, precision: 2, round_mode: :down))
           assert_equal("100.000%", number_helper.number_to_percentage("100"))
           assert_equal("1000.000%", number_helper.number_to_percentage("1000"))
           assert_equal("123.4%", number_helper.number_to_percentage(123.400, precision: 3, strip_insignificant_zeros: true))
@@ -109,6 +139,8 @@ module ActiveSupport
           assert_equal("12,345,678", number_helper.number_to_delimited(12345678))
           assert_equal("0", number_helper.number_to_delimited(0))
           assert_equal("123", number_helper.number_to_delimited(123))
+          assert_equal("1,234", number_helper.number_to_delimited(1234))
+          assert_equal("12,345", number_helper.number_to_delimited(12345))
           assert_equal("123,456", number_helper.number_to_delimited(123456))
           assert_equal("123,456.78", number_helper.number_to_delimited(123456.78))
           assert_equal("123,456.789", number_helper.number_to_delimited(123456.789))
@@ -135,6 +167,7 @@ module ActiveSupport
           assert_equal("111.235", number_helper.number_to_rounded(111.2346))
           assert_equal("31.83", number_helper.number_to_rounded(31.825, precision: 2))
           assert_equal("111.23", number_helper.number_to_rounded(111.2346, precision: 2))
+          assert_equal("111.24", number_helper.number_to_rounded(111.2346, precision: 2, round_mode: :up))
           assert_equal("111.00", number_helper.number_to_rounded(111, precision: 2))
           assert_equal("111.235", number_helper.number_to_rounded("111.2346"))
           assert_equal("31.83", number_helper.number_to_rounded("31.825", precision: 2))
@@ -187,6 +220,7 @@ module ActiveSupport
           assert_equal "10.0", number_helper.number_to_rounded(9.995, precision: 3, significant: true)
           assert_equal "9.99", number_helper.number_to_rounded(9.994, precision: 3, significant: true)
           assert_equal "11.0", number_helper.number_to_rounded(10.995, precision: 3, significant: true)
+          assert_equal "123000", number_helper.number_to_rounded(123987, precision: 3, significant: true, round_mode: :down)
 
           assert_equal "9775.0000000000000000", number_helper.number_to_rounded(9775, precision: 20, significant: true)
           assert_equal "9775.0000000000000000", number_helper.number_to_rounded(9775.0, precision: 20, significant: true)
@@ -196,6 +230,8 @@ module ActiveSupport
           assert_equal "9775.0000000000000000", number_helper.number_to_rounded("9775", precision: 20, significant: true)
           assert_equal "9775." + "0" * 96, number_helper.number_to_rounded("9775", precision: 100, significant: true)
           assert_equal("97.7", number_helper.number_to_rounded(Rational(9772, 100), precision: 3, significant: true))
+          assert_equal "28729870200000000000000", number_helper.number_to_rounded(0.287298702e23.to_d, precision: 0, significant: true)
+          assert_equal "-Inf", number_helper.number_to_rounded(-Float::INFINITY, precision: 0, significant: true)
         end
       end
 
@@ -231,11 +267,12 @@ module ActiveSupport
           assert_equal "1.12 TB",    number_helper.number_to_human_size(1234567890123)
           assert_equal "1.1 PB",   number_helper.number_to_human_size(1234567890123456)
           assert_equal "1.07 EB",   number_helper.number_to_human_size(1234567890123456789)
-          assert_equal "1030 EB",   number_helper.number_to_human_size(exabytes(1026))
+          assert_equal "1020 EB",   number_helper.number_to_human_size(exabytes(1023))
           assert_equal "444 KB",    number_helper.number_to_human_size(kilobytes(444))
           assert_equal "1020 MB",   number_helper.number_to_human_size(megabytes(1023))
           assert_equal "3 TB",      number_helper.number_to_human_size(terabytes(3))
           assert_equal "1.2 MB",   number_helper.number_to_human_size(1234567, precision: 2)
+          assert_equal "1.1 MB",   number_helper.number_to_human_size(1234567, precision: 2, round_mode: :down)
           assert_equal "3 Bytes",   number_helper.number_to_human_size(3.14159265, precision: 4)
           assert_equal "123 Bytes", number_helper.number_to_human_size("123")
           assert_equal "1 KB",   number_helper.number_to_human_size(kilobytes(1.0123), precision: 2)
@@ -243,6 +280,19 @@ module ActiveSupport
           assert_equal "10 KB",   number_helper.number_to_human_size(kilobytes(10.000), precision: 4)
           assert_equal "1 Byte",   number_helper.number_to_human_size(1.1)
           assert_equal "10 Bytes", number_helper.number_to_human_size(10)
+          assert_equal "16 ZB", number_helper.number_to_human_size(zettabytes(16))
+        end
+      end
+
+      def test_number_number_to_human_size_with_negative_number
+        [@instance_with_helpers, TestClassWithClassNumberHelpers, ActiveSupport::NumberHelper].each do |number_helper|
+          assert_equal "-1 Bytes",   number_helper.number_to_human_size(-1)
+          assert_equal "-3 Bytes",   number_helper.number_to_human_size(-3.14159265)
+          assert_equal "-123 Bytes", number_helper.number_to_human_size(-123)
+          assert_equal "-12.1 KB",   number_helper.number_to_human_size(-12345)
+          assert_equal "-444 KB",    number_helper.number_to_human_size(kilobytes(-444))
+          assert_equal "-1.12 TB",   number_helper.number_to_human_size(-1234567890123)
+          assert_equal "-1.01 KB",   number_helper.number_to_human_size(kilobytes(-1.0100), precision: 4)
         end
       end
 
@@ -258,9 +308,10 @@ module ActiveSupport
           assert_equal "10 MB", number_helper.number_to_human_size(9961472, precision: 0)
           assert_equal "40 KB", number_helper.number_to_human_size(41010, precision: 1)
           assert_equal "40 KB", number_helper.number_to_human_size(41100, precision: 2)
+          assert_equal "50 KB", number_helper.number_to_human_size(41100, precision: 1, round_mode: :up)
           assert_equal "1.0 KB",   number_helper.number_to_human_size(kilobytes(1.0123), precision: 2, strip_insignificant_zeros: false)
           assert_equal "1.012 KB",   number_helper.number_to_human_size(kilobytes(1.0123), precision: 3, significant: false)
-          assert_equal "1 KB",   number_helper.number_to_human_size(kilobytes(1.0123), precision: 0, significant: true) #ignores significant it precision is 0
+          assert_equal "1 KB",   number_helper.number_to_human_size(kilobytes(1.0123), precision: 0, significant: true) # ignores significant it precision is 0
         end
       end
 
@@ -289,10 +340,11 @@ module ActiveSupport
           assert_equal "490 Thousand", number_helper.number_to_human(489939, precision: 2)
           assert_equal "489.9 Thousand", number_helper.number_to_human(489939, precision: 4)
           assert_equal "489 Thousand", number_helper.number_to_human(489000, precision: 4)
+          assert_equal "480 Thousand", number_helper.number_to_human(489939, precision: 2, round_mode: :down)
           assert_equal "489.0 Thousand", number_helper.number_to_human(489000, precision: 4, strip_insignificant_zeros: false)
           assert_equal "1.2346 Million", number_helper.number_to_human(1234567, precision: 4, significant: false)
           assert_equal "1,2 Million", number_helper.number_to_human(1234567, precision: 1, significant: false, separator: ",")
-          assert_equal "1 Million", number_helper.number_to_human(1234567, precision: 0, significant: true, separator: ",") #significant forced to false
+          assert_equal "1 Million", number_helper.number_to_human(1234567, precision: 0, significant: true, separator: ",") # significant forced to false
           assert_equal "1 Million", number_helper.number_to_human(999999)
           assert_equal "1 Billion", number_helper.number_to_human(999999999)
         end
@@ -300,13 +352,13 @@ module ActiveSupport
 
       def test_number_to_human_with_custom_units
         [@instance_with_helpers, TestClassWithClassNumberHelpers, ActiveSupport::NumberHelper].each do |number_helper|
-          #Only integers
+          # Only integers
           volume = { unit: "ml", thousand: "lt", million: "m3" }
           assert_equal "123 lt", number_helper.number_to_human(123456, units: volume)
           assert_equal "12 ml", number_helper.number_to_human(12, units: volume)
           assert_equal "1.23 m3", number_helper.number_to_human(1234567, units: volume)
 
-          #Including fractionals
+          # Including fractionals
           distance = { mili: "mm", centi: "cm", deci: "dm", unit: "m", ten: "dam", hundred: "hm", thousand: "km" }
           assert_equal "1.23 mm", number_helper.number_to_human(0.00123, units: distance)
           assert_equal "1.23 cm", number_helper.number_to_human(0.0123, units: distance)
@@ -319,7 +371,7 @@ module ActiveSupport
           assert_equal "1.23 km", number_helper.number_to_human(1230, units: distance)
           assert_equal "12.3 km", number_helper.number_to_human(12300, units: distance)
 
-          #The quantifiers don't need to be a continuous sequence
+          # The quantifiers don't need to be a continuous sequence
           gangster = { hundred: "hundred bucks", million: "thousand quids" }
           assert_equal "1 hundred bucks", number_helper.number_to_human(100, units: gangster)
           assert_equal "25 hundred bucks", number_helper.number_to_human(2500, units: gangster)
@@ -329,11 +381,11 @@ module ActiveSupport
           assert_equal "25 thousand quids", number_helper.number_to_human(25000000, units: gangster)
           assert_equal "12300 thousand quids", number_helper.number_to_human(12345000000, units: gangster)
 
-          #Spaces are stripped from the resulting string
+          # Spaces are stripped from the resulting string
           assert_equal "4", number_helper.number_to_human(4, units: { unit: "", ten: "tens " })
           assert_equal "4.5  tens", number_helper.number_to_human(45, units: { unit: "", ten: " tens   " })
 
-          #Uses only the provided units and does not try to use larger ones
+          # Uses only the provided units and does not try to use larger ones
           assert_equal "1000 kilometers", number_helper.number_to_human(1_000_000, units: { unit: "meter", thousand: "kilometers" })
         end
       end
@@ -404,6 +456,18 @@ module ActiveSupport
           assert_equal("x", number_helper.number_to_rounded("x"))
           assert_equal "x", number_helper.number_to_human_size("x")
           assert_equal "x", number_helper.number_to_human("x")
+        end
+      end
+
+      def test_number_helpers_with_scientific_notation
+        [@instance_with_helpers, TestClassWithClassNumberHelpers, ActiveSupport::NumberHelper].each do |number_helper|
+          assert_equal "$123481223d98989", number_helper.number_to_currency("123481223d98989")
+          assert_equal "$11288E822220222", number_helper.number_to_currency("11288E822220222")
+          assert_equal "-$888E89789", number_helper.number_to_currency("-888E89789")
+
+          assert_equal "123481223d98989%", number_helper.number_to_percentage("123481223d98989")
+          assert_equal "11288E822220222%", number_helper.number_to_percentage("11288E822220222")
+          assert_equal "-888E89789%", number_helper.number_to_percentage("-888E89789")
         end
       end
     end

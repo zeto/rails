@@ -10,15 +10,9 @@ class PostgresqlXMLTest < ActiveRecord::PostgreSQLTestCase
   end
 
   def setup
-    @connection = ActiveRecord::Base.connection
-    begin
-      @connection.transaction do
-        @connection.create_table("xml_data_type") do |t|
-          t.xml "payload"
-        end
-      end
-    rescue ActiveRecord::StatementInvalid
-      skip "do not test on PG without xml"
+    @connection = ActiveRecord::Base.lease_connection
+    @connection.create_table("xml_data_type") do |t|
+      t.xml "payload"
     end
     @column = XmlDataType.columns_hash["payload"]
   end

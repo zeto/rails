@@ -1,18 +1,21 @@
 # frozen_string_literal: true
 
-require_relative "core"
-require_relative "queue_adapter"
-require_relative "queue_name"
-require_relative "queue_priority"
-require_relative "enqueuing"
-require_relative "execution"
-require_relative "callbacks"
-require_relative "exceptions"
-require_relative "logging"
-require_relative "translation"
+require "active_job/core"
+require "active_job/queue_adapter"
+require "active_job/queue_name"
+require "active_job/queue_priority"
+require "active_job/enqueuing"
+require "active_job/execution"
+require "active_job/callbacks"
+require "active_job/exceptions"
+require "active_job/log_subscriber"
+require "active_job/structured_event_subscriber"
+require "active_job/logging"
+require "active_job/instrumentation"
+require "active_job/execution_state"
 
-module ActiveJob #:nodoc:
-  # = Active Job
+module ActiveJob # :nodoc:
+  # = Active Job \Base
   #
   # Active Job objects can be configured to work with different backend
   # queuing frameworks. To specify a queue adapter to use:
@@ -37,9 +40,9 @@ module ActiveJob #:nodoc:
   #   end
   #
   # Records that are passed in are serialized/deserialized using Global
-  # ID. More information can be found in Arguments.
+  # ID. More information can be found in ActiveJob::Arguments.
   #
-  # To enqueue a job to be performed as soon as the queueing system is free:
+  # To enqueue a job to be performed as soon as the queuing system is free:
   #
   #   ProcessPhotoJob.perform_later(photo)
   #
@@ -47,7 +50,7 @@ module ActiveJob #:nodoc:
   #
   #   ProcessPhotoJob.set(wait_until: Date.tomorrow.noon).perform_later(photo)
   #
-  # More information can be found in ActiveJob::Core::ClassMethods#set
+  # More information can be found in ActiveJob::Core::ClassMethods#set.
   #
   # A job can also be processed immediately without sending to the queue:
   #
@@ -66,8 +69,9 @@ module ActiveJob #:nodoc:
     include Execution
     include Callbacks
     include Exceptions
+    include Instrumentation
     include Logging
-    include Translation
+    include ExecutionState
 
     ActiveSupport.run_load_hooks(:active_job, self)
   end

@@ -2,23 +2,41 @@
 
 module ActiveModel
   module Type
-    class Date < Value # :nodoc:
+    # = Active Model \Date \Type
+    #
+    # Attribute type for date representation. It is registered under the
+    # +:date+ key.
+    #
+    #   class Person
+    #     include ActiveModel::Attributes
+    #
+    #     attribute :birthday, :date
+    #   end
+    #
+    #   person = Person.new
+    #   person.birthday = "1989-07-13"
+    #
+    #   person.birthday.class # => Date
+    #   person.birthday.year  # => 1989
+    #   person.birthday.month # => 7
+    #   person.birthday.day   # => 13
+    #
+    # String values are parsed using the ISO 8601 date format. Any other values
+    # are cast using their +to_date+ method, if it exists.
+    class Date < Value
+      include Helpers::Immutable
+      include Helpers::Timezone
       include Helpers::AcceptsMultiparameterTime.new
 
       def type
         :date
       end
 
-      def serialize(value)
-        cast(value)
-      end
-
       def type_cast_for_schema(value)
-        value.to_s(:db).inspect
+        value.to_fs(:db).inspect
       end
 
       private
-
         def cast_value(value)
           if value.is_a?(::String)
             return if value.empty?
@@ -38,18 +56,23 @@ module ActiveModel
         end
 
         def fallback_string_to_date(string)
-          new_date(*::Date._parse(string, false).values_at(:year, :mon, :mday))
+          parts = begin
+            ::Date._parse(string, false)
+          rescue ArgumentError
+          end
+
+          new_date(*parts.values_at(:year, :mon, :mday)) if parts
         end
 
         def new_date(year, mon, mday)
-          if year && year != 0
+          unless year.nil? || (year == 0 && mon == 0 && mday == 0)
             ::Date.new(year, mon, mday) rescue nil
           end
         end
 
         def value_from_multiparameter_assignment(*)
           time = super
-          time && time.to_date
+          time && new_date(time.year, time.mon, time.mday)
         end
     end
   end

@@ -2,16 +2,36 @@
 
 module ActiveModel
   module Type
+    # = Active Model \Value \Type
+    #
+    # The base class for all attribute types. This class also serves as the
+    # default type for attributes that do not specify a type.
     class Value
+      include SerializeCastValue
       attr_reader :precision, :scale, :limit
 
+      # Initializes a type with three basic configuration settings: precision,
+      # limit, and scale. The Value base class does not define behavior for
+      # these settings. It uses them for equality comparison and hash key
+      # generation only.
       def initialize(precision: nil, limit: nil, scale: nil)
+        super()
         @precision = precision
         @scale = scale
         @limit = limit
       end
 
-      def type # :nodoc:
+      # Returns true if this type can convert +value+ to a type that is usable
+      # by the database.  For example a boolean type can return +true+ if the
+      # value parameter is a Ruby boolean, but may return +false+ if the value
+      # parameter is some other object.
+      def serializable?(value, &)
+        true
+      end
+
+      # Returns the unique type name as a Symbol. Subclasses should override
+      # this method.
+      def type
       end
 
       # Converts a value from database input to the appropriate ruby type. The
@@ -90,8 +110,12 @@ module ActiveModel
         false
       end
 
-      def map(value) # :nodoc:
-        yield value
+      def force_equality?(_value) # :nodoc:
+        false
+      end
+
+      def map(value, &) # :nodoc:
+        value
       end
 
       def ==(other)
@@ -106,11 +130,22 @@ module ActiveModel
         [self.class, precision, scale, limit].hash
       end
 
-      def assert_valid_value(*)
+      def assert_valid_value(_)
+      end
+
+      def serialized? # :nodoc:
+        false
+      end
+
+      def mutable? # :nodoc:
+        true
+      end
+
+      def as_json(*)
+        raise NoMethodError
       end
 
       private
-
         # Convenience method for types which do not need separate type casting
         # behavior for user and database inputs. Called by Value#cast for
         # values except +nil+.

@@ -1,9 +1,10 @@
 # frozen_string_literal: true
 
 require "active_support/callbacks"
+require "active_support/core_ext/module/attribute_accessors"
 
 module ActiveJob
-  # = Active Job Callbacks
+  # = Active Job \Callbacks
   #
   # Active Job provides hooks during the life cycle of a job. Callbacks allow you
   # to trigger logic during this cycle. Available callbacks are:
@@ -14,9 +15,6 @@ module ActiveJob
   # * <tt>before_perform</tt>
   # * <tt>around_perform</tt>
   # * <tt>after_perform</tt>
-  #
-  # NOTE: Calling the same callback multiple times will overwrite previous callback definitions.
-  #
   module Callbacks
     extend  ActiveSupport::Concern
     include ActiveSupport::Callbacks
@@ -27,8 +25,8 @@ module ActiveJob
     end
 
     included do
-      define_callbacks :perform
-      define_callbacks :enqueue
+      define_callbacks :perform, skip_after_callbacks_if_terminated: true
+      define_callbacks :enqueue, skip_after_callbacks_if_terminated: true
     end
 
     # These methods will be included into any Active Job object, adding
@@ -88,6 +86,19 @@ module ActiveJob
       #     end
       #   end
       #
+      # You can access the return value of the job only if the execution wasn't halted.
+      #
+      #   class VideoProcessJob < ActiveJob::Base
+      #     around_perform do |job, block|
+      #       value = block.call
+      #       puts value # => "Hello World!"
+      #     end
+      #
+      #     def perform
+      #       "Hello World!"
+      #     end
+      #   end
+      #
       def around_perform(*filters, &blk)
         set_callback(:perform, :around, *filters, &blk)
       end
@@ -118,7 +129,8 @@ module ActiveJob
       #     queue_as :default
       #
       #     after_enqueue do |job|
-      #       $statsd.increment "enqueue-video-job.success"
+      #       result = job.successfully_enqueued? ? "success" : "failure"
+      #       $statsd.increment "enqueue-video-job.#{result}"
       #     end
       #
       #     def perform(video_id)
@@ -130,7 +142,7 @@ module ActiveJob
         set_callback(:enqueue, :after, *filters, &blk)
       end
 
-      # Defines a callback that will get called around the enqueueing
+      # Defines a callback that will get called around the enqueuing
       # of the job.
       #
       #   class VideoProcessJob < ActiveJob::Base

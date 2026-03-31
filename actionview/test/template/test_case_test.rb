@@ -2,6 +2,7 @@
 
 require "abstract_unit"
 require "rails/engine"
+require "capybara/minitest"
 
 module ActionView
   module ATestHelper
@@ -24,6 +25,11 @@ module ActionView
     DeveloperStruct = Struct.new(:name)
 
     module SharedTests
+      def setup
+        ActionView::LookupContext::DetailsKey.clear
+        super
+      end
+
       def self.included(test_case)
         test_case.class_eval do
           test "helpers defined on ActionView::TestCase are available" do
@@ -47,12 +53,20 @@ module ActionView
       assert params.is_a? ActionController::Parameters
     end
 
+    test "exposes request" do
+      assert request.is_a? ActionDispatch::Request
+    end
+
     test "exposes view as _view for backwards compatibility" do
       assert_same _view, view
     end
 
+    test "returns controller_name" do
+      assert_equal "test", controller_name
+    end
+
     test "retrieve non existing config values" do
-      assert_nil ActionView::Base.new.config.something_odd
+      assert_nil ActionView::Base.empty.config.something_odd
     end
 
     test "works without testing a helper module" do
@@ -116,6 +130,10 @@ module ActionView
   end
 
   class HelperInclusionTest < ActionView::TestCase
+    def teardown
+      ActionController::Base.view_paths.map(&:clear_cache)
+    end
+
     module RenderHelper
       def render_from_helper
         render partial: "customer", collection: @customers
@@ -151,6 +169,13 @@ module ActionView
 
       assert_equal "controller_helper_method", some_method
     end
+
+    class AnotherTestClass < ActionView::TestCase
+      test "doesn't use controller helpers from other tests" do
+        assert_not_respond_to view, :render_from_helper
+        assert_not_includes @controller._helpers.instance_methods, :render_from_helper
+      end
+    end
   end
 
   class ViewAssignsTest < ActionView::TestCase
@@ -171,14 +196,14 @@ module ActionView
   class HelperExposureTest < ActionView::TestCase
     helper(Module.new do
       def render_from_helper
-        from_test_case
+        from_test_case(suffix: "!")
       end
     end)
     test "is able to make methods available to the view" do
       assert_equal "Word!", render(partial: "test/from_helper")
     end
 
-    def from_test_case; "Word!"; end
+    def from_test_case(suffix: "?"); "Word#{suffix}"; end
     helper_method :from_test_case
   end
 
@@ -192,7 +217,7 @@ module ActionView
     helper HelperThatInvokesProtectAgainstForgery
 
     test "protect_from_forgery? in any helpers returns false" do
-      assert !view.help_me
+      assert_not view.help_me
     end
   end
 
@@ -217,8 +242,14 @@ module ActionView
 
     test "is able to use routes" do
       controller.request.assign_parameters(@routes, "foo", "index", {}, "/foo", [])
-      assert_equal "/foo", url_for
-      assert_equal "/bar", url_for(controller: "bar")
+      with_routing do |set|
+        set.draw {
+          get :foo, to: "foo#index"
+          get :bar, to: "bar#index"
+        }
+        assert_equal "/foo", url_for
+        assert_equal "/bar", url_for(controller: "bar")
+      end
     end
 
     test "is able to use named routes" do
@@ -236,13 +267,15 @@ module ActionView
             @routes ||= ActionDispatch::Routing::RouteSet.new
           end
 
-          routes.draw { get "bar", to: lambda {} }
+          routes.draw { get "bar", to: lambda { } }
 
           def self.call(*)
           end
         end
 
         set.draw { mount app => "/foo", :as => "foo_app" }
+
+        singleton_class.include set.mounted_helpers
 
         assert_equal "/foo/bar", foo_app.bar_path
       end
@@ -271,7 +304,7 @@ module ActionView
       @controller.controller_path = "test"
 
       @customers = [DeveloperStruct.new("Eloy"), DeveloperStruct.new("Manfred")]
-      assert_match(/Hello: EloyHello: Manfred/, render(file: "test/list"))
+      assert_match(/Hello: EloyHello: Manfred/, render(template: "test/list"))
     end
 
     test "is able to render partials from templates and also use instance variables after view has been referenced" do
@@ -280,7 +313,7 @@ module ActionView
       view
 
       @customers = [DeveloperStruct.new("Eloy"), DeveloperStruct.new("Manfred")]
-      assert_match(/Hello: EloyHello: Manfred/, render(file: "test/list"))
+      assert_match(/Hello: EloyHello: Manfred/, render(template: "test/list"))
     end
 
     test "is able to use helpers that depend on the view flow" do
@@ -320,6 +353,117 @@ module ActionView
     end
   end
 
+  class PlaceholderAssertionsTest < ActionView::TestCase
+    helper_method def render_from_helper
+      content_tag "a", "foo", href: "/bar"
+    end
+
+    test "supports placeholders in assert_select calls" do
+      render(partial: "test/from_helper")
+
+      assert_select "a[href=?]", "/bar", text: "foo"
+    end
+  end
+
+  class CapybaraHTMLEncoderTest < ActionView::TestCase
+    include ::Capybara::Minitest::Assertions
+
+    def page
+      Capybara.string(rendered)
+    end
+
+    test "document_root_element can be configured to utilize Capybara" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer_with_h1", developer: developer
+
+      assert_kind_of Capybara::Node::Simple, page
+      assert_css "h1", text: developer.name
+    end
+  end
+
+  class RenderedViewContentTest < ActionView::TestCase
+    test "#rendered inherits from String" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer", developer: developer
+
+      assert_kind_of String, rendered
+      assert_kind_of String, rendered.to_s
+      assert_equal developer.name, rendered
+      assert_match(/#{developer.name}/, rendered)
+      assert_includes rendered, developer.name
+    end
+
+    test "#rendered resets after each render" do
+      render "developers/developer", developer: DeveloperStruct.new("first")
+
+      assert_includes rendered, "first"
+      assert_not_includes rendered, "second"
+      assert_not_includes rendered, "third"
+
+      render "developers/developer", developer: DeveloperStruct.new("second")
+
+      assert_includes rendered, "first"
+      assert_includes rendered, "second"
+      assert_not_includes rendered, "third"
+
+      render "developers/developer", developer: DeveloperStruct.new("third")
+
+      assert_includes rendered, "first"
+      assert_includes rendered, "second"
+      assert_includes rendered, "third"
+    end
+  end
+
+  class HTMLParserTest < ActionView::TestCase
+    test "rendered.html is a Nokogiri::XML::DocumentFragment" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer", developer: developer
+
+      assert_kind_of Nokogiri::XML::DocumentFragment, rendered.html
+      assert_equal rendered.to_s, rendered.html.to_s
+      assert_equal developer.name, document_root_element.text
+    end
+
+    test "do not memoize the rendered.html in view tests" do
+      concat form_tag("/foo")
+
+      assert_equal "/foo", document_root_element.at("form")["action"]
+
+      concat content_tag(:b, "Strong", class: "foo")
+
+      assert_equal "/foo", document_root_element.at("form")["action"]
+      assert_equal "foo", document_root_element.at("b")["class"]
+    end
+  end
+
+  class JSONParserTest < ActionView::TestCase
+    test "rendered.json is an ActiveSupport::HashWithIndifferentAccess" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render formats: :json, partial: "developers/developer", locals: { developer: developer }
+
+      assert_kind_of ActiveSupport::HashWithIndifferentAccess, rendered.json
+      assert_equal rendered.to_s, rendered.json.to_json
+      assert_equal developer.name, rendered.json[:name]
+    end
+  end
+
+  class MissingHTMLParserTest < ActionView::TestCase
+    register_parser :html, nil
+
+    test "rendered.html falls back to returning the value when the parser is missing" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer", developer: developer
+
+      assert_kind_of String, rendered.html
+      assert_equal developer.name, rendered.html
+    end
+  end
+
   module AHelperWithInitialize
     def initialize(*)
       super
@@ -330,6 +474,35 @@ module ActionView
   class AHelperWithInitializeTest < ActionView::TestCase
     test "the helper's initialize was actually called" do
       assert @called_initialize
+    end
+  end
+
+  class PatternMatchingTestCases < ActionView::TestCase
+    test "document_root_element integrates with pattern matching" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer_with_h1", developer: developer
+
+      assert_pattern { document_root_element.at("h1") => { content: "Eloy", attributes: [{ name: "id", value: "name" }] } }
+      refute_pattern { document_root_element.at("h1") => { content: "Not Eloy" } }
+    end
+
+    test "rendered.html integrates with pattern matching" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render "developers/developer", developer: developer
+
+      assert_pattern { rendered.html => { content: "Eloy" } }
+      refute_pattern { rendered.html => { content: "Not Eloy" } }
+    end
+
+    test "rendered.json integrates with pattern matching" do
+      developer = DeveloperStruct.new("Eloy")
+
+      render formats: :json, partial: "developers/developer", locals: { developer: developer }
+
+      assert_pattern { rendered.json => { name: "Eloy" } }
+      refute_pattern { rendered.json => { name: "Not Eloy" } }
     end
   end
 end

@@ -1,14 +1,18 @@
 # frozen_string_literal: true
 
+require "marcel"
+
+# = Active Storage \Variation
+#
 # A set of transformations that can be applied to a blob to create a variant. This class is exposed via
 # the ActiveStorage::Blob#variant method and should rarely be used directly.
 #
 # In case you do need to use this directly, it's instantiated using a hash of transformations where
 # the key is the command and the value is the arguments. Example:
 #
-#   ActiveStorage::Variation.new(resize: "100x100", monochrome: true, trim: true, rotate: "-90")
+#   ActiveStorage::Variation.new(resize_to_limit: [100, 100], colourspace: "b-w", rotate: "-90", saver: { trim: true })
 #
-# A list of all possible transformations is available at https://www.imagemagick.org/script/mogrify.php.
+# The options map directly to {ImageProcessing}[https://github.com/janko/image_processing] commands.
 class ActiveStorage::Variation
   attr_reader :transformations
 
@@ -40,19 +44,31 @@ class ActiveStorage::Variation
   end
 
   def initialize(transformations)
-    @transformations = transformations
+    @transformations = transformations.deep_symbolize_keys
   end
 
-  # Accepts an open MiniMagick image instance, like what's returned by <tt>MiniMagick::Image.read(io)</tt>,
-  # and performs the +transformations+ against it. The transformed image instance is then returned.
-  def transform(image)
-    transformations.each do |(method, argument)|
-      if eligible_argument?(argument)
-        image.public_send(method, argument)
-      else
-        image.public_send(method)
+  def default_to(defaults)
+    self.class.new transformations.reverse_merge(defaults)
+  end
+
+  # Accepts a File object, performs the +transformations+ against it, and
+  # saves the transformed image into a temporary file.
+  def transform(file, &block)
+    ActiveSupport::Notifications.instrument("transform.active_storage") do
+      transformer.transform(file, format: format, &block)
+    end
+  end
+
+  def format
+    transformations.fetch(:format, :png).tap do |format|
+      if Marcel::Magic.by_extension(format.to_s).nil?
+        raise ArgumentError, "Invalid variant format (#{format.inspect})"
       end
     end
+  end
+
+  def content_type
+    Marcel::MimeType.for(extension: format.to_s)
   end
 
   # Returns a signed key for all the +transformations+ that this variation was instantiated with.
@@ -60,8 +76,12 @@ class ActiveStorage::Variation
     self.class.encode(transformations)
   end
 
+  def digest
+    OpenSSL::Digest::SHA1.base64digest Marshal.dump(transformations)
+  end
+
   private
-    def eligible_argument?(argument)
-      argument.present? && argument != true
+    def transformer
+      ActiveStorage.variant_transformer.new(transformations.except(:format))
     end
 end
